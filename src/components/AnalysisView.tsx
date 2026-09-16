@@ -50,6 +50,29 @@ interface AnalysisViewProps {
   onCoachExplain: (move: AnalyzedMove) => void;
 }
 
+/**
+ * Chess.com-style Game Rating (performance rating).
+ *
+ * Chess.com anchors performance to the player's actual rating and adjusts
+ * by how the accuracy compares to what is typical for that rating.
+ * Empirical fit from Chess.com rapid data: expected accuracy ≈ rating/100 + 64.
+ * Each accuracy point above/below expected is worth ~100 Elo.
+ * When no player rating is known we invert the same curve.
+ */
+function estimateGameRating(accuracy: number, playerRating: number | null): number {
+  const acc = Math.max(0, Math.min(100, accuracy));
+  if (playerRating != null && playerRating > 0) {
+    const expectedAcc = playerRating / 100 + 64;
+    // Clamp adjustment so a single wild game doesn't jump by thousands
+    const delta = Math.max(-25, Math.min(25, acc - expectedAcc));
+    return Math.round(Math.max(100, Math.min(3200, playerRating + delta * 100)));
+  }
+  // No rating available: invert Accuracy ≈ Elo/100 + 64
+  // Soften the low end so 50% doesn't map to negative
+  const raw = (acc - 64) * 100;
+  return Math.round(Math.max(400, Math.min(3000, raw > 400 ? raw : 400 + (acc / 50) * 400)));
+}
+
 export function AnalysisView({ analysis, currentIndex, onIndexChange, onCoachExplain }: AnalysisViewProps) {
   const moves = analysis.moves;
   const move = moves[currentIndex] || null;
@@ -129,6 +152,22 @@ export function AnalysisView({ analysis, currentIndex, onIndexChange, onCoachExp
   const blackAccuracy = analysis.accuracy?.black ?? 0;
   const whiteAcpl = analysis.acpl?.white ?? 0;
   const blackAcpl = analysis.acpl?.black ?? 0;
+
+  // Player ratings from the imported game (Chess.com / PGN tags), if present
+  const gameAny = analysis.game as any;
+  const whitePlayerRating: number | null =
+    typeof gameAny.whiteRating === 'number' ? gameAny.whiteRating
+    : typeof gameAny.whiteElo === 'number' ? gameAny.whiteElo
+    : typeof gameAny.white_elo === 'number' ? gameAny.white_elo
+    : null;
+  const blackPlayerRating: number | null =
+    typeof gameAny.blackRating === 'number' ? gameAny.blackRating
+    : typeof gameAny.blackElo === 'number' ? gameAny.blackElo
+    : typeof gameAny.black_elo === 'number' ? gameAny.black_elo
+    : null;
+
+  const whiteGameRating = estimateGameRating(whiteAccuracy, whitePlayerRating);
+  const blackGameRating = estimateGameRating(blackAccuracy, blackPlayerRating);
 
   // Per-player, per-quality counts for the summary table
   const qualityRows = useMemo(() => {
@@ -377,24 +416,33 @@ export function AnalysisView({ analysis, currentIndex, onIndexChange, onCoachExp
               </span>
             </div>
           )}
-          {/* Player headers with accuracy */}
+
+          {/* Player headers with accuracy (Chess.com-style) */}
           <div className="flex items-center justify-between mb-4">
             {/* White */}
             <div className="flex-1 flex flex-col items-center">
               <div className="flex items-center gap-2 mb-1">
                 <span className="w-3 h-3 rounded-full bg-white border border-ink-500" />
-                <span className="text-sm font-semibold text-ink-100">{whiteName}</span>
+                <span className="text-sm font-semibold text-ink-100 truncate max-w-[120px]">{whiteName}</span>
               </div>
-              <span className="text-3xl font-bold text-ink-100">{whiteAccuracy}</span>
+              <span className="text-3xl font-bold text-ink-100">{Math.round(whiteAccuracy)}</span>
+              <span className="text-[10px] uppercase tracking-wide text-ink-500 mt-0.5">Accuracy</span>
+              {whitePlayerRating != null && (
+                <span className="text-xs text-ink-400 mt-0.5 font-mono">{whitePlayerRating}</span>
+              )}
             </div>
 
             {/* Black */}
             <div className="flex-1 flex flex-col items-center">
               <div className="flex items-center gap-2 mb-1">
                 <span className="w-3 h-3 rounded-full bg-[#2a2e39] border border-ink-500" />
-                <span className="text-sm font-semibold text-ink-100">{blackName}</span>
+                <span className="text-sm font-semibold text-ink-100 truncate max-w-[120px]">{blackName}</span>
               </div>
-              <span className="text-3xl font-bold text-ink-100">{blackAccuracy}</span>
+              <span className="text-3xl font-bold text-ink-100">{Math.round(blackAccuracy)}</span>
+              <span className="text-[10px] uppercase tracking-wide text-ink-500 mt-0.5">Accuracy</span>
+              {blackPlayerRating != null && (
+                <span className="text-xs text-ink-400 mt-0.5 font-mono">{blackPlayerRating}</span>
+              )}
             </div>
           </div>
 
@@ -402,18 +450,13 @@ export function AnalysisView({ analysis, currentIndex, onIndexChange, onCoachExp
           <div className="space-y-0.5">
             {qualityRows.map(({ q, label, whiteCount, blackCount, meta }) => (
               <div key={q} className="flex items-center py-1">
-                {/* Label */}
                 <span className="w-24 text-sm text-ink-300 shrink-0">{label}</span>
-
-                {/* White count */}
                 <span
                   className="flex-1 text-right pr-4 text-sm font-bold font-mono"
                   style={{ color: meta.color }}
                 >
                   {whiteCount}
                 </span>
-
-                {/* Center icon */}
                 <div
                   className="w-6 h-6 rounded-full flex items-center justify-center shrink-0"
                   style={{ backgroundColor: meta.color }}
@@ -429,8 +472,6 @@ export function AnalysisView({ analysis, currentIndex, onIndexChange, onCoachExp
                   {q === 'miss' && <XCircle size={12} className="text-white" />}
                   {q === 'blunder' && <span className="text-[9px] font-bold text-white leading-none">??</span>}
                 </div>
-
-                {/* Black count */}
                 <span
                   className="flex-1 text-left pl-4 text-sm font-bold font-mono"
                   style={{ color: meta.color }}
@@ -441,16 +482,48 @@ export function AnalysisView({ analysis, currentIndex, onIndexChange, onCoachExp
             ))}
           </div>
 
-          {/* Game Rating (estimated) */}
-          <div className="mt-4 pt-3 border-t border-ink-700/50 flex items-center">
-            <span className="w-24 text-sm text-ink-400 shrink-0">Game Rating</span>
-            <span className="flex-1 text-right pr-4 text-sm font-bold text-ink-100 font-mono">
-              {Math.round(600 + (whiteAccuracy / 100) * 1400)}
-            </span>
-            <div className="w-6 shrink-0" /> {/* spacer for alignment */}
-            <span className="flex-1 text-left pl-4 text-sm font-bold text-ink-100 font-mono">
-              {Math.round(600 + (blackAccuracy / 100) * 1400)}
-            </span>
+          {/* Game Rating — Chess.com-style performance rating */}
+          <div className="mt-4 pt-3 border-t border-ink-700/50">
+            <div className="flex items-center">
+              <span
+                className="w-24 text-sm text-ink-400 shrink-0"
+                title="Estimated strength of play in this game (Chess.com-style)"
+              >
+                Game Rating
+              </span>
+              <span className="flex-1 text-right pr-4 text-sm font-bold text-ink-100 font-mono">
+                {whiteGameRating}
+                {whitePlayerRating != null && (
+                  <span
+                    className={`ml-1 text-xs font-normal ${
+                      whiteGameRating >= whitePlayerRating ? 'text-brand-400' : 'text-accent-400'
+                    }`}
+                  >
+                    {whiteGameRating >= whitePlayerRating ? '+' : ''}
+                    {whiteGameRating - whitePlayerRating}
+                  </span>
+                )}
+              </span>
+              <div className="w-6 shrink-0" />
+              <span className="flex-1 text-left pl-4 text-sm font-bold text-ink-100 font-mono">
+                {blackGameRating}
+                {blackPlayerRating != null && (
+                  <span
+                    className={`ml-1 text-xs font-normal ${
+                      blackGameRating >= blackPlayerRating ? 'text-brand-400' : 'text-accent-400'
+                    }`}
+                  >
+                    {blackGameRating >= blackPlayerRating ? '+' : ''}
+                    {blackGameRating - blackPlayerRating}
+                  </span>
+                )}
+              </span>
+            </div>
+            {(whitePlayerRating != null || blackPlayerRating != null) && (
+              <p className="text-[10px] text-ink-500 mt-1.5 text-center">
+                Compared to your rating · higher = played above your level
+              </p>
+            )}
           </div>
         </div>
 
