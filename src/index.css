@@ -1,0 +1,65 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  html {
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+  }
+  body {
+    @apply bg-ink-950 text-ink-100 font-sans antialiased;
+  }
+  ::selection {
+    @apply bg-brand-500/30;
+  }
+}
+
+@layer components {
+  .btn {
+    @apply inline-flex items-center justify-center gap-2 rounded-lg px-4 py-2 text-sm font-medium transition-all duration-150 focus:outline-none focus:ring-2 focus:ring-brand-400/50 disabled:opacity-50 disabled:cursor-not-allowed;
+  }
+  .btn-primary {
+    @apply btn bg-brand-500 text-white hover:bg-brand-600 active:scale-[0.98];
+  }
+  .btn-secondary {
+    @apply btn bg-ink-700 text-ink-100 hover:bg-ink-600 border border-ink-600 active:scale-[0.98];
+  }
+  .btn-ghost {
+    @apply btn text-ink-300 hover:text-ink-100 hover:bg-ink-800 active:scale-[0.98];
+  }
+  .card {
+    @apply rounded-xl border border-ink-700/60 bg-ink-800/40 backdrop-blur-sm;
+  }
+  .input {
+    @apply w-full rounded-lg border border-ink-600 bg-ink-900/60 px-3 py-2 text-sm text-ink-100 placeholder-ink-400 focus:border-brand-400 focus:outline-none focus:ring-1 focus:ring-brand-400/50 transition-colors;
+  }
+  .chip {
+    @apply inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-xs font-medium;
+  }
+}
+
+/* Custom scrollbar */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: #2a2e39;
+  border-radius: 4px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: #3d4351;
+}
+
+/* Board piece transitions */
+.piece-svg {
+  transition: transform 0.2s ease;
+  cursor: pointer;
+}
+.piece-svg:hover {
+  filter: drop-shadow(0 2px 4px rgba(0, 0, 0, 0.4));
+}
