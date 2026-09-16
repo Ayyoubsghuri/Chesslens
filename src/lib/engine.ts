@@ -1,12 +1,12 @@
 import type { EngineEval } from './types';
 
 /**
- * ── One-time setup ──────────────────────────────────────────────────────
- * This used to call https://stockfish.online/api — which has no CORS
- * headers for arbitrary browser origins and rate-limits aggressively (429s).
- * Instead we run Stockfish locally, in-browser, inside a Web Worker.
- *
- * 1. npm install stockfish
+  ── One-time setup ──────────────────────────────────────────────────────
+  This used to call https://stockfish.online/api — which has no CORS
+  headers for arbitrary browser origins and rate-limits aggressively (429s).
+  Instead we run Stockfish locally, in-browser, inside a Web Worker.
+ 
+  1. npm install stockfish
  *
  * 2. Copy the engine files into your `public/` folder so they're served as
  *    plain static assets. Web Worker + WASM loading is finicky across
@@ -19,14 +19,14 @@ import type { EngineEval } from './types';
  *      cp node_modules/stockfish/stockfish-18-lite-single.js   public/stockfish/
  *      cp node_modules/stockfish/stockfish-18-lite.wasm public/stockfish/
  *
- *    (This package ships stockfish-18-lite.js/.wasm directly in its root,
- *    not under src/ — check node_modules/stockfish/ if your version differs.
- *    Keep the .js and .wasm together with matching filenames; the glue code
- *    loads the .wasm by name relative to itself.)
- *
- * 3. stockfish-18-lite is a single-threaded NNUE build, so no extra
- *    cross-origin-isolation (COOP/COEP) server headers are needed — those
- *    are only required for multi-threaded builds.
+ *     (This package ships stockfish-18-lite.js/.wasm directly in its root,
+    not under src/ — check node_modules/stockfish/ if your version differs.
+     Keep the .js and .wasm together with matching filenames; the glue code
+     loads the .wasm by name relative to itself.)
+ 
+  3. stockfish-18-lite is a single-threaded NNUE build, so no extra
+     cross-origin-isolation (COOP/COEP) server headers are needed — those
+     are only required for multi-threaded builds.
  * ────────────────────────────────────────────────────────────────────────
  */
 const ENGINE_SCRIPT_PATH = `${import.meta.env.BASE_URL}stockfish/stockfish-18-lite-single.js`;
