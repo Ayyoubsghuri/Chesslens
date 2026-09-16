@@ -29,8 +29,7 @@ import type { EngineEval } from './types';
  *    are only required for multi-threaded builds.
  * ────────────────────────────────────────────────────────────────────────
  */
-const ENGINE_SCRIPT_PATH = '/stockfish/stockfish-18-lite-single.js';
-
+const ENGINE_SCRIPT_PATH = `${import.meta.env.BASE_URL}stockfish/stockfish-18-lite-single.js`;
 const READY_TIMEOUT_MS = 10_000;
 const SEARCH_TIMEOUT_MS = 30_000;
 
