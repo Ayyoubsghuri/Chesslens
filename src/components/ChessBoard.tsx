@@ -19,11 +19,19 @@ interface ChessBoardProps {
   annotationColor?: string | null;
   moveQuality?: MoveQuality | null;
   id?: string;
-  /** Display names used in the checkmate celebration banner. */
   whiteName?: string;
   blackName?: string;
-  /** Set to false to suppress the win celebration overlay on checkmate. */
   showCelebration?: boolean;
+  /** Allow dragging pieces to legal squares (explore / free play). */
+  interactive?: boolean;
+  /** Called when the user makes a legal move on the board. */
+  onUserMove?: (move: {
+    from: Square;
+    to: Square;
+    promotion?: string;
+    san: string;
+    fen: string;
+  }) => void;
 }
 
 function colorToBrush(color: string): string {
@@ -64,6 +72,20 @@ function findKingSquare(chess: Chess, color: Color): Square | null {
   return null;
 }
 
+function buildDests(fen: string): Map<Key, Key[]> {
+  const dests = new Map<Key, Key[]>();
+  try {
+    const chess = new Chess(fen);
+    for (const m of chess.moves({ verbose: true })) {
+      const from = m.from as Key;
+      const arr = dests.get(from) || [];
+      arr.push(m.to as Key);
+      dests.set(from, arr);
+    }
+  } catch { /* invalid fen */ }
+  return dests;
+}
+
 export function ChessBoard({
   fen,
   orientation = 'white',
@@ -78,24 +100,33 @@ export function ChessBoard({
   whiteName = 'White',
   blackName = 'Black',
   showCelebration = true,
+  interactive = false,
+  onUserMove,
 }: ChessBoardProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const apiRef = useRef<Api | null>(null);
   const onSquareClickRef = useRef(onSquareClick);
   onSquareClickRef.current = onSquareClick;
+  const onUserMoveRef = useRef(onUserMove);
+  onUserMoveRef.current = onUserMove;
+  const fenRef = useRef(fen);
+  fenRef.current = fen;
+  const interactiveRef = useRef(interactive);
+  interactiveRef.current = interactive;
 
-  // Derive check / checkmate state straight from the FEN so any screen that
-  // renders a board automatically gets these effects for free.
   const gameState = useMemo(() => {
     try {
       const chess = new Chess(fen);
       const inCheck = chess.inCheck();
       const isCheckmate = chess.isCheckmate();
-      const turnColor = chess.turn(); // side to move — the side in check/mated
+      const turnColor = chess.turn();
       const checkedKingSquare = inCheck ? findKingSquare(chess, turnColor) : null;
-      return { inCheck, isCheckmate, turnColor, checkedKingSquare };
+      const winnerKingSquare = isCheckmate
+        ? findKingSquare(chess, turnColor === 'w' ? 'b' : 'w')
+        : null;
+      return { inCheck, isCheckmate, turnColor, checkedKingSquare, winnerKingSquare };
     } catch {
-      return { inCheck: false, isCheckmate: false, turnColor: 'w' as Color, checkedKingSquare: null };
+      return { inCheck: false, isCheckmate: false, turnColor: 'w' as Color, checkedKingSquare: null, winnerKingSquare: null };
     }
   }, [fen]);
 
@@ -104,7 +135,6 @@ export function ChessBoard({
     setCelebrationDismissed(false);
   }, [fen]);
 
-  // Confetti burst is randomized once per checkmate position, not on every render.
   const confettiPieces = useMemo(() => {
     if (!gameState.isCheckmate) return [];
     const colors = ['#81b64c', '#f7c631', '#4fb083', '#e54444', '#5b8def', '#e040fb', '#ffa459'];
@@ -122,14 +152,55 @@ export function ChessBoard({
 
   useEffect(() => {
     if (!containerRef.current) return;
+    const turnColor = (() => {
+      try {
+        return new Chess(fen).turn() === 'w' ? 'white' : 'black';
+      } catch {
+        return 'white';
+      }
+    })() as 'white' | 'black';
+
     const config: Config = {
       fen,
       orientation,
-      viewOnly: !onSquareClickRef.current,
+      viewOnly: false,
       coordinates: true,
       animation: { enabled: true, duration: 200 },
       highlight: { lastMove: true, check: true },
-      movable: { free: false, color: undefined, dests: new Map() },
+      movable: {
+        free: false,
+        color: interactive ? turnColor : undefined,
+        dests: interactive ? buildDests(fen) : new Map(),
+        showDests: true,
+        events: {
+          after: (orig: Key, dest: Key) => {
+            if (!onUserMoveRef.current || !interactiveRef.current) return;
+            try {
+              const chess = new Chess(fenRef.current);
+              const candidates = chess.moves({ verbose: true }).filter(
+                (m) => m.from === orig && m.to === dest
+              );
+              if (!candidates.length) return;
+              const needsPromo = candidates.some((m) => m.promotion);
+              const result = chess.move({
+                from: orig,
+                to: dest,
+                promotion: needsPromo ? 'q' : undefined,
+              });
+              if (!result) return;
+              onUserMoveRef.current({
+                from: result.from as Square,
+                to: result.to as Square,
+                promotion: result.promotion,
+                san: result.san,
+                fen: chess.fen(),
+              });
+            } catch {
+              /* ignore */
+            }
+          },
+        },
+      },
       drawable: { enabled: true, visible: true },
       events: {
         select: (key: Key) => {
@@ -175,6 +246,7 @@ export function ChessBoard({
       });
     }
 
+    const turnColor = gameState.turnColor === 'w' ? 'white' : 'black';
     api.set({
       fen,
       orientation,
@@ -182,12 +254,33 @@ export function ChessBoard({
       selected: highlightSquare ? (highlightSquare as Key) : undefined,
       check: gameState.inCheck ? gameState.turnColor : false,
       drawable: { autoShapes },
+      movable: {
+        free: false,
+        color: interactive ? (turnColor as 'white' | 'black') : undefined,
+        dests: interactive ? buildDests(fen) : new Map(),
+        showDests: true,
+      },
+      turnColor: turnColor as 'white' | 'black',
     });
-  }, [fen, orientation, lastMove, highlightSquare, bestMoveUci, annotationSquare, annotationColor, gameState.inCheck, gameState.turnColor]);
+  }, [
+    fen,
+    orientation,
+    lastMove,
+    highlightSquare,
+    bestMoveUci,
+    annotationSquare,
+    annotationColor,
+    gameState.inCheck,
+    gameState.turnColor,
+    interactive,
+  ]);
 
-  // Determine which square gets the badge (destination of the move being reviewed)
   const badgeSquare = lastMove?.to ?? annotationSquare;
-  const showBadge = badgeSquare && moveQuality && moveQuality !== 'good';
+  const collidesWithResultBadge =
+    !!badgeSquare &&
+    (badgeSquare === gameState.checkedKingSquare || badgeSquare === gameState.winnerKingSquare) &&
+    gameState.isCheckmate;
+  const showBadge = badgeSquare && moveQuality && moveQuality !== 'good' && !collidesWithResultBadge;
 
   const winnerName = gameState.turnColor === 'w' ? blackName : whiteName;
   const showCheckmateOverlay = showCelebration && gameState.isCheckmate && !celebrationDismissed;
@@ -212,12 +305,22 @@ export function ChessBoard({
           severe={gameState.isCheckmate}
         />
       )}
-      {showBadge && (
-        <BoardBadge
-          square={badgeSquare}
-          quality={moveQuality}
+      {gameState.isCheckmate && gameState.checkedKingSquare && (
+        <KingResultBadge
+          square={gameState.checkedKingSquare}
           orientation={orientation}
+          variant="loser"
         />
+      )}
+      {gameState.isCheckmate && gameState.winnerKingSquare && (
+        <KingResultBadge
+          square={gameState.winnerKingSquare}
+          orientation={orientation}
+          variant="winner"
+        />
+      )}
+      {showBadge && (
+        <BoardBadge square={badgeSquare} quality={moveQuality} orientation={orientation} />
       )}
       {showCheckmateOverlay && (
         <CheckmateCelebration
@@ -248,6 +351,7 @@ export function ChessBoard({
   );
 }
 
+
 function CheckRing({
   square,
   orientation,
@@ -270,6 +374,83 @@ function CheckRing({
         zIndex: 8,
       }}
     />
+  );
+}
+
+const RESULT_BADGE_COLORS = { winner: '#81b64c', loser: '#e02828' } as const;
+
+/** Solid white crown, shown on the winning king. */
+function CrownIcon() {
+  return (
+    <svg viewBox="0 0 24 24" width="100%" height="100%" aria-hidden="true">
+      <path
+        d="M5 8.6L9.2 11.1L12 6L14.8 11.1L19 8.6L19 16.5Q12 19.2 5 16.5Z"
+        fill="#fff"
+        stroke="#fff"
+        strokeWidth=".7"
+        strokeLinejoin="round"
+      />
+    </svg>
+  );
+}
+
+/** Toppled king silhouette, shown on the checkmated king. */
+function ToppledKingIcon() {
+  return (
+    <svg viewBox="0 0 24 24" width="100%" height="100%" aria-hidden="true">
+      <g fill="#fff" fillRule="evenodd">
+        <rect x="4.4" y="11.15" width="4.2" height="1.7" rx=".3" />
+        <rect x="5.3" y="9.6" width="1.7" height="4.8" rx=".3" />
+        <path d="M8.3 12C8.4 8 9.7 4.9 12.2 4.7C14 4.6 15.2 5.6 15.7 7L15.7 17C15.2 18.4 14 19.4 12.2 19.3C9.7 19.1 8.4 16 8.3 12Z M10.3 8.7L12.7 9.9L10.6 11.4Z M10.3 15.3L12.7 14.1L10.6 12.6Z" />
+        <path d="M15.5 8L19.6 6.6L19.6 17.4L15.5 16Z" />
+      </g>
+    </svg>
+  );
+}
+
+function KingResultBadge({
+  square,
+  orientation,
+  variant,
+}: {
+  square: Square;
+  orientation: 'white' | 'black';
+  variant: 'winner' | 'loser';
+}) {
+  const pos = getSquarePosition(square, orientation);
+  const isWinner = variant === 'winner';
+  const label = isWinner ? 'Checkmate — winner' : 'Checkmated';
+  return (
+    <div
+      className="absolute pointer-events-none"
+      style={{
+        left: pos.left,
+        top: pos.top,
+        width: '12.5%',
+        height: '12.5%',
+        zIndex: 11,
+      }}
+    >
+      {/* Sits on the top-right corner of the square and overhangs it slightly, like Chess.com */}
+      <div
+        role="img"
+        aria-label={label}
+        title={label}
+        style={{
+          position: 'absolute',
+          top: '-8%',
+          right: '-8%',
+          width: 'max(22px, 40%)',
+          aspectRatio: '1 / 1',
+          borderRadius: '50%',
+          backgroundColor: RESULT_BADGE_COLORS[variant],
+          boxShadow: '0 1px 3px rgba(0,0,0,0.4)',
+          animation: 'cb-celebration-pop 0.35s ease-out',
+        }}
+      >
+        {isWinner ? <CrownIcon /> : <ToppledKingIcon />}
+      </div>
+    </div>
   );
 }
 

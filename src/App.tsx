@@ -218,6 +218,7 @@ function App() {
                 currentIndex={currentMoveIndex}
                 onIndexChange={setCurrentMoveIndex}
                 onCoachExplain={handleCoachExplain}
+                depth={settings.analysisDepth}
               />
             ) : view === 'coach' ? (
               <CoachPanel move={coachMove || currentMove} settings={settings} />

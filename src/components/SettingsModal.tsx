@@ -8,9 +8,36 @@ interface SettingsModalProps {
   onClose: () => void;
 }
 
+/** stockfish-18-lite-single.wasm is unstable above ~18 depth (RuntimeError: unreachable). */
+const DEPTH_MIN = 8;
+const DEPTH_MAX = 18;
+const DEPTH_DEFAULT = 15;
+
+function depthLabel(d: number): string {
+  if (d <= 12) return 'Fast';
+  if (d <= 15) return 'Standard';
+  if (d <= 17) return 'Deep';
+  return 'Max (lite)';
+}
+
 export function SettingsModal({ settings, onSave, onClose }: SettingsModalProps) {
-  const [local, setLocal] = useState(settings);
+  const safeDepth = Math.min(
+    DEPTH_MAX,
+    Math.max(DEPTH_MIN, settings.analysisDepth ?? DEPTH_DEFAULT)
+  );
+  const [local, setLocal] = useState<Settings>({
+    ...settings,
+    analysisDepth: safeDepth,
+  });
   const [showKey, setShowKey] = useState(false);
+
+  const handleSave = () => {
+    onSave({
+      ...local,
+      analysisDepth: Math.min(DEPTH_MAX, Math.max(DEPTH_MIN, local.analysisDepth)),
+    });
+    onClose();
+  };
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm animate-fade-in p-4" onClick={onClose}>
@@ -26,7 +53,6 @@ export function SettingsModal({ settings, onSave, onClose }: SettingsModalProps)
         </div>
 
         <div className="p-5 space-y-5">
-          {/* OpenAI API Key */}
           <div>
             <label className="flex items-center gap-2 text-sm font-medium text-ink-200 mb-1.5">
               <Key size={14} /> OpenAI API Key
@@ -51,7 +77,6 @@ export function SettingsModal({ settings, onSave, onClose }: SettingsModalProps)
             </p>
           </div>
 
-          {/* Coach model */}
           <div>
             <label className="text-sm font-medium text-ink-200 mb-1.5 block">Coach Model</label>
             <select
@@ -66,32 +91,37 @@ export function SettingsModal({ settings, onSave, onClose }: SettingsModalProps)
             </select>
           </div>
 
-          {/* Analysis depth */}
           <div>
             <label className="flex items-center gap-2 text-sm font-medium text-ink-200 mb-1.5">
               <Cpu size={14} /> Engine Depth: {local.analysisDepth}
+              <span className="ml-auto text-xs font-normal text-ink-400">
+                {depthLabel(local.analysisDepth)}
+              </span>
             </label>
             <input
               type="range"
-              min={8}
-              max={15}
+              min={DEPTH_MIN}
+              max={DEPTH_MAX}
+              step={1}
               value={local.analysisDepth}
               onChange={(e) => setLocal({ ...local, analysisDepth: Number(e.target.value) })}
               className="w-full accent-brand-500"
             />
             <div className="flex justify-between text-xs text-ink-400 mt-1">
-              <span>8 (fast)</span>
-              <span>15 (deep)</span>
+              <span>{DEPTH_MIN} fast</span>
+              <span>15 standard</span>
+              <span>{DEPTH_MAX} max</span>
             </div>
             <p className="text-xs text-ink-400 mt-1.5">
-              Higher depth gives more accurate analysis but takes longer per move.
+              Stockfish lite is limited to depth {DEPTH_MAX}. Higher values can crash the engine
+              (RuntimeError: unreachable). Use 12–15 for speed, 16–18 for stronger analysis.
             </p>
           </div>
         </div>
 
         <div className="flex justify-end gap-2 border-t border-ink-700 px-5 py-4">
           <button onClick={onClose} className="btn-secondary">Cancel</button>
-          <button onClick={() => { onSave(local); onClose(); }} className="btn-primary">Save</button>
+          <button onClick={handleSave} className="btn-primary">Save</button>
         </div>
       </div>
     </div>

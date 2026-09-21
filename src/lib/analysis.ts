@@ -38,7 +38,7 @@ function effectiveWinLoss(raw: number): number {
   return Math.min(100, raw * 1.25);
 }
 
-function classifyMove(
+export function classifyMove(
   evalBefore: EngineEval,
   evalAfter: EngineEval,
   playedMove: string,
