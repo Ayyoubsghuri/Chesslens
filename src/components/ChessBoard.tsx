@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState, type CSSProperties } from 'react';
 import { Chessground } from '@lichess-org/chessground';
 import type { Api } from '@lichess-org/chessground/api';
 import type { Config } from '@lichess-org/chessground/config';
@@ -286,7 +286,7 @@ export function ChessBoard({
   const showCheckmateOverlay = showCelebration && gameState.isCheckmate && !celebrationDismissed;
 
   return (
-    <div className="relative w-full" style={{ maxWidth: size }}>
+    <div className="relative w-full" style={{ maxWidth: size, containerType: 'inline-size' }}>
       <div
         ref={containerRef}
         style={{
@@ -303,6 +303,13 @@ export function ChessBoard({
           square={gameState.checkedKingSquare}
           orientation={orientation}
           severe={gameState.isCheckmate}
+        />
+      )}
+      {gameState.isCheckmate && gameState.checkedKingSquare && (
+        <CheckmateKingAnimation
+          key={fen}
+          square={gameState.checkedKingSquare}
+          orientation={orientation}
         />
       )}
       {gameState.isCheckmate && gameState.checkedKingSquare && (
@@ -342,6 +349,37 @@ export function ChessBoard({
           0% { transform: translateY(-16px) rotate(0deg); opacity: 1; }
           100% { transform: translateY(240px) rotate(360deg); opacity: 0; }
         }
+        @keyframes cb-mate-flash {
+          0% { opacity: 0; }
+          8% { opacity: 1; }
+          60% { opacity: 1; }
+          100% { opacity: 0; }
+        }
+        @keyframes cb-mate-topple {
+          0% { opacity: 0; transform: rotate(90deg) scale(0.55); }
+          8% { opacity: 1; }
+          26% { opacity: 1; transform: rotate(-8deg) scale(1.1); }
+          36% { transform: rotate(0deg) scale(1); }
+          46% { transform: rotate(0deg) scale(1.05); }
+          56% { transform: rotate(0deg) scale(1); }
+          78% { opacity: 1; transform: rotate(0deg) scale(1); }
+          100% { opacity: 0; transform: rotate(0deg) scale(0.85); }
+        }
+        @keyframes cb-mate-pill {
+          0% { opacity: 0; transform: translateY(8px) scale(0.6); }
+          12% { opacity: 1; transform: translateY(0) scale(1.08); }
+          18% { transform: translateY(0) scale(1); }
+          80% { opacity: 1; transform: translateY(0) scale(1); }
+          100% { opacity: 0; transform: translateY(-4px) scale(0.96); }
+        }
+        @keyframes cb-overlay-in {
+          0% { opacity: 0; visibility: hidden; }
+          100% { opacity: 1; visibility: visible; }
+        }
+        @media (prefers-reduced-motion: reduce) {
+          .cb-mate-transient { display: none; }
+          .cb-mate-delayed { animation: none !important; }
+        }
         @keyframes cb-celebration-pop {
           0% { transform: scale(0.85) translateY(6px); opacity: 0; }
           100% { transform: scale(1) translateY(0); opacity: 1; }
@@ -377,6 +415,10 @@ function CheckRing({
   );
 }
 
+/** Checkmate sequence timing (seconds). Badges and the celebration card wait for it. */
+const MATE_FX_S = 2;
+const MATE_BADGE_DELAY_S = 1.6;
+
 const RESULT_BADGE_COLORS = { winner: '#81b64c', loser: '#e02828' } as const;
 
 /** Solid white crown, shown on the winning king. */
@@ -395,16 +437,90 @@ function CrownIcon() {
 }
 
 /** Toppled king silhouette, shown on the checkmated king. */
-function ToppledKingIcon() {
+function ToppledKingIcon({ fill = '#fff' }: { fill?: string }) {
   return (
     <svg viewBox="0 0 24 24" width="100%" height="100%" aria-hidden="true">
-      <g fill="#fff" fillRule="evenodd">
+      <g fill={fill} fillRule="evenodd">
         <rect x="4.4" y="11.15" width="4.2" height="1.7" rx=".3" />
         <rect x="5.3" y="9.6" width="1.7" height="4.8" rx=".3" />
         <path d="M8.3 12C8.4 8 9.7 4.9 12.2 4.7C14 4.6 15.2 5.6 15.7 7L15.7 17C15.2 18.4 14 19.4 12.2 19.3C9.7 19.1 8.4 16 8.3 12Z M10.3 8.7L12.7 9.9L10.6 11.4Z M10.3 15.3L12.7 14.1L10.6 12.6Z" />
         <path d="M15.5 8L19.6 6.6L19.6 17.4L15.5 16Z" />
       </g>
     </svg>
+  );
+}
+
+/**
+ * Plays on the checkmated king's square: the square flashes red (the real piece stays
+ * visible underneath), the king topples onto its side, and a "Checkmate" pill pops in.
+ * Remount it (via `key`) to replay.
+ */
+function CheckmateKingAnimation({
+  square,
+  orientation,
+}: {
+  square: Square;
+  orientation: 'white' | 'black';
+}) {
+  const pos = getSquarePosition(square, orientation);
+  const file = square.charCodeAt(0) - 'a'.charCodeAt(0);
+  const rank = parseInt(square[1]) - 1;
+  const col = orientation === 'white' ? file : 7 - file;
+  const row = orientation === 'white' ? 7 - rank : rank;
+
+  // Keep the pill on the board: centered normally, pinned to the side on the edge files
+  const pillPos: CSSProperties =
+    col === 0
+      ? { left: 0 }
+      : col === 7
+        ? { right: 0 }
+        : { left: '50%', transform: 'translateX(-50%)' };
+
+  return (
+    <div
+      className="absolute pointer-events-none"
+      style={{ left: pos.left, top: pos.top, width: '12.5%', height: '12.5%', zIndex: 12 }}
+      aria-hidden="true"
+    >
+      <div
+        className="cb-mate-transient absolute inset-0"
+        style={{
+          backgroundColor: 'rgba(224, 40, 40, 0.74)',
+          animation: `cb-mate-flash ${MATE_FX_S}s ease-out forwards`,
+        }}
+      />
+      <div className="cb-mate-transient absolute inset-0 flex items-center justify-center">
+        <div
+          style={{
+            width: '72%',
+            height: '72%',
+            animation: `cb-mate-topple ${MATE_FX_S}s cubic-bezier(0.3, 0.7, 0.4, 1) forwards`,
+          }}
+        >
+          <ToppledKingIcon fill="#111" />
+        </div>
+      </div>
+      <div
+        className="cb-mate-transient absolute"
+        style={{ top: row === 0 ? '2%' : '-16%', whiteSpace: 'nowrap', ...pillPos }}
+      >
+        <div
+          style={{
+            backgroundColor: '#fff',
+            color: '#e02828',
+            fontWeight: 800,
+            fontSize: '3.4cqw',
+            lineHeight: 1.15,
+            padding: '1cqw 2.8cqw',
+            borderRadius: 999,
+            boxShadow: '0 2px 8px rgba(0,0,0,0.35)',
+            animation: `cb-mate-pill ${MATE_FX_S}s ease-out 0.1s both`,
+          }}
+        >
+          Checkmate
+        </div>
+      </div>
+    </div>
   );
 }
 
@@ -433,6 +549,7 @@ function KingResultBadge({
     >
       {/* Sits on the top-right corner of the square and overhangs it slightly, like Chess.com */}
       <div
+        className="cb-mate-delayed"
         role="img"
         aria-label={label}
         title={label}
@@ -445,7 +562,7 @@ function KingResultBadge({
           borderRadius: '50%',
           backgroundColor: RESULT_BADGE_COLORS[variant],
           boxShadow: '0 1px 3px rgba(0,0,0,0.4)',
-          animation: 'cb-celebration-pop 0.35s ease-out',
+          animation: `cb-celebration-pop 0.35s ease-out ${MATE_BADGE_DELAY_S}s both`,
         }}
       >
         {isWinner ? <CrownIcon /> : <ToppledKingIcon />}
@@ -465,8 +582,12 @@ function CheckmateCelebration({
 }) {
   return (
     <div
-      className="absolute inset-0 z-20 flex items-center justify-center rounded-lg overflow-hidden"
-      style={{ background: 'rgba(10, 11, 14, 0.55)', backdropFilter: 'blur(1px)' }}
+      className="cb-mate-delayed absolute inset-0 z-20 flex items-center justify-center rounded-lg overflow-hidden"
+      style={{
+        background: 'rgba(10, 11, 14, 0.55)',
+        backdropFilter: 'blur(1px)',
+        animation: `cb-overlay-in 0.4s ease-out ${MATE_FX_S}s both`,
+      }}
     >
       {pieces.map((p) => (
         <span
