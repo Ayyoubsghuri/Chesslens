@@ -1026,6 +1026,22 @@ function SpotlightPill({
   square: Square;
   orientation: 'white' | 'black';
 }) {
+  // Brilliant: show English first, then switch to Arabic "مقودة" after 2s
+  const isBrilliant = label === 'Brilliant';
+  const [displayLabel, setDisplayLabel] = useState(label);
+  useEffect(() => {
+    if (!isBrilliant) {
+      setDisplayLabel(label);
+      return;
+    }
+    setDisplayLabel('Brilliant');
+    const t = window.setTimeout(() => setDisplayLabel('مقودة'), 2000);
+    return () => window.clearTimeout(t);
+  }, [label, isBrilliant]);
+
+  // Longer pill duration for brilliant so the 2s label switch is visible
+  const pillAnim = isBrilliant ? 'cb-mate-pill 3.6s ease-out both' : 'cb-mate-pill 1.8s ease-out both';
+
   const pos = getSquarePosition(square, orientation);
   const file = square.charCodeAt(0) - 'a'.charCodeAt(0);
   const rank = parseInt(square[1]) - 1;
@@ -1048,7 +1064,7 @@ function SpotlightPill({
       {marks > 0 && (
         <div
           className="absolute inset-0 flex items-center justify-center"
-          style={{ animation: 'cb-mate-pill 1.8s ease-out both' }}
+          style={{ animation: pillAnim }}
         >
           <MarkGlyph count={marks as 1 | 2} height="66%" opacity={0.95} />
         </div>
@@ -1071,10 +1087,10 @@ function SpotlightPill({
             padding: '1.1cqw 3.2cqw',
             borderRadius: 999,
             boxShadow: '0 2px 8px rgba(0,0,0,0.35)',
-            animation: 'cb-mate-pill 1.8s ease-out both',
+            animation: pillAnim,
           }}
         >
-          {label}
+          {displayLabel}
         </div>
       </div>
     </div>
