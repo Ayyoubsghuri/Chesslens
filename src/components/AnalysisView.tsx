@@ -15,9 +15,9 @@ import {
 } from 'lucide-react';
 
 const QUALITY_META: Record<MoveQuality, { color: string; bg: string; icon: any; label: string }> = {
-  brilliant: { color: '#00bfa5', bg: '#00bfa520', icon: Star, label: 'Brilliant' },
+  brilliant: { color: '#26c2a3', bg: '#26c2a320', icon: Star, label: 'Brilliant' },
   best:      { color: '#81b64c', bg: '#81b64c20', icon: Star, label: 'Best' },
-  great:     { color: '#7cb342', bg: '#7cb34220', icon: ThumbsUp, label: 'Great' },
+  great:     { color: '#749bbf', bg: '#749bbf20', icon: ThumbsUp, label: 'Great' },
   excellent: { color: '#96bc4b', bg: '#96bc4b20', icon: CheckCircle2, label: 'Excellent' },
   good:      { color: '#95b3b8', bg: '#95b3b820', icon: Minus, label: 'Good' },
   book:      { color: '#a88865', bg: '#a8886520', icon: BookOpen, label: 'Book' },
@@ -1622,7 +1622,16 @@ function QualityBadge({ quality }: { quality: MoveQuality }) {
   const Icon = meta.icon;
   return (
     <span className="chip inline-flex items-center gap-1" style={{ backgroundColor: meta.bg, color: meta.color }}>
-      <Icon size={12} />
+      {quality === 'brilliant' || quality === 'great' ? (
+        <span
+          className="w-4 h-4 rounded-full flex items-center justify-center text-[9px] font-black text-white leading-none tracking-tighter"
+          style={{ backgroundColor: meta.color }}
+        >
+          {quality === 'brilliant' ? '!!' : '!'}
+        </span>
+      ) : (
+        <Icon size={12} />
+      )}
       {meta.label}
     </span>
   );

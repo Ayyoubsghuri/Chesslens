@@ -39,7 +39,7 @@ function colorToBrush(color: string): string {
 }
 
 const BADGE_META: Record<MoveQuality, { color: string; icon: any; symbol: string }> = {
-  brilliant: { color: '#26c4c4', icon: Star, symbol: '!!' },
+  brilliant: { color: '#26c2a3', icon: Star, symbol: '!!' },
   best:      { color: '#81b64c', icon: Star, symbol: '' },
   great:     { color: '#7cb342', icon: ThumbsUp, symbol: '' },
   excellent: { color: '#96bc4b', icon: ThumbsUp, symbol: '' },
@@ -282,11 +282,16 @@ export function ChessBoard({
     gameState.isCheckmate;
   const showBadge = badgeSquare && moveQuality && moveQuality !== 'good' && !collidesWithResultBadge;
 
+  const isBrilliant = !!showBadge && moveQuality === 'brilliant';
+
   const winnerName = gameState.turnColor === 'w' ? blackName : whiteName;
   const showCheckmateOverlay = showCelebration && gameState.isCheckmate && !celebrationDismissed;
 
   return (
-    <div className="relative w-full" style={{ maxWidth: size, containerType: 'inline-size' }}>
+    <div
+      className={`relative w-full${isBrilliant ? ' cb-brilliant' : ''}`}
+      style={{ maxWidth: size, containerType: 'inline-size' }}
+    >
       <div
         ref={containerRef}
         style={{
@@ -328,6 +333,13 @@ export function ChessBoard({
       )}
       {showBadge && (
         <BoardBadge square={badgeSquare} quality={moveQuality} orientation={orientation} />
+      )}
+      {isBrilliant && badgeSquare && (
+        <BrilliantPill
+          key={`${fen}-${badgeSquare}`}
+          square={badgeSquare}
+          orientation={orientation}
+        />
       )}
       {showCheckmateOverlay && (
         <CheckmateCelebration
@@ -376,7 +388,12 @@ export function ChessBoard({
           0% { opacity: 0; visibility: hidden; }
           100% { opacity: 1; visibility: visible; }
         }
+        /* Teal wash on the last-move squares while a brilliant move is shown */
+        .cb-brilliant .cg-wrap cg-board square.last-move {
+          background-color: rgba(38, 194, 163, 0.5);
+        }
         @media (prefers-reduced-motion: reduce) {
+          .cb-brilliant-transient { display: none; }
           .cb-mate-transient { display: none; }
           .cb-mate-delayed { animation: none !important; }
         }
@@ -671,12 +688,75 @@ function BoardBadge({
         title={quality}
       >
         {meta.symbol ? (
-          <span className="text-[9px] font-bold text-white leading-none select-none">
+          <span
+            className={`font-black text-white leading-none select-none ${
+              quality === 'brilliant' ? 'text-[10px] tracking-tighter' : 'text-[9px]'
+            }`}
+          >
             {meta.symbol}
           </span>
         ) : (
           <Icon size={12} className="text-white" strokeWidth={2.5} />
         )}
+      </div>
+    </div>
+  );
+}
+
+/**
+ * White "Brilliant" pill that pops in next to the destination square, then fades.
+ * Sits above the square (below it on the top rank) and is pinned to the board on edge files.
+ * Remount via `key` to replay.
+ */
+function BrilliantPill({
+  square,
+  orientation,
+}: {
+  square: Square;
+  orientation: 'white' | 'black';
+}) {
+  const pos = getSquarePosition(square, orientation);
+  const file = square.charCodeAt(0) - 'a'.charCodeAt(0);
+  const rank = parseInt(square[1]) - 1;
+  const col = orientation === 'white' ? file : 7 - file;
+  const row = orientation === 'white' ? 7 - rank : rank;
+
+  const pillPos: CSSProperties =
+    col === 0
+      ? { left: 0 }
+      : col === 7
+        ? { right: 0 }
+        : { left: '50%', transform: 'translateX(-50%)' };
+
+  return (
+    <div
+      className="cb-brilliant-transient absolute pointer-events-none"
+      style={{ left: pos.left, top: pos.top, width: '12.5%', height: '12.5%', zIndex: 12 }}
+      aria-hidden="true"
+    >
+      <div
+        className="absolute"
+        style={{
+          ...(row === 0 ? { top: '92%' } : { bottom: '92%' }),
+          whiteSpace: 'nowrap',
+          ...pillPos,
+        }}
+      >
+        <div
+          style={{
+            backgroundColor: '#fff',
+            color: '#1a9e83',
+            fontWeight: 800,
+            fontSize: '3.4cqw',
+            lineHeight: 1.15,
+            padding: '1cqw 2.8cqw',
+            borderRadius: 999,
+            boxShadow: '0 2px 8px rgba(0,0,0,0.35)',
+            animation: 'cb-mate-pill 1.8s ease-out both',
+          }}
+        >
+          Brilliant
+        </div>
       </div>
     </div>
   );

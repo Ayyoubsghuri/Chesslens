@@ -9,9 +9,9 @@ interface MoveListProps {
 }
 
 const QUALITY_META: Record<MoveQuality, { color: string; bg: string; icon: any; label: string }> = {
-  brilliant: { color: '#1baca6', bg: '#1baca620', icon: Sparkles, label: 'Brilliant' },
+  brilliant: { color: '#26c2a3', bg: '#26c2a320', icon: Sparkles, label: 'Brilliant' },
   best:      { color: '#81b64c', bg: '#81b64c20', icon: Star, label: 'Best' },
-  great:     { color: '#7cb342', bg: '#7cb34220', icon: ThumbsUp, label: 'Great' },
+  great:     { color: '#749bbf', bg: '#749bbf20', icon: ThumbsUp, label: 'Great' },
   excellent: { color: '#96bc4b', bg: '#96bc4b20', icon: CheckCircle2, label: 'Excellent' },
   good:      { color: '#95b3b8', bg: '#95b3b820', icon: Minus, label: 'Good' },
   book:      { color: '#a88865', bg: '#a8886520', icon: BookOpen, label: 'Book' },
@@ -56,10 +56,18 @@ function MoveButton({ move, isCurrent, onSelect }: { move: AnalyzedMove; isCurre
     >
       <span
         className="w-4 h-4 rounded-full flex items-center justify-center shrink-0"
-        style={{ backgroundColor: meta.bg }}
+        style={{ backgroundColor: move.quality === 'brilliant' || move.quality === 'great' ? meta.color : meta.bg }}
         title={meta.label}
       >
-        <Icon size={10} style={{ color: meta.color }} />
+        {move.quality === 'brilliant' ? (
+          // Chess.com-style solid teal circle with a white "!!"
+          <span className="text-[8px] font-black text-white leading-none tracking-tighter">!!</span>
+        ) : move.quality === 'great' ? (
+          // Solid blue circle with a white "!"
+          <span className="text-[9px] font-black text-white leading-none">!</span>
+        ) : (
+          <Icon size={10} style={{ color: meta.color }} />
+        )}
       </span>
       <span className="font-mono">{move.san}</span>
       {move.evalAfter && (
