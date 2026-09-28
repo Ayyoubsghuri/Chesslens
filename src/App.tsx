@@ -7,6 +7,7 @@ import { CoachPanel } from '@/components/CoachPanel';
 import { DrillsPanel } from '@/components/DrillsPanel';
 import { analyzeGame, computeAccuracy, countByQuality } from '@/lib/analysis';
 import { getMoveHistory } from '@/lib/pgn';
+import { getGameOutcome } from '@/lib/outcome';
 import { loadGames, saveGames, loadAnalyses, saveAnalysis, loadSettings, saveSettings } from '@/lib/storage';
 import type { ImportedGame, AnalysisResult, AnalyzedMove, Settings as SettingsType, View } from '@/lib/types';
 import { Loader2, Plus, Settings as SettingsIcon, BarChart3, GraduationCap, Target, Crown as ChessIcon, Upload } from 'lucide-react';
@@ -32,6 +33,7 @@ function App() {
 
   const selectedGame = games.find(g => g.id === selectedGameId) || null;
   const selectedAnalysis = selectedGameId ? analyses[selectedGameId] : null;
+  const outcome = selectedGame ? getGameOutcome(selectedGame) : null;
 
   const handleImport = useCallback((imported: ImportedGame[]) => {
     setGames(prev => {
@@ -156,6 +158,17 @@ function App() {
                   <h2 className="text-xl font-bold">{selectedGame.white} vs {selectedGame.black}</h2>
                   <div className="flex items-center gap-3 text-sm text-ink-400 mt-0.5">
                     <span>{selectedGame.result}</span>
+                    {outcome && outcome.winner !== null && (
+                      <span
+                        className={`chip ${
+                          outcome.winner === 'draw'
+                            ? 'bg-ink-700 text-ink-300'
+                            : 'bg-brand-500/20 text-brand-300'
+                        }`}
+                      >
+                        {outcome.winner === 'draw' ? '' : '🏆 '}{outcome.label}
+                      </span>
+                    )}
                     {selectedGame.eco && <span>· {selectedGame.eco}</span>}
                     {selectedGame.timeControl && <span>· {selectedGame.timeControl}</span>}
                   </div>
@@ -261,7 +274,7 @@ function GameLibrary({ games, analyses, onSelect }: { games: ImportedGame[]; ana
             >
               <div className="flex items-center justify-between mb-1">
                 <span className="font-medium text-sm">{g.white} vs {g.black}</span>
-                <span className="text-xs text-ink-400">{g.result}</span>
+                <span className="text-xs text-ink-400">{getGameOutcome(g).short}</span>
               </div>
               <div className="flex items-center gap-2 text-xs text-ink-400">
                 {g.date && <span>{g.date}</span>}
