@@ -1,63 +1,74 @@
 import type { EngineEval } from './types';
 
 /**
-  ── One-time setup ──────────────────────────────────────────────────────
-  This used to call https://stockfish.online/api — which has no CORS
-  headers for arbitrary browser origins and rate-limits aggressively (429s).
-  Instead we run Stockfish locally, in-browser, inside a Web Worker.
- 
-  1. npm install stockfish
+ * ── Setup (unchanged) ────────────────────────────────────────────────────
+ *   npm install stockfish
+ *   mkdir -p public/stockfish
+ *   cp node_modules/stockfish/stockfish-18-lite-single.js   public/stockfish/
+ *   cp node_modules/stockfish/stockfish-18-lite-single.wasm public/stockfish/
  *
- * 2. Copy the engine files into your `public/` folder so they're served as
- *    plain static assets. Web Worker + WASM loading is finicky across
- *    bundlers (Vite tries to fingerprint/bundle worker scripts and their
- *    relative .wasm lookups break), so serving them unbundled from
- *    `public/` sidesteps that entirely — this is the same approach lichess
- *    and most chess web apps use.
+ * ── What changed ─────────────────────────────────────────────────────────
+ * The old version had ONE worker and a serial queue, so a game was analyzed
+ * one position at a time on one CPU core. Positions in a game are
+ * independent (all FENs are known from the PGN), so we now run a POOL of
+ * single-threaded workers and search different positions at the same time.
  *
- *      mkdir -p public/stockfish
- *      cp node_modules/stockfish/stockfish-18-lite-single.js   public/stockfish/
- *      cp node_modules/stockfish/stockfish-18-lite.wasm public/stockfish/
- *
- *     (This package ships stockfish-18-lite.js/.wasm directly in its root,
-    not under src/ — check node_modules/stockfish/ if your version differs.
-     Keep the .js and .wasm together with matching filenames; the glue code
-     loads the .wasm by name relative to itself.)
- 
-  3. stockfish-18-lite is a single-threaded NNUE build, so no extra
-     cross-origin-isolation (COOP/COEP) server headers are needed — those
-     are only required for multi-threaded builds.
+ * The single-threaded build is used on purpose: no SharedArrayBuffer, so no
+ * COOP/COEP headers needed. At shallow depths (~12), N workers each
+ * searching a different position scale far better than N threads all
+ * fighting over one position.
  * ────────────────────────────────────────────────────────────────────────
  */
 const ENGINE_SCRIPT_PATH = `${import.meta.env.BASE_URL}stockfish/stockfish-18-lite-single.js`;
 const READY_TIMEOUT_MS = 10_000;
 const SEARCH_TIMEOUT_MS = 30_000;
+const HASH_MB_PER_WORKER = 16;
 
-class Engine {
-  private worker: Worker | null = null;
-  private readyPromise: Promise<void> | null = null;
-  // Serializes searches — a single Stockfish instance can only run one `go` at a time.
-  private queue: Promise<unknown> = Promise.resolve();
+// Leave one core for the UI thread; cap at 4 (each worker holds its own WASM
+// instance + hash, so more than that costs memory for diminishing returns).
+const MAX_WORKERS = Math.max(
+  1,
+  Math.min(4, (typeof navigator !== 'undefined' ? navigator.hardwareConcurrency || 2 : 2) - 1),
+);
 
-  private getWorker(): Worker {
-    if (this.worker) return this.worker;
+/** One Stockfish WASM instance. Runs one command sequence at a time. */
+class EngineWorker {
+  dead = false;
+  private worker: Worker;
+  private ready: Promise<void>;
+  // Serializes work on THIS worker (a single instance can only `go` once at a time).
+  private tail: Promise<unknown> = Promise.resolve();
 
+  constructor() {
     if (typeof Worker === 'undefined') {
       throw new Error('Web Workers are not available in this environment.');
     }
+    this.worker = new Worker(ENGINE_SCRIPT_PATH);
+    this.ready = this.handshake();
+    this.ready.catch(() => this.kill());
+  }
 
-    const worker = new Worker(ENGINE_SCRIPT_PATH);
-    this.worker = worker;
+  kill() {
+    this.dead = true;
+    this.worker.terminate();
+  }
 
-    this.readyPromise = new Promise<void>((resolve, reject) => {
+  private handshake(): Promise<void> {
+    const worker = this.worker;
+    return new Promise<void>((resolve, reject) => {
       const timeout = setTimeout(() => {
         cleanup();
-        reject(new Error(`Stockfish did not respond within ${READY_TIMEOUT_MS}ms. Check that ${ENGINE_SCRIPT_PATH} exists in your public/ folder.`));
+        reject(
+          new Error(
+            `Stockfish did not respond within ${READY_TIMEOUT_MS}ms. Check that ${ENGINE_SCRIPT_PATH} exists in your public/ folder.`,
+          ),
+        );
       }, READY_TIMEOUT_MS);
 
       const onMessage = (e: MessageEvent) => {
         const line = String(e.data);
         if (line === 'uciok') {
+          worker.postMessage(`setoption name Hash value ${HASH_MB_PER_WORKER}`);
           worker.postMessage('isready');
         } else if (line === 'readyok') {
           cleanup();
@@ -66,7 +77,6 @@ class Engine {
       };
       const onError = (e: ErrorEvent) => {
         cleanup();
-        this.worker = null;
         reject(new Error(`Failed to load Stockfish worker at ${ENGINE_SCRIPT_PATH}: ${e.message || 'unknown error'}`));
       };
       function cleanup() {
@@ -79,78 +89,75 @@ class Engine {
       worker.addEventListener('error', onError);
       worker.postMessage('uci');
     });
-
-    return worker;
   }
 
-  private async waitUntilReady(): Promise<void> {
-    this.getWorker();
-    await this.readyPromise;
-  }
-
-  /** Clear the engine's hash table so every analysis starts from a clean state. */
-  async reset(): Promise<void> {
-    const run = this.queue.then(() => this.runReset());
-    // Never let one failed/timed-out reset wedge the queue for the next caller.
-    this.queue = run.catch(() => undefined);
+  private enqueue<T>(job: () => Promise<T>): Promise<T> {
+    const run = this.tail.then(job);
+    // A failed job must never wedge the queue for the next one.
+    this.tail = run.catch(() => undefined);
     return run;
   }
 
-  private async runReset(): Promise<void> {
-    await this.waitUntilReady();
-    const worker = this.worker!;
-
-    return new Promise<void>((resolve, reject) => {
-      const timeout = setTimeout(() => {
-        cleanup();
-        reject(new Error(`Engine reset timed out`));
-      }, READY_TIMEOUT_MS);
-
-      const onMessage = (e: MessageEvent) => {
-        if (String(e.data) === 'readyok') {
+  /** Clear this worker's hash table (fresh state for a new game). */
+  newGame(): Promise<void> {
+    return this.enqueue(async () => {
+      await this.ready;
+      const worker = this.worker;
+      await new Promise<void>((resolve, reject) => {
+        const timeout = setTimeout(() => {
           cleanup();
-          resolve();
+          reject(new Error('Engine reset timed out'));
+        }, READY_TIMEOUT_MS);
+        const onMessage = (e: MessageEvent) => {
+          if (String(e.data) === 'readyok') {
+            cleanup();
+            resolve();
+          }
+        };
+        function cleanup() {
+          clearTimeout(timeout);
+          worker.removeEventListener('message', onMessage);
         }
-      };
-
-      function cleanup() {
-        clearTimeout(timeout);
-        worker.removeEventListener('message', onMessage);
-      }
-
-      worker.addEventListener('message', onMessage);
-      worker.postMessage('ucinewgame');
-      worker.postMessage('isready');
+        worker.addEventListener('message', onMessage);
+        worker.postMessage('ucinewgame');
+        worker.postMessage('isready');
+      });
     });
   }
 
-  async analyze(fen: string, depth: number): Promise<EngineEval> {
-    const run = this.queue.then(() => this.runSearch(fen, depth));
-    // Never let one failed/timed-out search wedge the queue for the next caller.
-    this.queue = run.catch(() => undefined);
-    return run;
+  search(fen: string, depth: number): Promise<EngineEval> {
+    return this.enqueue(async () => {
+      await this.ready;
+      return this.runSearch(fen, depth);
+    });
   }
 
-  private async runSearch(fen: string, depth: number): Promise<EngineEval> {
-    await this.waitUntilReady();
-    const worker = this.worker!;
+  private runSearch(fen: string, depth: number): Promise<EngineEval> {
+    const worker = this.worker;
 
     return new Promise<EngineEval>((resolve, reject) => {
-      let bestMove: string | null = null;
       let continuation = '';
       let evaluation: number | null = null;
       let mate: number | null = null;
       let reachedDepth = depth;
 
-      // UCI scores are always "from the perspective of the side to move".
-      // The rest of the app (evalToPawns, accuracy calc, the eval bar) expects
-      // a consistent White-positive convention, so flip sign when Black is to move.
+      // UCI scores are from the side to move's perspective; the rest of the
+      // app expects White-positive, so flip when Black is to move.
       const sideToMoveSign = fen.split(' ')[1] === 'b' ? -1 : 1;
 
       const timeout = setTimeout(() => {
         cleanup();
+        // A timed-out search leaves the instance mid-`go`; it can't be trusted
+        // again, so kill it. The pool spawns a replacement on demand.
+        this.kill();
         reject(new Error(`Engine analysis timed out after ${SEARCH_TIMEOUT_MS}ms`));
       }, SEARCH_TIMEOUT_MS);
+
+      const onError = (e: ErrorEvent) => {
+        cleanup();
+        this.kill();
+        reject(new Error(`Stockfish worker crashed: ${e.message || 'unknown error'}`));
+      };
 
       const onMessage = (e: MessageEvent) => {
         const line = String(e.data);
@@ -173,7 +180,7 @@ class Engine {
           if (pvMatch) continuation = pvMatch[1].trim();
         } else if (line.startsWith('bestmove')) {
           const parts = line.split(/\s+/);
-          bestMove = parts[1] && parts[1] !== '(none)' ? parts[1] : null;
+          const bestMove = parts[1] && parts[1] !== '(none)' ? parts[1] : null;
           cleanup();
           resolve({
             fen,
@@ -190,25 +197,120 @@ class Engine {
       function cleanup() {
         clearTimeout(timeout);
         worker.removeEventListener('message', onMessage);
+        worker.removeEventListener('error', onError);
       }
 
       worker.addEventListener('message', onMessage);
+      worker.addEventListener('error', onError);
       worker.postMessage(`position fen ${fen}`);
       worker.postMessage(`go depth ${depth}`);
     });
   }
 }
 
-// One engine instance for the whole app's lifetime — spinning up a new WASM
-// worker per call would be slow and would break search serialization.
-const engine = new Engine();
+/**
+ * Lazily grows up to MAX_WORKERS. Callers just `await pool.analyze(...)`;
+ * work beyond the worker count waits in a FIFO queue. Dead workers (crash /
+ * timeout) are dropped and replaced automatically.
+ */
+class EnginePool {
+  private workers: EngineWorker[] = [];
+  private idle: EngineWorker[] = [];
+  private waiters: Array<(w: EngineWorker) => void> = [];
 
-export async function analyzePosition(fen: string, depth: number): Promise<EngineEval> {
-  return engine.analyze(fen, depth);
+  private acquire(): Promise<EngineWorker> {
+    while (this.idle.length > 0) {
+      const w = this.idle.pop()!;
+      if (!w.dead) return Promise.resolve(w);
+    }
+    this.workers = this.workers.filter((w) => !w.dead);
+    if (this.workers.length < MAX_WORKERS) {
+      const w = new EngineWorker();
+      this.workers.push(w);
+      return Promise.resolve(w);
+    }
+    return new Promise<EngineWorker>((resolve) => this.waiters.push(resolve));
+  }
+
+  private release(w: EngineWorker) {
+    if (w.dead) {
+      this.workers = this.workers.filter((x) => x !== w);
+      // A slot just opened up — if someone is waiting, spawn a replacement for them.
+      const next = this.waiters.shift();
+      if (next) {
+        try {
+          const nw = new EngineWorker();
+          this.workers.push(nw);
+          next(nw);
+        } catch {
+          // Can't spawn; leave the waiter's promise pending is worse than
+          // failing, so re-queue is not possible here — surface via timeout path.
+        }
+      }
+      return;
+    }
+    const next = this.waiters.shift();
+    if (next) next(w);
+    else this.idle.push(w);
+  }
+
+  async analyze(fen: string, depth: number): Promise<EngineEval> {
+    const w = await this.acquire();
+    try {
+      return await w.search(fen, depth);
+    } finally {
+      this.release(w);
+    }
+  }
+
+  async reset(): Promise<void> {
+    await Promise.all(this.workers.filter((w) => !w.dead).map((w) => w.newGame()));
+  }
 }
 
-export async function resetEngine(): Promise<void> {
-  return engine.reset();
+const pool = new EnginePool();
+
+/** Single position. */
+export function analyzePosition(fen: string, depth: number): Promise<EngineEval> {
+  return pool.analyze(fen, depth);
+}
+
+/**
+ * Analyze many positions at once: all FENs are queued and the worker pool
+ * searches several in parallel.
+ *
+ * Returns results in the SAME ORDER as `fens`; a position that failed comes
+ * back as `null`. `onProgress(done, total)` fires as each position finishes.
+ */
+export async function analyzePositions(
+  fens: string[],
+  depth: number,
+  onProgress?: (done: number, total: number) => void,
+): Promise<(EngineEval | null)[]> {
+  const total = fens.length;
+  const results: (EngineEval | null)[] = new Array(total).fill(null);
+  let done = 0;
+  const tick = () => onProgress?.(++done, total);
+
+  await Promise.all(
+    fens.map((fen, i) =>
+      pool
+        .analyze(fen, depth)
+        .then((r) => {
+          results[i] = r;
+        })
+        .catch(() => {
+          results[i] = null;
+        })
+        .then(tick),
+    ),
+  );
+  return results;
+}
+
+/** Clear every worker's hash table (fresh state for a new game). */
+export function resetEngine(): Promise<void> {
+  return pool.reset();
 }
 
 export function evalToPawns(ev: EngineEval): number {
@@ -219,18 +321,8 @@ export function evalToPawns(ev: EngineEval): number {
 }
 
 /**
- * White's win probability (0–100), using the standard Lichess/chess.com
- * win% curve: winPercent = 50 + 50 * (2 / (1 + exp(-0.00368208 * cp)) - 1).
- *
- * ── FIX ──────────────────────────────────────────────────────────────────
- * `ev.evaluation` is stored in PAWNS (we divide UCI's `score cp` by 100 when
- * parsing it above), but this formula's constant is calibrated for
- * CENTIPAWNS. The old code multiplied pawns directly by -0.004 — 100x too
- * small — so the sigmoid never moved off ~50%, no matter the eval. That
- * silently broke every win%-based calculation (miss detection, "great"/
- * "brilliant" thresholds, accuracy). Converting back to centipawns first
- * fixes it.
- * ──────────────────────────────────────────────────────────────────────────
+ * White's win probability (0–100). `ev.evaluation` is in PAWNS, but the
+ * Lichess/chess.com constant is calibrated for CENTIPAWNS, so convert first.
  */
 export function evalToWinChance(ev: EngineEval): number {
   if (ev.mate !== null) {

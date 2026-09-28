@@ -68,7 +68,7 @@ function App() {
       };
       setAnalyses(prev => {
         const updated = { ...prev, [selectedGame.id]: result };
-        saveAnalysis(selectedGame.id, result);
+        saveAnalysis(selectedGame.id, result, settings.analysisDepth);
         return updated;
       });
     } catch (e) {

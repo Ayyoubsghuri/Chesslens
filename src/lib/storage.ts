@@ -22,7 +22,7 @@ const SETTINGS_KEY = 'chesslens:settings';
  * force a recompute instead of silently serving retired results.
  * ──────────────────────────────────────────────────────────────────────────
  */
-const ANALYSIS_SCHEMA_VERSION = 2;
+const ANALYSIS_SCHEMA_VERSION = 3;
 
 interface StoredAnalysis extends AnalysisResult {
   __schemaVersion?: number;
@@ -68,14 +68,22 @@ export function loadAnalyses(): Record<string, AnalysisResult> {
   } catch { return {}; }
 }
 
-export function saveAnalysis(gameId: string, analysis: AnalysisResult, analysisDepth: number): void {
+export function saveAnalysis(
+  gameId: string,
+  analysis: AnalysisResult,
+  analysisDepth: number,
+): void {
   try {
     // Read the raw (unfiltered) store directly rather than via loadAnalyses(),
     // so a save doesn't accidentally purge other games' still-current entries
     // due to some unrelated read-time issue.
     const raw = localStorage.getItem(ANALYSIS_KEY);
     const all: Record<string, StoredAnalysis> = raw ? JSON.parse(raw) : {};
-    all[gameId] = { ...analysis, __schemaVersion: ANALYSIS_SCHEMA_VERSION, __analysisDepth: analysisDepth };
+    all[gameId] = {
+      ...analysis,
+      __schemaVersion: ANALYSIS_SCHEMA_VERSION,
+      __analysisDepth: analysisDepth,
+    };
     localStorage.setItem(ANALYSIS_KEY, JSON.stringify(all));
   } catch {}
 }

@@ -1,8 +1,9 @@
 import { Chess } from 'chess.js';
 import type { AnalyzedMove, EngineEval, ImportedGame, MoveQuality, OpeningInfo, PieceColor } from './types';
-import { analyzePosition, evalToPawns, evalToWinChance, resetEngine } from './engine';
+import { analyzePositions, evalToPawns, evalToWinChance, resetEngine } from './engine';
 import { getMoveHistory } from './pgn';
 import { BookWalker } from './openings';
+import { detectSacrifice } from './sacrifice';
 
 /**
  * Tuned to land close to Chess.com Game Review with in-browser Stockfish lite.
@@ -45,6 +46,7 @@ export function classifyMove(
   color: PieceColor,
   isBook: boolean,
   san: string,
+  fenBefore: string,
 ): { quality: MoveQuality; delta: number; isBest: boolean; evalLoss: number; winPercentLoss: number } {
   const beforePawns = evalToPawns(evalBefore);
   const afterPawns = evalToPawns(evalAfter);
@@ -78,15 +80,22 @@ export function classifyMove(
     return { quality: 'miss', delta, isBest, evalLoss, winPercentLoss };
   }
 
-  // Brilliant / Great (rare; only on best moves)
-  if (isBest) {
-    const isSacrifice =
-      san.includes('x') &&
-      winBefore < 60 &&
-      winAfter - winBefore > 15 &&
-      rawWinLoss < 0.5;
-    if (isSacrifice) return { quality: 'brilliant', delta, isBest, evalLoss, winPercentLoss };
+  // Brilliant: a real material sacrifice that keeps (or gains) the advantage.
+  //  - the move gives up material once the engine's line plays out (>= 2 pts)
+  //  - it is the best move, or within 1.5 win% of it (depth-12 can disagree
+  //    with itself on top-1 in sharp positions)
+  //  - the mover wasn't already winning big or had a forced mate (no credit
+  //    for sacrificing when everything wins)
+  //  - the mover is still OK afterwards (>= 50% win chance)
+  const nearBest = isBest || rawWinLoss < 1.5;
+  if (nearBest && !hadForcedWin && winBefore < 85 && winAfter >= 50) {
+    if (detectSacrifice(fenBefore, playedMove, evalAfter.continuation, color)) {
+      return { quality: 'brilliant', delta, isBest, evalLoss, winPercentLoss };
+    }
+  }
 
+  // Great (rare; only on best moves)
+  if (isBest) {
     const foundCrushing = winBefore < 55 && winAfter > 90 && rawWinLoss < 0.5;
     if (foundCrushing) return { quality: 'great', delta, isBest, evalLoss, winPercentLoss };
   }
@@ -100,6 +109,19 @@ export function classifyMove(
   return { quality: 'blunder', delta, isBest, evalLoss, winPercentLoss };
 }
 
+/**
+ * Analyze a whole game.
+ *
+ * Speed-ups vs. the old sequential version:
+ *   1. Every position is searched exactly ONCE. Move i's "before" eval is
+ *      move i-1's "after" eval (same position), so we no longer search each
+ *      position twice.
+ *   2. All positions are known up front from the PGN, so they're handed to
+ *      the engine worker pool in one batch and searched in parallel.
+ *
+ * Results are identical to the old code at the same depth; only the time
+ * taken changes. `onProgress(done, total)` counts positions (moves + 1).
+ */
 export async function analyzeGame(
   game: ImportedGame,
   depth: number,
@@ -109,20 +131,31 @@ export async function analyzeGame(
   const history = getMoveHistory(game.pgn);
   if (history.length === 0) return [];
 
-  const chess = new Chess();
+  // Pass 1: walk the game once (cheap, no engine) to collect every position.
+  // fens[0] = start position, fens[i + 1] = position after move i.
+  const walker = new Chess();
+  const fens: string[] = [walker.fen()];
+  for (const move of history) {
+    walker.move(move.san);
+    fens.push(walker.fen());
+  }
+
+  // Pass 2: search all positions in parallel across the worker pool.
+  // Results come back in order; a position that failed is null.
+  const evals = await analyzePositions(fens, depth, onProgress);
+
+  // Pass 3: classify (pure CPU, effectively instant).
   const analyzed: AnalyzedMove[] = [];
   const book = new BookWalker();
 
   for (let i = 0; i < history.length; i++) {
-    const fenBefore = chess.fen();
-    const evalBefore = await analyzePosition(fenBefore, depth).catch(() => null);
-
     const move = history[i];
-    chess.move(move.san);
-    const fenAfter = chess.fen();
-    const evalAfter = await analyzePosition(fenAfter, depth).catch(() => null);
-
     const color: PieceColor = move.color;
+    const fenBefore = fens[i];
+    const fenAfter = fens[i + 1];
+    const evalBefore = evals[i];
+    const evalAfter = evals[i + 1];
+
     const isBook = book.step(move.lan);
     const opening = isBook ? book.current() : null;
 
@@ -134,6 +167,7 @@ export async function analyzeGame(
         color,
         isBook,
         move.san,
+        fenBefore,
       );
       analyzed.push({
         index: i,
@@ -169,8 +203,6 @@ export async function analyzeGame(
         opening,
       });
     }
-
-    onProgress?.(i + 1, history.length);
   }
 
   return analyzed;

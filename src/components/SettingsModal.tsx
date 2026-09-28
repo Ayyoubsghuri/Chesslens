@@ -113,8 +113,7 @@ export function SettingsModal({ settings, onSave, onClose }: SettingsModalProps)
               <span>{DEPTH_MAX} max</span>
             </div>
             <p className="text-xs text-ink-400 mt-1.5">
-              Stockfish lite is limited to depth {DEPTH_MAX}. Higher values can crash the engine
-              (RuntimeError: unreachable). Use 12–15 for speed, 16–18 for stronger analysis.
+              Runs Stockfish lite locally in your browser. It is limited to depth {DEPTH_MAX}; higher values can crash the engine (RuntimeError: unreachable). Use 12–15 for speed, 16–18 for stronger analysis.
             </p>
           </div>
         </div>

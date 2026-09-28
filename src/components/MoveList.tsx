@@ -1,6 +1,6 @@
 import type { AnalyzedMove, MoveQuality } from '@/lib/types';
 import { formatEval } from '@/lib/engine';
-import { CheckCircle2, ThumbsUp, Minus, BookOpen, AlertCircle, AlertTriangle, XCircle, Star, HelpCircle } from 'lucide-react';
+import { CheckCircle2, ThumbsUp, Minus, BookOpen, AlertCircle, AlertTriangle, XCircle, Star, HelpCircle, Sparkles } from 'lucide-react';
 
 interface MoveListProps {
   moves: AnalyzedMove[];
@@ -9,6 +9,7 @@ interface MoveListProps {
 }
 
 const QUALITY_META: Record<MoveQuality, { color: string; bg: string; icon: any; label: string }> = {
+  brilliant: { color: '#1baca6', bg: '#1baca620', icon: Sparkles, label: 'Brilliant' },
   best:      { color: '#81b64c', bg: '#81b64c20', icon: Star, label: 'Best' },
   great:     { color: '#7cb342', bg: '#7cb34220', icon: ThumbsUp, label: 'Great' },
   excellent: { color: '#96bc4b', bg: '#96bc4b20', icon: CheckCircle2, label: 'Excellent' },
@@ -44,7 +45,8 @@ export function MoveList({ moves, currentIndex, onSelect }: MoveListProps) {
 }
 
 function MoveButton({ move, isCurrent, onSelect }: { move: AnalyzedMove; isCurrent: boolean; onSelect: (i: number) => void }) {
-  const meta = QUALITY_META[move.quality];
+  // Fallback so an unexpected quality value can never crash the list.
+  const meta = QUALITY_META[move.quality] ?? QUALITY_META.good;
   const Icon = meta.icon;
 
   return (

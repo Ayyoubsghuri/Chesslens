@@ -599,6 +599,7 @@ export function AnalysisView({ analysis, currentIndex, onIndexChange, onCoachExp
         step.color,
         false,
         step.san,
+        step.fenBefore,
       );
       updateStepReview(step.id, {
         status: 'done',
