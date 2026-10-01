@@ -136,32 +136,8 @@ export function ChessBoard({
     }
   }, [fen]);
 
-  // Checkmate restyle: the pieces stay on their squares while their look cycles through several
-  // styles (each swap is a quick fade), and the board is tinted alongside. `style` 0 = normal.
-  const [mateFx, setMateFx] = useState<{ style: number; anim: '' | 'in' | 'out' }>({ style: 0, anim: '' });
-  useEffect(() => {
-    if (!gameState.isCheckmate) {
-      setMateFx({ style: 0, anim: '' });
-      return;
-    }
-    const step = (MATE_STYLE_MS - 2 * MATE_FADE_MS) / MATE_STYLE_COUNT;
-    const timers: number[] = [];
-    const at = (ms: number, fx: { style: number; anim: '' | 'in' | 'out' }) =>
-      timers.push(window.setTimeout(() => setMateFx(fx), ms));
-    setMateFx({ style: 0, anim: 'out' });
-    for (let k = 1; k <= MATE_STYLE_COUNT; k++) {
-      const start = MATE_FADE_MS + (k - 1) * step;
-      at(start, { style: k, anim: 'in' });
-      at(start + step - MATE_FADE_MS, { style: k, anim: 'out' });
-    }
-    at(MATE_FADE_MS + MATE_STYLE_COUNT * step, { style: 0, anim: 'in' });
-    at(MATE_STYLE_MS, { style: 0, anim: '' });
-    return () => timers.forEach((t) => window.clearTimeout(t));
-  }, [gameState.isCheckmate, fen]);
-  const mateClass =
-    (mateFx.anim ? ' cb-mate-on' : '') +
-    (mateFx.style ? ` cb-pstyle-${mateFx.style}` : '') +
-    (mateFx.anim ? ` cb-anim-${mateFx.anim}` : '');
+  // Checkmate no longer restyles the board/pieces: the checkmated king burns and the winner freezes.
+  const mateClass = '';
 
   // Easter eggs: press F for a fist that smashes the board, D for a dragon that burns it.
   // They are triggered by the person pressing a key, so they play even with reduced motion on.
@@ -364,7 +340,7 @@ export function ChessBoard({
 
 
   const winnerName = gameState.turnColor === 'w' ? blackName : whiteName;
-  const showCheckmateOverlay = showCelebration && gameState.isCheckmate && !celebrationDismissed;
+  const showCheckmateOverlay = SHOW_MATE_CARD && showCelebration && gameState.isCheckmate && !celebrationDismissed;
 
   return (
     <div
@@ -390,33 +366,18 @@ export function ChessBoard({
           boxShadow: '0 12px 30px rgba(0,0,0,0.35)',
         }}
       />
-      {gameState.checkedKingSquare && (
+      {gameState.checkedKingSquare && !gameState.isCheckmate && (
         <CheckRing
           square={gameState.checkedKingSquare}
           orientation={orientation}
-          severe={gameState.isCheckmate}
+          severe={false}
         />
       )}
       {gameState.isCheckmate && gameState.checkedKingSquare && (
-        <CheckmateKingAnimation
-          key={fen}
-          square={gameState.checkedKingSquare}
-          orientation={orientation}
-        />
-      )}
-      {gameState.isCheckmate && gameState.checkedKingSquare && (
-        <KingResultBadge
-          square={gameState.checkedKingSquare}
-          orientation={orientation}
-          variant="loser"
-        />
+        <BurningKing key={`fire-${fen}`} square={gameState.checkedKingSquare} orientation={orientation} />
       )}
       {gameState.isCheckmate && gameState.winnerKingSquare && (
-        <KingResultBadge
-          square={gameState.winnerKingSquare}
-          orientation={orientation}
-          variant="winner"
-        />
+        <FrozenKing key={`ice-${fen}`} square={gameState.winnerKingSquare} orientation={orientation} />
       )}
       {showBadge && (
         <BoardBadge square={badgeSquare} quality={moveQuality} orientation={orientation} />
@@ -537,6 +498,35 @@ export function ChessBoard({
         }
         /* style 6: negative (light pieces dark, dark pieces light) */
         .cb-pstyle-6 .cg-wrap piece { filter: invert(1) hue-rotate(180deg); }
+        /* Checkmate: burning checkmated king, frozen winner */
+        @keyframes cb-kfx-in { from { opacity: 0; transform: scale(0.7); } to { opacity: 1; transform: scale(1); } }
+        @keyframes cb-ice-glow {
+          0%, 100% { box-shadow: 0 0 10px 2px rgba(120, 200, 255, 0.8), inset 0 0 10px rgba(255, 255, 255, 0.8); }
+          50% { box-shadow: 0 0 18px 6px rgba(150, 225, 255, 1), inset 0 0 14px rgba(255, 255, 255, 1); }
+        }
+        @keyframes cb-snow {
+          0% { transform: translateY(-10%) rotate(0deg); opacity: 0; }
+          20% { opacity: 1; }
+          100% { transform: translateY(120%) rotate(180deg); opacity: 0; }
+        }
+        @keyframes cb-flame {
+          0%, 100% { transform: scaleY(0.92) scaleX(1) skewX(-3deg); }
+          25% { transform: scaleY(1.12) scaleX(0.95) skewX(3deg); }
+          50% { transform: scaleY(0.98) scaleX(1.05) skewX(-2deg); }
+          75% { transform: scaleY(1.15) scaleX(0.96) skewX(4deg); }
+        }
+        @keyframes cb-fire-glow { 0%, 100% { opacity: 0.75; } 50% { opacity: 1; } }
+        @keyframes cb-ember {
+          0% { transform: translateY(0) scale(1); opacity: 0; }
+          15% { opacity: 1; }
+          100% { transform: translateY(-190%) scale(0.3); opacity: 0; }
+        }
+        @keyframes cb-shah-pop {
+          0% { opacity: 0; transform: translateY(8px) scale(0.5); }
+          60% { opacity: 1; transform: translateY(0) scale(1.12); }
+          100% { opacity: 1; transform: translateY(0) scale(1); }
+        }
+        @media (prefers-reduced-motion: reduce) { .cb-kfx, .cb-kfx * { animation: none !important; } }
         ${MATE_PIECE_CSS}
         @media (prefers-reduced-motion: reduce) {
           .cb-anim-out .cg-wrap piece,
@@ -651,10 +641,11 @@ function CheckRing({
 
 /** Checkmate sequence timing (seconds). Badges and the celebration card wait for it. */
 const MATE_FX_S = 2;
+/** The dark "Checkmate - X wins!" card. Off so the burning / frozen kings stay visible. */
+const SHOW_MATE_CARD = false;
 /** Total length of the checkmate restyle (ms), each swap's fade (ms), and number of piece styles. */
 const MATE_STYLE_MS = 6000;
 const MATE_FADE_MS = 150;
-const MATE_STYLE_COUNT = 6;
 
 /**
  * Alternate piece sets for the checkmate restyle. Styles 1, 3 and 4 draw figurine glyphs
@@ -718,160 +709,6 @@ const CRACKS = [
   'M31 46 L28 36 L20 31',
 ];
 
-const MATE_BADGE_DELAY_S = 1.6;
-
-const RESULT_BADGE_COLORS = { winner: '#81b64c', loser: '#e02828' } as const;
-
-/** Solid white crown, shown on the winning king. */
-function CrownIcon() {
-  return (
-    <svg viewBox="0 0 24 24" width="100%" height="100%" aria-hidden="true">
-      <path
-        d="M5 8.6L9.2 11.1L12 6L14.8 11.1L19 8.6L19 16.5Q12 19.2 5 16.5Z"
-        fill="#fff"
-        stroke="#fff"
-        strokeWidth=".7"
-        strokeLinejoin="round"
-      />
-    </svg>
-  );
-}
-
-/** Toppled king silhouette, shown on the checkmated king. */
-function ToppledKingIcon({ fill = '#fff' }: { fill?: string }) {
-  return (
-    <svg viewBox="0 0 24 24" width="100%" height="100%" aria-hidden="true">
-      <g fill={fill} fillRule="evenodd">
-        <rect x="4.4" y="11.15" width="4.2" height="1.7" rx=".3" />
-        <rect x="5.3" y="9.6" width="1.7" height="4.8" rx=".3" />
-        <path d="M8.3 12C8.4 8 9.7 4.9 12.2 4.7C14 4.6 15.2 5.6 15.7 7L15.7 17C15.2 18.4 14 19.4 12.2 19.3C9.7 19.1 8.4 16 8.3 12Z M10.3 8.7L12.7 9.9L10.6 11.4Z M10.3 15.3L12.7 14.1L10.6 12.6Z" />
-        <path d="M15.5 8L19.6 6.6L19.6 17.4L15.5 16Z" />
-      </g>
-    </svg>
-  );
-}
-
-/**
- * Plays on the checkmated king's square: the square flashes red (the real piece stays
- * visible underneath), the king topples onto its side, and a "Checkmate" pill pops in.
- * Remount it (via `key`) to replay.
- */
-function CheckmateKingAnimation({
-  square,
-  orientation,
-}: {
-  square: Square;
-  orientation: 'white' | 'black';
-}) {
-  const pos = getSquarePosition(square, orientation);
-  const file = square.charCodeAt(0) - 'a'.charCodeAt(0);
-  const rank = parseInt(square[1]) - 1;
-  const col = orientation === 'white' ? file : 7 - file;
-  const row = orientation === 'white' ? 7 - rank : rank;
-
-  // Keep the pill on the board: centered normally, pinned to the side on the edge files
-  const pillPos: CSSProperties =
-    col === 0
-      ? { left: 0 }
-      : col === 7
-        ? { right: 0 }
-        : { left: '50%', transform: 'translateX(-50%)' };
-
-  return (
-    <div
-      className="absolute pointer-events-none"
-      style={{ left: pos.left, top: pos.top, width: '12.5%', height: '12.5%', zIndex: 12 }}
-      aria-hidden="true"
-    >
-      <div
-        className="cb-mate-transient absolute inset-0"
-        style={{
-          backgroundColor: 'rgba(224, 40, 40, 0.74)',
-          animation: `cb-mate-flash ${MATE_FX_S}s ease-out forwards`,
-        }}
-      />
-      <div className="cb-mate-transient absolute inset-0 flex items-center justify-center">
-        <div
-          style={{
-            width: '72%',
-            height: '72%',
-            animation: `cb-mate-topple ${MATE_FX_S}s cubic-bezier(0.3, 0.7, 0.4, 1) forwards`,
-          }}
-        >
-          <ToppledKingIcon fill="#111" />
-        </div>
-      </div>
-      <div
-        className="cb-mate-transient absolute"
-        style={{ top: row === 0 ? '2%' : '-16%', whiteSpace: 'nowrap', ...pillPos }}
-      >
-        <div
-          style={{
-            backgroundColor: '#fff',
-            color: '#e02828',
-            fontWeight: 800,
-            fontSize: '3.4cqw',
-            lineHeight: 1.15,
-            padding: '1cqw 2.8cqw',
-            borderRadius: 999,
-            boxShadow: '0 2px 8px rgba(0,0,0,0.35)',
-            animation: `cb-mate-pill ${MATE_FX_S}s ease-out 0.1s both`,
-          }}
-        >
-          Checkmate
-        </div>
-      </div>
-    </div>
-  );
-}
-
-function KingResultBadge({
-  square,
-  orientation,
-  variant,
-}: {
-  square: Square;
-  orientation: 'white' | 'black';
-  variant: 'winner' | 'loser';
-}) {
-  const pos = getSquarePosition(square, orientation);
-  const isWinner = variant === 'winner';
-  const label = isWinner ? 'Checkmate — winner' : 'Checkmated';
-  return (
-    <div
-      className="absolute pointer-events-none"
-      style={{
-        left: pos.left,
-        top: pos.top,
-        width: '12.5%',
-        height: '12.5%',
-        zIndex: 11,
-      }}
-    >
-      {/* Sits on the top-right corner of the square and overhangs it slightly, like Chess.com */}
-      <div
-        className="cb-mate-delayed"
-        role="img"
-        aria-label={label}
-        title={label}
-        style={{
-          position: 'absolute',
-          top: '-8%',
-          right: '-8%',
-          width: 'max(22px, 40%)',
-          aspectRatio: '1 / 1',
-          borderRadius: '50%',
-          backgroundColor: RESULT_BADGE_COLORS[variant],
-          boxShadow: '0 1px 3px rgba(0,0,0,0.4)',
-          animation: `cb-celebration-pop 0.35s ease-out ${MATE_BADGE_DELAY_S}s both`,
-        }}
-      >
-        {isWinner ? <CrownIcon /> : <ToppledKingIcon />}
-      </div>
-    </div>
-  );
-}
-
 function CheckmateCelebration({
   winnerName,
   pieces,
@@ -927,6 +764,164 @@ function CheckmateCelebration({
         </div>
         <p className="text-xs font-semibold uppercase tracking-wide text-ink-400">Checkmate</p>
         <p className="text-lg font-bold text-white leading-tight">{winnerName} wins!</p>
+      </div>
+    </div>
+  );
+}
+
+/** Winning king: the square is sealed in ice, with drifting snowflakes. */
+function FrozenKing({ square, orientation }: { square: Square; orientation: 'white' | 'black' }) {
+  const pos = getSquarePosition(square, orientation);
+  const flakes = [12, 34, 58, 78];
+  return (
+    <div
+      className="cb-kfx absolute pointer-events-none"
+      style={{ left: pos.left, top: pos.top, width: '12.5%', height: '12.5%', zIndex: 12 }}
+      aria-hidden="true"
+    >
+      <div
+        className="absolute inset-0"
+        style={{
+          borderRadius: '14%',
+          background:
+            'linear-gradient(135deg, rgba(205,242,255,0.78) 0%, rgba(120,190,240,0.55) 50%, rgba(225,248,255,0.74) 100%)',
+          border: '2px solid rgba(255,255,255,0.9)',
+          animation: 'cb-kfx-in 0.45s ease-out 0.15s both, cb-ice-glow 2.2s ease-in-out 0.6s infinite',
+        }}
+      />
+      <svg viewBox="0 0 100 100" className="absolute inset-0 w-full h-full" style={{ animation: 'cb-kfx-in 0.45s ease-out 0.15s both' }}>
+        {/* glints and cracks */}
+        <path d="M14 22 L40 8" stroke="#fff" strokeWidth="5" strokeLinecap="round" opacity="0.9" />
+        <path d="M20 34 L30 28" stroke="#fff" strokeWidth="3" strokeLinecap="round" opacity="0.8" />
+        <path d="M70 62 L58 78 L66 90" stroke="#fff" strokeWidth="2.2" fill="none" strokeLinejoin="round" opacity="0.8" />
+        <path d="M58 78 L42 74" stroke="#fff" strokeWidth="2" fill="none" opacity="0.7" />
+        {/* icicles along the bottom */}
+        <path d="M6 100 L14 82 L22 100 Z M30 100 L38 76 L46 100 Z M58 100 L66 80 L74 100 Z M80 100 L88 84 L96 100 Z" fill="#e6f8ff" opacity="0.95" />
+      </svg>
+      {flakes.map((left, i) => (
+        <span
+          key={left}
+          className="absolute"
+          style={{
+            left: `${left}%`,
+            top: 0,
+            fontSize: '3cqw',
+            color: '#fff',
+            textShadow: '0 0 4px #8fd3ff',
+            animation: `cb-snow ${2.2 + i * 0.4}s linear ${i * 0.5}s infinite`,
+          }}
+        >
+          ❄
+        </span>
+      ))}
+    </div>
+  );
+}
+
+/** Checkmated king: wrapped in flames, with a "شاه مات" label. */
+function BurningKing({ square, orientation }: { square: Square; orientation: 'white' | 'black' }) {
+  const pos = getSquarePosition(square, orientation);
+  const file = square.charCodeAt(0) - 'a'.charCodeAt(0);
+  const rank = parseInt(square[1]) - 1;
+  const col = orientation === 'white' ? file : 7 - file;
+  const row = orientation === 'white' ? 7 - rank : rank;
+
+  // Keep the label on the board: centred normally, pinned to the side on the edge files
+  const labelPos: CSSProperties =
+    col === 0 ? { left: 0 } : col === 7 ? { right: 0 } : { left: '50%', transform: 'translateX(-50%)' };
+
+  const flame = 'M50 0 C65 25 85 40 80 68 C77 88 62 100 50 100 C38 100 23 88 20 68 C15 40 35 25 50 0 Z';
+  const tongues = [
+    { left: '-14%', w: '50%', h: '92%', d: '0.9s', delay: '0s' },
+    { left: '32%', w: '60%', h: '118%', d: '0.7s', delay: '0.15s' },
+    { left: '66%', w: '48%', h: '88%', d: '1s', delay: '0.3s' },
+  ];
+
+  return (
+    <div
+      className="cb-kfx absolute pointer-events-none"
+      style={{ left: pos.left, top: pos.top, width: '12.5%', height: '12.5%', zIndex: 12 }}
+      aria-hidden="true"
+    >
+      {/* heat glow on the square */}
+      <div
+        className="absolute"
+        style={{
+          inset: '-18%',
+          borderRadius: '50%',
+          background: 'radial-gradient(circle, rgba(255,150,30,0.75) 0%, rgba(255,70,0,0.35) 55%, rgba(255,70,0,0) 75%)',
+          animation: 'cb-fire-glow 0.9s ease-in-out infinite',
+        }}
+      />
+      {/* flames (screen-blended so the king stays visible through them) */}
+      <div className="absolute inset-0" style={{ mixBlendMode: 'screen', animation: 'cb-kfx-in 0.5s ease-out 0.15s both' }}>
+        {tongues.map((t, i) => (
+          <svg
+            key={i}
+            viewBox="0 0 100 100"
+            preserveAspectRatio="none"
+            className="absolute"
+            style={{
+              left: t.left,
+              bottom: '-4%',
+              width: t.w,
+              height: t.h,
+              transformOrigin: '50% 100%',
+              animation: `cb-flame ${t.d} ease-in-out ${t.delay} infinite`,
+            }}
+          >
+            <defs>
+              <linearGradient id={`cbf-${i}`} x1="0" y1="1" x2="0" y2="0">
+                <stop offset="0" stopColor="#ff3d00" />
+                <stop offset="0.55" stopColor="#ff9a1f" />
+                <stop offset="1" stopColor="#ffe27a" />
+              </linearGradient>
+            </defs>
+            <path d={flame} fill={`url(#cbf-${i})`} />
+            <path d={flame} fill="#fff3b0" opacity="0.55" transform="translate(18 30) scale(0.64)" />
+          </svg>
+        ))}
+      </div>
+      {/* embers */}
+      {[20, 50, 76].map((left, i) => (
+        <span
+          key={left}
+          className="absolute rounded-full"
+          style={{
+            left: `${left}%`,
+            bottom: '30%',
+            width: '5%',
+            height: '5%',
+            backgroundColor: '#ffb347',
+            boxShadow: '0 0 4px 1px #ff7a00',
+            animation: `cb-ember ${1.4 + i * 0.3}s ease-out ${i * 0.4}s infinite`,
+          }}
+        />
+      ))}
+      {/* label */}
+      <div
+        className="absolute"
+        style={{ top: row === 0 ? '104%' : '-38%', whiteSpace: 'nowrap', ...labelPos }}
+      >
+        <div
+          dir="rtl"
+          lang="ar"
+          style={{
+            background: 'linear-gradient(180deg, #ff9a1f, #e02828)',
+            color: '#fff',
+            fontWeight: 800,
+            fontSize: '3.6cqw',
+            lineHeight: 1.2,
+            padding: '0.8cqw 2.8cqw',
+            borderRadius: 999,
+            border: '1.5px solid rgba(255,255,255,0.85)',
+            boxShadow: '0 2px 10px rgba(255,90,0,0.7)',
+            fontFamily: '"Segoe UI", Tahoma, system-ui, sans-serif',
+            animation: 'cb-shah-pop 0.5s ease-out 0.6s both',
+          }}
+        >
+          شاه مات
+        </div>
       </div>
     </div>
   );

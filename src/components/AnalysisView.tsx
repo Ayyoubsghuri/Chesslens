@@ -4,6 +4,8 @@ import { ChessBoard } from './ChessBoard';
 import { EvalBar } from './Evalbar';
 import { EvalGraph } from './EvalGraph';
 import { MoveList } from './MoveList';
+import { CoachBubble } from './CoachBubble';
+import { detectKnightFork } from '@/lib/knight-fork';
 import { formatEval, evalToPawns, analyzePosition } from '@/lib/engine';
 import { classifyMove } from '@/lib/analysis';
 import { useElementSize } from '@/lib/useElementSize';
@@ -825,6 +827,27 @@ export function AnalysisView({ analysis, currentIndex, onIndexChange, onCoachExp
 
   const moveMeta = displayQuality ? QUALITY_META[displayQuality] : null;
 
+  // Knight fork: only celebrated when the move itself was sound.
+  const forkTargets =
+    move && displayQuality && ['brilliant', 'best', 'great', 'excellent', 'good', 'book'].includes(displayQuality)
+      ? detectKnightFork(move.fenAfter, move.san, move.color)
+      : null;
+  const forkBlurb = forkTargets
+    ? `Knight fork! ${move!.san} attacks ${forkTargets.map((t) => `${t.name} on ${t.square}`).join(' and ')}.`
+    : null;
+
+  const blurbText =
+    forkBlurb ??
+    (displayQuality === 'book'
+      ? liveOpening
+        ? `Book move — ${liveOpening.name} (${liveOpening.eco}).`
+        : move?.opening
+          ? `Book move — ${move.opening.name} (${move.opening.eco}).`
+          : 'A known opening move.'
+      : displayQuality
+        ? qualityBlurb(displayQuality, isPlayedBest)
+        : '');
+
   const exploreQuality: MoveQuality | null =
     exploreReview && exploreReview.status === 'done' && exploreReview.quality ? exploreReview.quality : null;
   const exploreBestUci: string | null =
@@ -1103,27 +1126,18 @@ export function AnalysisView({ analysis, currentIndex, onIndexChange, onCoachExp
     const theaterCoach = isExploring ? (
       <FreeMoveReviewCard review={exploreReview} />
     ) : move && moveMeta ? (
-      <div className="rounded-xl bg-ink-800/80 border border-ink-700/60 p-3">
-        <div className="flex items-center gap-2 mb-1">
-          <span
-            className="inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-xs font-bold"
-            style={{ backgroundColor: moveMeta.bg, color: moveMeta.color }}
-          >
-            <moveMeta.icon size={10} />
-            {moveMeta.label}
-          </span>
-          {move.evalLoss !== null && move.evalLoss > 0.05 && (
-            <span className="text-xs font-mono font-semibold text-ink-300">+{move.evalLoss.toFixed(2)}</span>
-          )}
-          {move.evalAfter && (
-            <span className="ml-auto text-xs font-mono text-ink-400">{formatEval(move.evalAfter)}</span>
-          )}
-        </div>
-        <p className="text-sm font-semibold text-ink-100">
-          {move.color === 'w' ? 'White' : 'Black'} played {move.san}
-        </p>
-        <p className="text-xs text-ink-400 mt-0.5">
-          {displayQuality === 'book' ? bookText : qualityBlurb(displayQuality!, isPlayedBest)}
+      <div className="rounded-xl bg-ink-800/80 border border-ink-700/60 p-2">
+        <CoachBubble
+          compact
+          san={move.san}
+          quality={displayQuality!}
+          color={moveMeta.color}
+          evalText={move.evalAfter ? formatEval(move.evalAfter) : null}
+          moveKey={move.index}
+                fork={!!forkTargets}
+        />
+        <p className="px-2 pt-2 pb-1 text-xs text-ink-400">
+          {forkBlurb ?? (displayQuality === 'book' ? bookText : qualityBlurb(displayQuality!, isPlayedBest))}
         </p>
       </div>
     ) : null;
@@ -1380,43 +1394,17 @@ export function AnalysisView({ analysis, currentIndex, onIndexChange, onCoachExp
           <FreeMoveReviewCard review={exploreReview} />
         ) : move && moveMeta && (
           <div className="card p-0 overflow-hidden">
-            <div className="flex items-start gap-3 p-4 pb-3">
-              <div className="w-12 h-12 rounded-full bg-gradient-to-br from-brand-400 to-brand-600 flex items-center justify-center shrink-0 shadow-lg">
-                <Zap size={22} className="text-white" />
-              </div>
-              <div className="flex-1 min-w-0">
-                <div className="flex items-center gap-2 mb-1">
-                  <span className="inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-xs font-bold" style={{ backgroundColor: moveMeta.bg, color: moveMeta.color }}>
-                    <moveMeta.icon size={10} />
-                    {moveMeta.label}
-                  </span>
-                  {move.evalLoss !== null && move.evalLoss > 0.05 && (
-                    <span className="text-xs font-mono font-semibold text-ink-300">+{move.evalLoss.toFixed(2)}</span>
-                  )}
-                </div>
-                <h3 className="text-base font-semibold text-ink-100">
-                  {move.color === 'w' ? 'White' : 'Black'} played {move.san}
-                </h3>
-                <p className="text-sm text-ink-400 mt-0.5">
-                  {displayQuality === 'blunder' && 'This is a serious mistake that changes the evaluation significantly.'}
-                  {displayQuality === 'mistake' && 'This move gives away some of the advantage.'}
-                  {displayQuality === 'inaccuracy' && 'A better move was available, but this is playable.'}
-                  {displayQuality === 'best' && 'The best move in this position!'}
-                  {displayQuality === 'brilliant' && 'A stunning move that finds a difficult tactical solution.'}
-                  {displayQuality === 'great' && 'An excellent move that finds the best continuation.'}
-                  {displayQuality === 'excellent' && (isPlayedBest ? "This was the engine's top choice — excellent play." : 'A very strong move, close to the best.')}
-                  {displayQuality === 'good' && 'A solid move that maintains the position.'}
-                  {displayQuality === 'book' && (
-                    liveOpening
-                      ? `Book move — ${liveOpening.name} (${liveOpening.eco}).`
-                      : move.opening
-                        ? `Book move — ${move.opening.name} (${move.opening.eco}).`
-                        : 'A known opening move.'
-                  )}
-                  {displayQuality === 'miss' && 'A tactical opportunity was missed.'}
-                </p>
-              </div>
+            <div className="p-3 pb-0">
+              <CoachBubble
+                san={move.san}
+                quality={displayQuality!}
+                color={moveMeta.color}
+                evalText={move.evalAfter ? formatEval(move.evalAfter) : null}
+                moveKey={move.index}
+                fork={!!forkTargets}
+              />
             </div>
+            <p className="px-4 py-3 text-sm text-ink-400">{blurbText}</p>
             <div className="grid grid-cols-3 gap-px bg-ink-700/50 border-t border-ink-700/50">
               <button onClick={() => onCoachExplain(move)} className="flex items-center justify-center gap-2 py-2.5 text-sm text-ink-200 hover:bg-ink-700/50 transition-colors">
                 <MessageSquare size={14} className="text-brand-400" /> Explain
@@ -1467,43 +1455,17 @@ export function AnalysisView({ analysis, currentIndex, onIndexChange, onCoachExp
           <FreeMoveReviewCard review={exploreReview} />
         ) : move && moveMeta && (
           <div className="card p-0 overflow-hidden">
-            <div className="flex items-start gap-3 p-4 pb-3">
-              <div className="w-12 h-12 rounded-full bg-gradient-to-br from-brand-400 to-brand-600 flex items-center justify-center shrink-0 shadow-lg">
-                <Zap size={22} className="text-white" />
-              </div>
-              <div className="flex-1 min-w-0">
-                <div className="flex items-center gap-2 mb-1">
-                  <span className="inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-xs font-bold" style={{ backgroundColor: moveMeta.bg, color: moveMeta.color }}>
-                    <moveMeta.icon size={10} />
-                    {moveMeta.label}
-                  </span>
-                  {move.evalLoss !== null && move.evalLoss > 0.05 && (
-                    <span className="text-xs font-mono font-semibold text-ink-300">+{move.evalLoss.toFixed(2)}</span>
-                  )}
-                </div>
-                <h3 className="text-base font-semibold text-ink-100">
-                  {move.color === 'w' ? 'White' : 'Black'} played {move.san}
-                </h3>
-                <p className="text-sm text-ink-400 mt-0.5">
-                  {displayQuality === 'blunder' && 'This is a serious mistake that changes the evaluation significantly.'}
-                  {displayQuality === 'mistake' && 'This move gives away some of the advantage.'}
-                  {displayQuality === 'inaccuracy' && 'A better move was available, but this is playable.'}
-                  {displayQuality === 'best' && 'The best move in this position!'}
-                  {displayQuality === 'brilliant' && 'A stunning move that finds a difficult tactical solution.'}
-                  {displayQuality === 'great' && 'An excellent move that finds the best continuation.'}
-                  {displayQuality === 'excellent' && (isPlayedBest ? "This was the engine's top choice — excellent play." : 'A very strong move, close to the best.')}
-                  {displayQuality === 'good' && 'A solid move that maintains the position.'}
-                  {displayQuality === 'book' && (
-                    liveOpening
-                      ? `Book move — ${liveOpening.name} (${liveOpening.eco}).`
-                      : move.opening
-                        ? `Book move — ${move.opening.name} (${move.opening.eco}).`
-                        : 'A known opening move.'
-                  )}
-                  {displayQuality === 'miss' && 'A tactical opportunity was missed.'}
-                </p>
-              </div>
+            <div className="p-3 pb-0">
+              <CoachBubble
+                san={move.san}
+                quality={displayQuality!}
+                color={moveMeta.color}
+                evalText={move.evalAfter ? formatEval(move.evalAfter) : null}
+                moveKey={move.index}
+                fork={!!forkTargets}
+              />
             </div>
+            <p className="px-4 py-3 text-sm text-ink-400">{blurbText}</p>
             <div className="grid grid-cols-3 gap-px bg-ink-700/50 border-t border-ink-700/50">
               <button onClick={() => onCoachExplain(move)} className="flex items-center justify-center gap-2 py-2.5 text-sm text-ink-200 hover:bg-ink-700/50 transition-colors">
                 <MessageSquare size={14} className="text-brand-400" /> Explain
