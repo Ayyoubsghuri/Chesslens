@@ -136,9 +136,9 @@ export function ChessBoard({
     }
   }, [fen]);
 
-  // Checkmate: the winner's king dances (CSS on the real piece), the checkmated king shatters.
+  // Checkmate: the checkmated king shatters.
   const mateClass = gameState.isCheckmate
-    ? ` cb-mate-wave cb-dance-${gameState.turnColor === 'w' ? 'black' : 'white'}`
+    ? ` cb-mate-wave`
     : '';
 
   // The piece that delivered mate (it pulls out a gun and shoots the king).
@@ -461,9 +461,6 @@ export function ChessBoard({
           delayMs={Math.round(mateDelayS * 1000) - (checkerSquare ? 0 : 50)}
         />
       )}
-      {gameState.isCheckmate && gameState.winnerKingSquare && (
-        <DancingKing key={`dance-${fen}`} square={gameState.winnerKingSquare} orientation={orientation} delayS={mateDelayS} />
-      )}
       {gameState.isCheckmate && gameState.checkedKingSquare && checkerSquare && (
         <MateShot key={`shot-${fen}`} from={checkerSquare} to={gameState.checkedKingSquare} orientation={orientation} />
       )}
@@ -597,22 +594,6 @@ export function ChessBoard({
         }
         /* Checkmate: red & black fills the 32 squares nearest the king, one square at a time (generated in mateWaveCss) */
         ${mateWaveCss}
-        @keyframes cb-king-dance {
-          0%, 100% { translate: 0 0; scale: 1 1; }
-          20% { translate: 0 2%; scale: 1.03 0.95; }
-          45% { translate: 0 -4%; scale: 0.98 1.02; }
-          65% { translate: 0 2%; scale: 1.04 0.95; }
-          80% { translate: 0 0; scale: 1 1; }
-        }
-        .cb-dance-white .cg-wrap piece.king.white,
-        .cb-dance-black .cg-wrap piece.king.black {
-          animation: cb-king-dance 1s ease-in-out var(--cb-mate-delay, 0.4s) infinite;
-          z-index: 6;
-        }
-        @keyframes cb-king-shadow {
-          0%, 100% { transform: scaleX(1); opacity: 1; }
-          45% { transform: scaleX(0.8); opacity: 0.75; }
-        }
         /* the shards burst out a little further, then settle where they stay */
         @keyframes cb-shard {
           0% { transform: translate(0, 0) rotate(0deg); }
@@ -648,7 +629,7 @@ export function ChessBoard({
           60% { opacity: 1; transform: translateY(0) scale(1.12); }
           100% { opacity: 1; transform: translateY(0) scale(1); }
         }
-        @media (prefers-reduced-motion: reduce) { .cb-kfx, .cb-kfx * { animation: none !important; } .cb-dance-white .cg-wrap piece.king.white, .cb-dance-black .cg-wrap piece.king.black { animation: none !important; } .cb-mate-wave cg-board::before { animation: none; } }
+        @media (prefers-reduced-motion: reduce) { .cb-kfx, .cb-kfx * { animation: none !important; } .cb-mate-wave cg-board::before { animation: none; } }
         ${MATE_PIECE_CSS}
         @media (prefers-reduced-motion: reduce) {
           .cb-anim-out .cg-wrap piece,
@@ -891,34 +872,6 @@ function CheckmateCelebration({
   );
 }
 
-/**
- * Winning king: the real piece jumps up and down in place (see .cb-dance-* CSS).
- * This overlay only adds the floor shadow that shrinks while the king is in the air.
- */
-function DancingKing({ square, orientation, delayS }: { square: Square; orientation: 'white' | 'black'; delayS: number }) {
-  const pos = getSquarePosition(square, orientation);
-  return (
-    <div
-      className="cb-kfx absolute pointer-events-none"
-      style={{ left: pos.left, top: pos.top, width: '12.5%', height: '12.5%', zIndex: 12 }}
-      aria-hidden="true"
-    >
-      <div
-        className="absolute"
-        style={{
-          left: '20%',
-          right: '20%',
-          bottom: '2%',
-          height: '9%',
-          borderRadius: '50%',
-          background: 'rgba(0,0,0,0.35)',
-          animation: `cb-king-shadow 1s ease-in-out ${delayS}s infinite`,
-        }}
-      />
-    </div>
-  );
-}
-
 /** The mating piece pulls out a gun, aims at the king and shoots (cartoon, no gore). */
 function MateShot({ from, to, orientation }: { from: Square; to: Square; orientation: 'white' | 'black' }) {
   const center = (sq: Square) => {
@@ -1052,10 +1005,6 @@ function ShatteredKing({
   delayMs: number;
 }) {
   const pos = getSquarePosition(square, orientation);
-  const file = square.charCodeAt(0) - 'a'.charCodeAt(0);
-  const rank = parseInt(square[1]) - 1;
-  const col = orientation === 'white' ? file : 7 - file;
-  const row = orientation === 'white' ? 7 - rank : rank;
   const [bg, setBg] = useState<string | null>(null);
 
   useEffect(() => {
@@ -1074,10 +1023,6 @@ function ShatteredKing({
       if (el) el.style.visibility = '';
     };
   }, [boardRef, color, square, delayMs]);
-
-  // Keep the label on the board: centred normally, pinned to the side on the edge files
-  const labelPos: CSSProperties =
-    col === 0 ? { left: 0 } : col === 7 ? { right: 0 } : { left: '50%', transform: 'translateX(-50%)' };
 
   return (
     <div
@@ -1132,27 +1077,6 @@ function ShatteredKing({
           />
         </>
       )}
-      {/* label */}
-      <div
-        className="absolute"
-        style={{ top: row === 0 ? '104%' : '-38%', whiteSpace: 'nowrap', ...labelPos }}
-      >
-        <div
-          dir="rtl"
-          lang="ar"
-          style={{
-            color: '#fff',
-            fontWeight: 800,
-            fontSize: '4cqw',
-            lineHeight: 1.2,
-            textShadow: '0 1px 3px rgba(0,0,0,0.95), 0 0 8px rgba(0,0,0,0.7)',
-            fontFamily: '"Segoe UI", Tahoma, system-ui, sans-serif',
-            animation: `cb-shah-pop 0.5s ease-out ${delayMs / 1000 + 0.2}s both`,
-          }}
-        >
-          شاه مات
-        </div>
-      </div>
     </div>
   );
 }

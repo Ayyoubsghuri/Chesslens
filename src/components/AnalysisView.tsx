@@ -931,6 +931,7 @@ export function AnalysisView({ analysis, currentIndex, onIndexChange, onCoachExp
               whiteName={whiteName}
               blackName={blackName}
               interactive
+              edgeToEdge
               onUserMove={handleUserMove}
             />
   );
@@ -1384,55 +1385,7 @@ export function AnalysisView({ analysis, currentIndex, onIndexChange, onCoachExp
       className="grid grid-cols-1 lg:grid-cols-[minmax(0,580px)_1fr_380px] gap-4 sm:gap-6"
     >
       <div className="flex flex-col gap-4 min-w-0">
-        <div className="flex justify-center items-stretch gap-1.5 sm:gap-2 w-full">
-          <EvalBar evaluation={move?.evalAfter ?? null} orientation={orientation} height={boardSize} />
-          <div ref={boardColRef} className="flex flex-col gap-1.5 flex-1 min-w-0" style={{ maxWidth: boardMaxSize }}>
-            <PlayerBar name={topName} color={topColor} fen={fen} />
-            {renderBoard(boardMaxSize)}
-            <div className="flex items-center justify-between gap-2">
-              <PlayerBar name={bottomName} color={bottomColor} fen={fen} />
-              <div className="flex items-center gap-1.5 shrink-0">
-                <button
-                  onClick={handleToggleTheater}
-                  className="btn-secondary px-2.5 py-1.5 hidden lg:inline-flex"
-                  title="Theater mode — full-window board"
-                >
-                  <Maximize2 size={14} />
-                </button>
-                <button onClick={handleFlip} className="btn-secondary px-2.5 py-1.5" title="Flip board">
-                  <RotateCcw size={14} />
-                </button>
-              </div>
-            </div>
-          </div>
-        </div>
-
-        <div className="flex items-center justify-center gap-2">
-          <button onClick={() => onIndexChange(0)} disabled={currentIndex === 0} className="btn-secondary px-2.5" title="First move (Home)">«</button>
-          <button onClick={() => onIndexChange(Math.max(0, currentIndex - 1))} disabled={currentIndex === 0} className="btn-secondary px-2.5" title="Previous (←)">
-            <ChevronLeft size={16} />
-          </button>
-          <span className="text-sm text-ink-400 font-mono px-3">{currentIndex + 1} / {moves.length}</span>
-          <button onClick={() => onIndexChange(Math.min(moves.length - 1, currentIndex + 1))} disabled={currentIndex === moves.length - 1} className="btn-secondary px-2.5" title="Next (→)">
-            <ChevronRight size={16} />
-          </button>
-          <button onClick={() => onIndexChange(moves.length - 1)} disabled={currentIndex === moves.length - 1} className="btn-secondary px-2.5" title="Last (End)">»</button>
-        </div>
-        {liveOpening && !isExploring && (
-          <div className="flex items-center justify-center gap-1.5 text-xs text-ink-400">
-            <BookOpen size={12} className="text-[#a88865] shrink-0" />
-            <span className="font-mono text-ink-500">{liveOpening.eco}</span>
-            <span className="truncate max-w-[280px]" title={liveOpening.name}>{liveOpening.name}</span>
-          </div>
-        )}
-
-
-
-        {exploreBanner}
-
-        {bestPreviewBanner}
-
-        {/* Mobile: coach card under board (above evaluation) */}
+        {/* Mobile: coach card on top, above the eval bar and board */}
         <div className="lg:hidden">
         {isExploring ? (
           <FreeMoveReviewCard review={exploreReview} />
@@ -1475,6 +1428,61 @@ export function AnalysisView({ analysis, currentIndex, onIndexChange, onCoachExp
         )}
 
         </div>
+
+        {/* Mobile: row runs edge to edge (cancels the page's px-4). Desktop: unchanged. */}
+        <div className="flex justify-center items-stretch gap-1.5 sm:gap-2 -mx-4 w-[calc(100%+2rem)] lg:mx-0 lg:w-full">
+          <div className="hidden lg:flex">
+            <EvalBar evaluation={move?.evalAfter ?? null} orientation={orientation} height={boardSize} />
+          </div>
+          <div ref={boardColRef} className="flex flex-col gap-1.5 flex-1 min-w-0" style={{ maxWidth: boardMaxSize }}>
+            {/* Mobile: eval bar sits on top, above the players and board */}
+            <div className="lg:hidden">
+              <EvalBar evaluation={move?.evalAfter ?? null} orientation={orientation} horizontal />
+            </div>
+            <PlayerBar name={topName} color={topColor} fen={fen} />
+            {renderBoard(boardMaxSize)}
+            <div className="flex items-center justify-between gap-2 pr-3 lg:pr-0">
+              <PlayerBar name={bottomName} color={bottomColor} fen={fen} />
+              <div className="flex items-center gap-1.5 shrink-0">
+                <button
+                  onClick={handleToggleTheater}
+                  className="btn-secondary px-2.5 py-1.5 hidden lg:inline-flex"
+                  title="Theater mode — full-window board"
+                >
+                  <Maximize2 size={14} />
+                </button>
+                <button onClick={handleFlip} className="btn-secondary px-2.5 py-1.5" title="Flip board">
+                  <RotateCcw size={14} />
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div className="flex items-center justify-center gap-2">
+          <button onClick={() => onIndexChange(0)} disabled={currentIndex === 0} className="btn-secondary px-2.5" title="First move (Home)">«</button>
+          <button onClick={() => onIndexChange(Math.max(0, currentIndex - 1))} disabled={currentIndex === 0} className="btn-secondary px-2.5" title="Previous (←)">
+            <ChevronLeft size={16} />
+          </button>
+          <span className="text-sm text-ink-400 font-mono px-3">{currentIndex + 1} / {moves.length}</span>
+          <button onClick={() => onIndexChange(Math.min(moves.length - 1, currentIndex + 1))} disabled={currentIndex === moves.length - 1} className="btn-secondary px-2.5" title="Next (→)">
+            <ChevronRight size={16} />
+          </button>
+          <button onClick={() => onIndexChange(moves.length - 1)} disabled={currentIndex === moves.length - 1} className="btn-secondary px-2.5" title="Last (End)">»</button>
+        </div>
+        {liveOpening && !isExploring && (
+          <div className="flex items-center justify-center gap-1.5 text-xs text-ink-400">
+            <BookOpen size={12} className="text-[#a88865] shrink-0" />
+            <span className="font-mono text-ink-500">{liveOpening.eco}</span>
+            <span className="truncate max-w-[280px]" title={liveOpening.name}>{liveOpening.name}</span>
+          </div>
+        )}
+
+
+
+        {exploreBanner}
+
+        {bestPreviewBanner}
 
         <div className="card p-2">
           <div className="flex items-center justify-between mb-2">
@@ -1618,7 +1626,7 @@ function FreeMoveReviewCard({ review }: { review: ExploreReview | null }) {
 
 function PlayerBar({ name, color, fen }: { name: string; color: 'white' | 'black'; fen?: string }) {
   return (
-    <div className="flex items-center gap-2 px-0.5">
+    <div className="flex items-center gap-2 px-3 lg:px-0.5">
       <span className="w-2.5 h-2.5 rounded-full border border-ink-600 shrink-0" style={{ backgroundColor: color === 'white' ? '#ebecd0' : '#2a2e39' }} />
       <span className="text-sm font-medium text-ink-200 truncate">{name}</span>
       {fen && <CapturedPieces fen={fen} color={color} />}

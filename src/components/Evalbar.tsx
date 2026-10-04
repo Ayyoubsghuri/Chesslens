@@ -8,9 +8,11 @@ interface EvalBarProps {
   evaluation: Eval;
   orientation?: 'white' | 'black';
   height?: number;
+  /** Lay the bar out left → right (full width, slim) instead of bottom → top. Used on phones. */
+  horizontal?: boolean;
 }
 
-export function EvalBar({ evaluation, orientation = 'white', height = 480 }: EvalBarProps) {
+export function EvalBar({ evaluation, orientation = 'white', height = 480, horizontal = false }: EvalBarProps) {
   const { whitePercent, label } = useMemo(() => {
     if (!evaluation) return { whitePercent: 50, label: '0.0' };
     const anyEval = evaluation as any;
@@ -29,6 +31,30 @@ export function EvalBar({ evaluation, orientation = 'white', height = 480 }: Eva
   const fillColor = isWhiteBottom ? '#ebecd0' : '#2a2e39';
   const bgColor = isWhiteBottom ? '#2a2e39' : '#ebecd0';
   const labelOnFill = fillPercent > 50;
+
+  if (horizontal) {
+    return (
+      <div
+        className="relative h-5 w-full overflow-hidden"
+        style={{ backgroundColor: bgColor }}
+        title={label}
+      >
+        <div
+          className="absolute top-0 bottom-0 left-0 transition-[width] duration-300 ease-out"
+          style={{ width: `${fillPercent}%`, backgroundColor: fillColor }}
+        />
+        <div
+          className={`absolute top-0 bottom-0 flex items-center px-2 text-[11px] font-bold ${
+            labelOnFill
+              ? `left-0 ${isWhiteBottom ? 'text-[#2a2e39]' : 'text-[#ebecd0]'}`
+              : `right-0 ${isWhiteBottom ? 'text-[#ebecd0]' : 'text-[#2a2e39]'}`
+          }`}
+        >
+          {label}
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div
