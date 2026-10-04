@@ -158,6 +158,61 @@ export function ChessBoard({
     if (!found && lastMove) found = lastMove.to;
     return found && found !== king ? found : null;
   }, [fen, lastMove, gameState]);
+  // Red/black wave: the 32 squares nearest the checkmated king (half the board) turn red & black,
+  // one square at a time, spreading outward from the king. `delay` is seconds after the wave starts.
+  const mateWaveCss = useMemo(() => {
+    const sq = gameState.isCheckmate ? gameState.checkedKingSquare : null;
+    if (!sq) return '';
+    const kFile = sq.charCodeAt(0) - 'a'.charCodeAt(0);
+    const kRank = parseInt(sq[1]) - 1;
+    const kCol = orientation === 'white' ? kFile : 7 - kFile;
+    const kRow = orientation === 'white' ? 7 - kRank : kRank;
+    const cells: { col: number; row: number; d: number }[] = [];
+    for (let col = 0; col < 8; col++) {
+      for (let row = 0; row < 8; row++) {
+        cells.push({ col, row, d: Math.hypot(col - kCol, row - kRow) });
+      }
+    }
+    cells.sort((x, y) => x.d - y.d || x.row - y.row || x.col - y.col);
+    const chosen = cells.slice(0, 32);
+    const maxD = chosen[chosen.length - 1].d || 1;
+    const n = chosen.length;
+    const SZ = 12.5;
+    const images = chosen.map(() => 'linear-gradient(#000, #000)').join(', ');
+    const sizes = chosen.map((_, i) => `calc(var(--cbw${i}, 1) * ${SZ}cqw) calc(var(--cbw${i}, 1) * ${SZ}cqw)`).join(', ');
+    // cells grow out from their own centre
+    const positions = chosen
+      .map((c, i) => `calc(${c.col * SZ}cqw + (1 - var(--cbw${i}, 1)) * ${SZ / 2}cqw) calc(${c.row * SZ}cqw + (1 - var(--cbw${i}, 1)) * ${SZ / 2}cqw)`)
+      .join(', ');
+    const repeats = chosen.map(() => 'no-repeat').join(', ');
+    const anims = chosen
+      .map((c, i) => `cb-cell-${i} 0.28s ease-out calc(var(--cb-mate-delay, 0.35s) + ${((c.d / maxD) * 0.85).toFixed(3)}s) both`)
+      .join(', ');
+    let out = '';
+    for (let i = 0; i < n; i++) {
+      out += `@property --cbw${i} { syntax: '<number>'; inherits: false; initial-value: 1; }\n`;
+      out += `@keyframes cb-cell-${i} { from { --cbw${i}: 0; } to { --cbw${i}: 1; } }\n`;
+    }
+    out += `.cb-mate-wave cg-board::before {
+      content: '';
+      position: absolute;
+      inset: 0;
+      z-index: 1;
+      pointer-events: none;
+      background: repeating-conic-gradient(#0d0d10 0 25%, #c1121f 0 50%) 0 0 / 25% 25%;
+      opacity: 0.92;
+      -webkit-mask-image: ${images};
+      mask-image: ${images};
+      -webkit-mask-size: ${sizes};
+      mask-size: ${sizes};
+      -webkit-mask-position: ${positions};
+      mask-position: ${positions};
+      -webkit-mask-repeat: ${repeats};
+      mask-repeat: ${repeats};
+      animation: ${anims};
+    }\n`;
+    return out;
+  }, [gameState.isCheckmate, gameState.checkedKingSquare, orientation]);
   // With the gun: everything else (shatter, wave, dance) waits for the bullet to land.
   const mateDelayS = checkerSquare ? 1.2 : 0.4;
 
@@ -540,22 +595,8 @@ export function ChessBoard({
           background-image: repeating-conic-gradient(#779556 0 25%, #ebecd0 0 50%) !important;
           background-size: 25% 25% !important;
         }
-        /* Checkmate: the top half of the board turns red & black, sweeping down from the top edge to the middle.
-           It is drawn on cg-board's ::before, so it sits above the squares but under the pieces. */
-        .cb-mate-wave cg-board::before {
-          content: '';
-          position: absolute;
-          left: 0;
-          top: 0;
-          width: 100%;
-          height: 50%;
-          z-index: 1;
-          pointer-events: none;
-          background: repeating-conic-gradient(#0d0d10 0 25%, #c1121f 0 50%) 0 0 / 25% 50%;
-          opacity: 0.92;
-          animation: cb-wave-down 1.1s cubic-bezier(0.4, 0, 0.2, 1) var(--cb-mate-delay, 0.35s) both;
-        }
-        @keyframes cb-wave-down { from { clip-path: inset(0 0 100% 0); } to { clip-path: inset(0 0 0 0); } }
+        /* Checkmate: red & black fills the 32 squares nearest the king, one square at a time (generated in mateWaveCss) */
+        ${mateWaveCss}
         @keyframes cb-king-dance {
           0%, 100% { translate: 0 0; scale: 1 1; }
           20% { translate: 0 2%; scale: 1.03 0.95; }
