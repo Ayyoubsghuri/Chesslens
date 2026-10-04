@@ -9,6 +9,32 @@ interface ImportModalProps {
   onImport: (games: ImportedGame[]) => void;
 }
 
+/** Tidies pasted PGN so common copy/paste problems don't make the parser fail. */
+function cleanPgn(text: string): string {
+  let t = text.replace(/^\uFEFF/, '').replace(/\r\n?/g, '\n').replace(/\u00a0/g, ' ').trim();
+  // Drop any text before the first header (e.g. copied page text).
+  const first = t.search(/^\s*\[\s*\w+\s+"/m);
+  if (first > 0) t = t.slice(first);
+  // Moves only, no headers: give the parser a header to work with.
+  if (!/^\s*\[\s*\w+\s+"/m.test(t)) t = `[Event "Pasted game"]\n\n${t}`;
+  // Make sure there is a blank line between the headers and the moves.
+  t = t.replace(/(\]\s*)\n(?=[^\[\n])/g, '$1\n\n');
+  return t;
+}
+
+/** Last resort: remove {comments}, (variations), $NAGs and ;comments from the move text. */
+function stripMoveExtras(text: string): string {
+  return text
+    .split('\n')
+    .map((line) => {
+      if (line.trimStart().startsWith('[')) return line; // header line
+      let l = line.replace(/\{[^}]*\}/g, ' ').replace(/;.*$/, '').replace(/\$\d+/g, ' ');
+      for (let i = 0; i < 5; i++) l = l.replace(/\([^()]*\)/g, ' ');
+      return l;
+    })
+    .join('\n');
+}
+
 export function ImportModal({ onClose, onImport }: ImportModalProps) {
   const [tab, setTab] = useState<'chesscom' | 'pgn'>('chesscom');
   const [username, setUsername] = useState('');
@@ -60,11 +86,23 @@ export function ImportModal({ onClose, onImport }: ImportModalProps) {
   }
 
   function handleImportPgn() {
-    const games = parsePastedGames(pgnText);
+    const cleaned = cleanPgn(pgnText);
+    let games: ImportedGame[] = [];
+    // Try as pasted, then cleaned, then with comments/variations stripped.
+    for (const candidate of [pgnText, cleaned, stripMoveExtras(cleaned)]) {
+      try {
+        games = parsePastedGames(candidate);
+      } catch (e) {
+        console.warn('PGN parse failed', e);
+        games = [];
+      }
+      if (games.length > 0) break;
+    }
     if (games.length === 0) {
-      setError('No valid PGN games found. Check the format and try again.');
+      setError('No valid PGN games found. Make sure the moves are legal and, for a game from a custom position, that the [FEN] header is included.');
       return;
     }
+    setError('');
     onImport(games);
   }
 

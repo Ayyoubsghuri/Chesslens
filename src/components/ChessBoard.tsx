@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, type CSSProperties } from 'react';
+import { useEffect, useMemo, useRef, useState, type CSSProperties, type RefObject } from 'react';
 import { Chessground } from '@lichess-org/chessground';
 import type { Api } from '@lichess-org/chessground/api';
 import type { Config } from '@lichess-org/chessground/config';
@@ -136,8 +136,30 @@ export function ChessBoard({
     }
   }, [fen]);
 
-  // Checkmate no longer restyles the board/pieces: the checkmated king burns and the winner freezes.
-  const mateClass = '';
+  // Checkmate: the winner's king dances (CSS on the real piece), the checkmated king shatters.
+  const mateClass = gameState.isCheckmate
+    ? ` cb-mate-wave cb-dance-${gameState.turnColor === 'w' ? 'black' : 'white'}`
+    : '';
+
+  // The piece that delivered mate (it pulls out a gun and shoots the king).
+  const checkerSquare = useMemo<Square | null>(() => {
+    if (!gameState.isCheckmate || !gameState.checkedKingSquare) return null;
+    const king = gameState.checkedKingSquare;
+    let found: Square | null = null;
+    try {
+      const chess = new Chess(fen);
+      const winner: Color = gameState.turnColor === 'w' ? 'b' : 'w';
+      const attackers = (chess as unknown as { attackers?: (sq: Square, by?: Color) => Square[] }).attackers;
+      const list = typeof attackers === 'function' ? attackers.call(chess, king, winner) : [];
+      if (list.length > 0) found = lastMove && list.includes(lastMove.to) ? lastMove.to : list[0];
+    } catch {
+      /* fall through to lastMove */
+    }
+    if (!found && lastMove) found = lastMove.to;
+    return found && found !== king ? found : null;
+  }, [fen, lastMove, gameState]);
+  // With the gun: everything else (shatter, wave, dance) waits for the bullet to land.
+  const mateDelayS = checkerSquare ? 1.2 : 0.4;
 
   // Easter eggs: press F for a fist that smashes the board, D for a dragon that burns it.
   // They are triggered by the person pressing a key, so they play even with reduced motion on.
@@ -344,7 +366,7 @@ export function ChessBoard({
 
   return (
     <div
-      className={`relative w-full${spotlight ? ' cb-spotlight' : ''}${mateClass}${boardFx ? ` cb-fx-${boardFx.kind}` : ''}`}
+      className={`relative w-full cb-green-board${spotlight ? ' cb-spotlight' : ''}${mateClass}${boardFx ? ` cb-fx-${boardFx.kind}` : ''}`}
       style={
         {
           maxWidth: size,
@@ -352,6 +374,7 @@ export function ChessBoard({
           '--cb-tint': spotlight?.tint,
           '--cb-fade-ms': `${MATE_FADE_MS}ms`,
           '--cb-mate-ms': `${MATE_STYLE_MS}ms`,
+          '--cb-mate-delay': `${mateDelayS}s`,
         } as CSSProperties
       }
     >
@@ -374,10 +397,20 @@ export function ChessBoard({
         />
       )}
       {gameState.isCheckmate && gameState.checkedKingSquare && (
-        <BurningKing key={`fire-${fen}`} square={gameState.checkedKingSquare} orientation={orientation} />
+        <ShatteredKing
+          key={`shatter-${fen}`}
+          square={gameState.checkedKingSquare}
+          orientation={orientation}
+          color={gameState.turnColor === 'w' ? 'white' : 'black'}
+          boardRef={containerRef}
+          delayMs={Math.round(mateDelayS * 1000) - (checkerSquare ? 0 : 50)}
+        />
       )}
       {gameState.isCheckmate && gameState.winnerKingSquare && (
-        <FrozenKing key={`ice-${fen}`} square={gameState.winnerKingSquare} orientation={orientation} />
+        <DancingKing key={`dance-${fen}`} square={gameState.winnerKingSquare} orientation={orientation} delayS={mateDelayS} />
+      )}
+      {gameState.isCheckmate && gameState.checkedKingSquare && checkerSquare && (
+        <MateShot key={`shot-${fen}`} from={checkerSquare} to={gameState.checkedKingSquare} orientation={orientation} />
       )}
       {showBadge && (
         <BoardBadge square={badgeSquare} quality={moveQuality} orientation={orientation} />
@@ -498,35 +531,83 @@ export function ChessBoard({
         }
         /* style 6: negative (light pieces dark, dark pieces light) */
         .cb-pstyle-6 .cg-wrap piece { filter: invert(1) hue-rotate(180deg); }
-        /* Checkmate: burning checkmated king, frozen winner */
+        /* Checkmate: dancing winner king, shattering checkmated king */
         @keyframes cb-kfx-in { from { opacity: 0; transform: scale(0.7); } to { opacity: 1; transform: scale(1); } }
-        @keyframes cb-ice-glow {
-          0%, 100% { box-shadow: 0 0 10px 2px rgba(120, 200, 255, 0.8), inset 0 0 10px rgba(255, 255, 255, 0.8); }
-          50% { box-shadow: 0 0 18px 6px rgba(150, 225, 255, 1), inset 0 0 14px rgba(255, 255, 255, 1); }
+        /* uses the independent translate/rotate/scale properties so it stacks on chessground's inline transform */
+        /* Board theme: green and white (a1 dark, top-left light), like Chess.com */
+        .cb-green-board .cg-wrap cg-board {
+          background-color: #ebecd0 !important;
+          background-image: repeating-conic-gradient(#779556 0 25%, #ebecd0 0 50%) !important;
+          background-size: 25% 25% !important;
         }
-        @keyframes cb-snow {
-          0% { transform: translateY(-10%) rotate(0deg); opacity: 0; }
-          20% { opacity: 1; }
-          100% { transform: translateY(120%) rotate(180deg); opacity: 0; }
+        /* Checkmate: the top half of the board turns red & black, sweeping down from the top edge to the middle.
+           It is drawn on cg-board's ::before, so it sits above the squares but under the pieces. */
+        .cb-mate-wave cg-board::before {
+          content: '';
+          position: absolute;
+          left: 0;
+          top: 0;
+          width: 100%;
+          height: 50%;
+          z-index: 1;
+          pointer-events: none;
+          background: repeating-conic-gradient(#0d0d10 0 25%, #c1121f 0 50%) 0 0 / 25% 50%;
+          opacity: 0.92;
+          animation: cb-wave-down 1.1s cubic-bezier(0.4, 0, 0.2, 1) var(--cb-mate-delay, 0.35s) both;
         }
-        @keyframes cb-flame {
-          0%, 100% { transform: scaleY(0.92) scaleX(1) skewX(-3deg); }
-          25% { transform: scaleY(1.12) scaleX(0.95) skewX(3deg); }
-          50% { transform: scaleY(0.98) scaleX(1.05) skewX(-2deg); }
-          75% { transform: scaleY(1.15) scaleX(0.96) skewX(4deg); }
+        @keyframes cb-wave-down { from { clip-path: inset(0 0 100% 0); } to { clip-path: inset(0 0 0 0); } }
+        @keyframes cb-king-dance {
+          0%, 100% { translate: 0 0; scale: 1 1; }
+          20% { translate: 0 2%; scale: 1.03 0.95; }
+          45% { translate: 0 -4%; scale: 0.98 1.02; }
+          65% { translate: 0 2%; scale: 1.04 0.95; }
+          80% { translate: 0 0; scale: 1 1; }
         }
-        @keyframes cb-fire-glow { 0%, 100% { opacity: 0.75; } 50% { opacity: 1; } }
-        @keyframes cb-ember {
-          0% { transform: translateY(0) scale(1); opacity: 0; }
-          15% { opacity: 1; }
-          100% { transform: translateY(-190%) scale(0.3); opacity: 0; }
+        .cb-dance-white .cg-wrap piece.king.white,
+        .cb-dance-black .cg-wrap piece.king.black {
+          animation: cb-king-dance 1s ease-in-out var(--cb-mate-delay, 0.4s) infinite;
+          z-index: 6;
+        }
+        @keyframes cb-king-shadow {
+          0%, 100% { transform: scaleX(1); opacity: 1; }
+          45% { transform: scaleX(0.8); opacity: 0.75; }
+        }
+        /* the shards burst out a little further, then settle where they stay */
+        @keyframes cb-shard {
+          0% { transform: translate(0, 0) rotate(0deg); }
+          22% { transform: translate(0, 0) rotate(0deg); }
+          50% { transform: translate(calc(var(--dx) * 1.8), calc(var(--dy) * 1.8 - 8%)) rotate(calc(var(--rot) * 1.5)); }
+          100% { transform: translate(var(--dx), var(--dy)) rotate(var(--rot)); }
+        }
+        @keyframes cb-crack-flash { 0% { opacity: 0; } 30% { opacity: 1; } 100% { opacity: 0; } }
+        @keyframes cb-shatter-flash { 0% { opacity: 0; transform: scale(0.5); } 30% { opacity: 1; } 100% { opacity: 0; transform: scale(1.4); } }
+        /* Gun: pops in at 0.35s, fires at 0.95s, bullet lands at 1.2s */
+        @keyframes cb-gun-in { from { opacity: 0; transform: scale(0.3); } to { opacity: 1; transform: scale(1); } }
+        @keyframes cb-gun-recoil {
+          0%, 100% { transform: translateX(0) rotate(0deg); }
+          30% { transform: translateX(-22%) rotate(-9deg); }
+        }
+        @keyframes cb-muzzle {
+          0% { opacity: 0; transform: translate(-50%, -50%) scale(0.3); }
+          25% { opacity: 1; transform: translate(-50%, -50%) scale(1.2); }
+          100% { opacity: 0; transform: translate(-50%, -50%) scale(1.5); }
+        }
+        @keyframes cb-bullet {
+          0% { left: var(--x0); top: var(--y0); opacity: 0; }
+          2% { opacity: 1; }
+          92% { opacity: 1; }
+          100% { left: var(--x1); top: var(--y1); opacity: 0; }
+        }
+        @keyframes cb-smoke {
+          0% { opacity: 0.7; translate: 0 0; scale: 0.4; }
+          100% { opacity: 0; translate: 0 -160%; scale: 1.8; }
         }
         @keyframes cb-shah-pop {
           0% { opacity: 0; transform: translateY(8px) scale(0.5); }
           60% { opacity: 1; transform: translateY(0) scale(1.12); }
           100% { opacity: 1; transform: translateY(0) scale(1); }
         }
-        @media (prefers-reduced-motion: reduce) { .cb-kfx, .cb-kfx * { animation: none !important; } }
+        @media (prefers-reduced-motion: reduce) { .cb-kfx, .cb-kfx * { animation: none !important; } .cb-dance-white .cg-wrap piece.king.white, .cb-dance-black .cg-wrap piece.king.black { animation: none !important; } .cb-mate-wave cg-board::before { animation: none; } }
         ${MATE_PIECE_CSS}
         @media (prefers-reduced-motion: reduce) {
           .cb-anim-out .cg-wrap piece,
@@ -769,10 +850,12 @@ function CheckmateCelebration({
   );
 }
 
-/** Winning king: the square is sealed in ice, with drifting snowflakes. */
-function FrozenKing({ square, orientation }: { square: Square; orientation: 'white' | 'black' }) {
+/**
+ * Winning king: the real piece jumps up and down in place (see .cb-dance-* CSS).
+ * This overlay only adds the floor shadow that shrinks while the king is in the air.
+ */
+function DancingKing({ square, orientation, delayS }: { square: Square; orientation: 'white' | 'black'; delayS: number }) {
   const pos = getSquarePosition(square, orientation);
-  const flakes = [12, 34, 58, 78];
   return (
     <div
       className="cb-kfx absolute pointer-events-none"
@@ -780,62 +863,180 @@ function FrozenKing({ square, orientation }: { square: Square; orientation: 'whi
       aria-hidden="true"
     >
       <div
-        className="absolute inset-0"
+        className="absolute"
         style={{
-          borderRadius: '14%',
-          background:
-            'linear-gradient(135deg, rgba(205,242,255,0.78) 0%, rgba(120,190,240,0.55) 50%, rgba(225,248,255,0.74) 100%)',
-          border: '2px solid rgba(255,255,255,0.9)',
-          animation: 'cb-kfx-in 0.45s ease-out 0.15s both, cb-ice-glow 2.2s ease-in-out 0.6s infinite',
+          left: '20%',
+          right: '20%',
+          bottom: '2%',
+          height: '9%',
+          borderRadius: '50%',
+          background: 'rgba(0,0,0,0.35)',
+          animation: `cb-king-shadow 1s ease-in-out ${delayS}s infinite`,
         }}
       />
-      <svg viewBox="0 0 100 100" className="absolute inset-0 w-full h-full" style={{ animation: 'cb-kfx-in 0.45s ease-out 0.15s both' }}>
-        {/* glints and cracks */}
-        <path d="M14 22 L40 8" stroke="#fff" strokeWidth="5" strokeLinecap="round" opacity="0.9" />
-        <path d="M20 34 L30 28" stroke="#fff" strokeWidth="3" strokeLinecap="round" opacity="0.8" />
-        <path d="M70 62 L58 78 L66 90" stroke="#fff" strokeWidth="2.2" fill="none" strokeLinejoin="round" opacity="0.8" />
-        <path d="M58 78 L42 74" stroke="#fff" strokeWidth="2" fill="none" opacity="0.7" />
-        {/* icicles along the bottom */}
-        <path d="M6 100 L14 82 L22 100 Z M30 100 L38 76 L46 100 Z M58 100 L66 80 L74 100 Z M80 100 L88 84 L96 100 Z" fill="#e6f8ff" opacity="0.95" />
-      </svg>
-      {flakes.map((left, i) => (
-        <span
-          key={left}
-          className="absolute"
-          style={{
-            left: `${left}%`,
-            top: 0,
-            fontSize: '3cqw',
-            color: '#fff',
-            textShadow: '0 0 4px #8fd3ff',
-            animation: `cb-snow ${2.2 + i * 0.4}s linear ${i * 0.5}s infinite`,
-          }}
-        >
-          ❄
-        </span>
-      ))}
     </div>
   );
 }
 
-/** Checkmated king: wrapped in flames, with a "شاه مات" label. */
-function BurningKing({ square, orientation }: { square: Square; orientation: 'white' | 'black' }) {
+/** The mating piece pulls out a gun, aims at the king and shoots (cartoon, no gore). */
+function MateShot({ from, to, orientation }: { from: Square; to: Square; orientation: 'white' | 'black' }) {
+  const center = (sq: Square) => {
+    const file = sq.charCodeAt(0) - 'a'.charCodeAt(0);
+    const rank = parseInt(sq[1]) - 1;
+    const col = orientation === 'white' ? file : 7 - file;
+    const row = orientation === 'white' ? 7 - rank : rank;
+    return { x: (col + 0.5) * 12.5, y: (row + 0.5) * 12.5 };
+  };
+  const a = center(from);
+  const b = center(to);
+  const dx = b.x - a.x;
+  const dy = b.y - a.y;
+  const dist = Math.hypot(dx, dy) || 1;
+  const ux = dx / dist;
+  const uy = dy / dist;
+  const ang = (Math.atan2(dy, dx) * 180) / Math.PI;
+  const flip = Math.abs(ang) > 90; // keep the pistol upright when aiming left
+
+  const gun = { x: a.x + ux * 4.5, y: a.y + uy * 4.5 };
+  const muzzle = { x: a.x + ux * 10, y: a.y + uy * 10 };
+  const hit = { x: b.x - ux * 1.5, y: b.y - uy * 1.5 };
+  const pct = (n: number) => `${n}%`;
+
+  return (
+    <div className="cb-kfx absolute inset-0 pointer-events-none" style={{ zIndex: 13 }} aria-hidden="true">
+      {/* the pistol (outer = aim direction, middle = pop-in, inner = recoil) */}
+      <div
+        className="absolute"
+        style={{
+          left: pct(gun.x),
+          top: pct(gun.y),
+          width: '12%',
+          transform: `translate(-50%, -50%) rotate(${ang}deg)${flip ? ' scaleY(-1)' : ''}`,
+        }}
+      >
+        <div style={{ animation: 'cb-gun-in 0.3s ease-out 0.35s both' }}>
+          <div style={{ animation: 'cb-gun-recoil 0.35s ease-out 0.95s both' }}>
+            <svg viewBox="0 0 64 40" style={{ display: 'block', width: '100%', filter: 'drop-shadow(0 1px 2px rgba(0,0,0,0.6))' }}>
+              <polygon points="10,18 27,18 23,38 8,38" fill="#6b4226" stroke="#1a1109" strokeWidth="1.5" strokeLinejoin="round" />
+              <path d="M27 18 V25 Q27 29 23 29 H19" fill="none" stroke="#1a1d22" strokeWidth="2.5" strokeLinecap="round" />
+              <rect x="6" y="5" width="50" height="14" rx="3" fill="#3a4049" stroke="#101216" strokeWidth="1.5" />
+              <rect x="54" y="8" width="9" height="8" rx="1.5" fill="#1b1e23" stroke="#101216" strokeWidth="1.2" />
+              <rect x="11" y="8" width="30" height="3" rx="1.5" fill="#7a8493" />
+              <rect x="12" y="2" width="5" height="4" rx="1" fill="#1b1e23" />
+              <rect x="50" y="2" width="3" height="4" rx="1" fill="#1b1e23" />
+            </svg>
+          </div>
+        </div>
+      </div>
+      {/* muzzle flash */}
+      <div
+        className="absolute"
+        style={{
+          left: pct(muzzle.x),
+          top: pct(muzzle.y),
+          width: '8%',
+          aspectRatio: '1 / 1',
+          borderRadius: '50%',
+          opacity: 0,
+          background: 'radial-gradient(circle, #fff 0%, #ffd34a 38%, rgba(255,120,0,0) 70%)',
+          animation: 'cb-muzzle 0.22s ease-out 0.95s both',
+        }}
+      />
+      {/* smoke puffs */}
+      {[0, 1].map((i) => (
+        <div
+          key={i}
+          className="absolute rounded-full"
+          style={{
+            left: pct(muzzle.x + (i ? 1.2 : -1.2)),
+            top: pct(muzzle.y),
+            width: '3%',
+            aspectRatio: '1 / 1',
+            background: 'rgba(210,210,215,0.85)',
+            opacity: 0,
+            animation: `cb-smoke 1.2s ease-out ${1.0 + i * 0.1}s both`,
+          }}
+        />
+      ))}
+      {/* the bullet */}
+      <div
+        className="absolute"
+        style={
+          {
+            width: '3.4%',
+            height: '0.9%',
+            borderRadius: 999,
+            background: 'linear-gradient(90deg, rgba(255,210,90,0), #ffd34a 40%, #fff)',
+            boxShadow: '0 0 6px 1px rgba(255,200,80,0.9)',
+            transform: `translate(-50%, -50%) rotate(${ang}deg)`,
+            opacity: 0,
+            '--x0': pct(muzzle.x),
+            '--y0': pct(muzzle.y),
+            '--x1': pct(hit.x),
+            '--y1': pct(hit.y),
+            animation: 'cb-bullet 0.25s linear 0.95s both',
+          } as CSSProperties
+        }
+      />
+    </div>
+  );
+}
+
+/** 6 jagged pieces that tile the square. dx/dy/rot = where each one comes to rest (small, so the king stays broken in place). */
+const SHARDS = [
+  { clip: 'polygon(0% 0%, 55% 0%, 45% 40%, 0% 30%)', dx: -9, dy: 3, rot: -9 },
+  { clip: 'polygon(55% 0%, 100% 0%, 100% 35%, 62% 52%, 45% 40%)', dx: 9, dy: 2, rot: 8 },
+  { clip: 'polygon(0% 30%, 45% 40%, 38% 75%, 0% 70%)', dx: -11, dy: 7, rot: -12 },
+  { clip: 'polygon(45% 40%, 62% 52%, 65% 80%, 38% 75%)', dx: 1, dy: 10, rot: 5 },
+  { clip: 'polygon(62% 52%, 100% 35%, 100% 100%, 60% 100%, 65% 80%)', dx: 11, dy: 7, rot: 12 },
+  { clip: 'polygon(0% 70%, 38% 75%, 65% 80%, 60% 100%, 0% 100%)', dx: -4, dy: 12, rot: -6 },
+];
+
+/**
+ * Checkmated king: after the mating move lands, the real piece is hidden and
+ * replaced by shards cut from the same piece image, which crack and fly apart.
+ */
+function ShatteredKing({
+  square,
+  orientation,
+  color,
+  boardRef,
+  delayMs,
+}: {
+  square: Square;
+  orientation: 'white' | 'black';
+  color: 'white' | 'black';
+  boardRef: RefObject<HTMLDivElement | null>;
+  /** When the king breaks (after the bullet lands). */
+  delayMs: number;
+}) {
   const pos = getSquarePosition(square, orientation);
   const file = square.charCodeAt(0) - 'a'.charCodeAt(0);
   const rank = parseInt(square[1]) - 1;
   const col = orientation === 'white' ? file : 7 - file;
   const row = orientation === 'white' ? 7 - rank : rank;
+  const [bg, setBg] = useState<string | null>(null);
+
+  useEffect(() => {
+    let el: HTMLElement | null = null;
+    // Wait for the mating move to finish sliding in, then grab the real king piece.
+    const t = window.setTimeout(() => {
+      el = boardRef.current?.querySelector<HTMLElement>(`piece.king.${color}`) ?? null;
+      if (!el) return;
+      const img = getComputedStyle(el).backgroundImage;
+      if (!img || img === 'none') return;
+      el.style.visibility = 'hidden';
+      setBg(img);
+    }, delayMs);
+    return () => {
+      window.clearTimeout(t);
+      if (el) el.style.visibility = '';
+    };
+  }, [boardRef, color, square, delayMs]);
 
   // Keep the label on the board: centred normally, pinned to the side on the edge files
   const labelPos: CSSProperties =
     col === 0 ? { left: 0 } : col === 7 ? { right: 0 } : { left: '50%', transform: 'translateX(-50%)' };
-
-  const flame = 'M50 0 C65 25 85 40 80 68 C77 88 62 100 50 100 C38 100 23 88 20 68 C15 40 35 25 50 0 Z';
-  const tongues = [
-    { left: '-14%', w: '50%', h: '92%', d: '0.9s', delay: '0s' },
-    { left: '32%', w: '60%', h: '118%', d: '0.7s', delay: '0.15s' },
-    { left: '66%', w: '48%', h: '88%', d: '1s', delay: '0.3s' },
-  ];
 
   return (
     <div
@@ -843,61 +1044,53 @@ function BurningKing({ square, orientation }: { square: Square; orientation: 'wh
       style={{ left: pos.left, top: pos.top, width: '12.5%', height: '12.5%', zIndex: 12 }}
       aria-hidden="true"
     >
-      {/* heat glow on the square */}
-      <div
-        className="absolute"
-        style={{
-          inset: '-18%',
-          borderRadius: '50%',
-          background: 'radial-gradient(circle, rgba(255,150,30,0.75) 0%, rgba(255,70,0,0.35) 55%, rgba(255,70,0,0) 75%)',
-          animation: 'cb-fire-glow 0.9s ease-in-out infinite',
-        }}
-      />
-      {/* flames (screen-blended so the king stays visible through them) */}
-      <div className="absolute inset-0" style={{ mixBlendMode: 'screen', animation: 'cb-kfx-in 0.5s ease-out 0.15s both' }}>
-        {tongues.map((t, i) => (
+      {bg && (
+        <>
+          {SHARDS.map((sh, i) => (
+            <div
+              key={i}
+              className="absolute inset-0"
+              style={
+                {
+                  backgroundImage: bg,
+                  backgroundSize: '100% 100%',
+                  backgroundRepeat: 'no-repeat',
+                  clipPath: sh.clip,
+                  '--dx': `${sh.dx}%`,
+                  '--dy': `${sh.dy}%`,
+                  '--rot': `${sh.rot}deg`,
+                  animation: `cb-shard 0.9s ease-out ${i * 0.03}s both`,
+                } as CSSProperties
+              }
+            />
+          ))}
+          {/* cracks flash across the king right before it breaks */}
           <svg
-            key={i}
             viewBox="0 0 100 100"
-            preserveAspectRatio="none"
+            className="absolute inset-0 w-full h-full"
+            style={{ opacity: 0, animation: 'cb-crack-flash 0.5s ease-out both' }}
+          >
+            <path
+              d="M0 30 L45 40 L62 52 L100 35 M45 40 L55 0 M38 75 L45 40 M62 52 L65 80 L60 100 M38 75 L0 70 M65 80 L38 75"
+              stroke="#fff"
+              strokeWidth="3"
+              fill="none"
+              strokeLinejoin="round"
+              strokeLinecap="round"
+            />
+          </svg>
+          <div
             className="absolute"
             style={{
-              left: t.left,
-              bottom: '-4%',
-              width: t.w,
-              height: t.h,
-              transformOrigin: '50% 100%',
-              animation: `cb-flame ${t.d} ease-in-out ${t.delay} infinite`,
+              inset: '-20%',
+              borderRadius: '50%',
+              background: 'radial-gradient(circle, rgba(255,255,255,0.9) 0%, rgba(255,255,255,0) 65%)',
+              opacity: 0,
+              animation: 'cb-shatter-flash 0.6s ease-out 0.25s both',
             }}
-          >
-            <defs>
-              <linearGradient id={`cbf-${i}`} x1="0" y1="1" x2="0" y2="0">
-                <stop offset="0" stopColor="#ff3d00" />
-                <stop offset="0.55" stopColor="#ff9a1f" />
-                <stop offset="1" stopColor="#ffe27a" />
-              </linearGradient>
-            </defs>
-            <path d={flame} fill={`url(#cbf-${i})`} />
-            <path d={flame} fill="#fff3b0" opacity="0.55" transform="translate(18 30) scale(0.64)" />
-          </svg>
-        ))}
-      </div>
-      {/* embers */}
-      {[20, 50, 76].map((left, i) => (
-        <span
-          key={left}
-          className="absolute rounded-full"
-          style={{
-            left: `${left}%`,
-            bottom: '30%',
-            width: '5%',
-            height: '5%',
-            backgroundColor: '#ffb347',
-            boxShadow: '0 0 4px 1px #ff7a00',
-            animation: `cb-ember ${1.4 + i * 0.3}s ease-out ${i * 0.4}s infinite`,
-          }}
-        />
-      ))}
+          />
+        </>
+      )}
       {/* label */}
       <div
         className="absolute"
@@ -907,17 +1100,13 @@ function BurningKing({ square, orientation }: { square: Square; orientation: 'wh
           dir="rtl"
           lang="ar"
           style={{
-            background: 'linear-gradient(180deg, #ff9a1f, #e02828)',
             color: '#fff',
             fontWeight: 800,
-            fontSize: '3.6cqw',
+            fontSize: '4cqw',
             lineHeight: 1.2,
-            padding: '0.8cqw 2.8cqw',
-            borderRadius: 999,
-            border: '1.5px solid rgba(255,255,255,0.85)',
-            boxShadow: '0 2px 10px rgba(255,90,0,0.7)',
+            textShadow: '0 1px 3px rgba(0,0,0,0.95), 0 0 8px rgba(0,0,0,0.7)',
             fontFamily: '"Segoe UI", Tahoma, system-ui, sans-serif',
-            animation: 'cb-shah-pop 0.5s ease-out 0.6s both',
+            animation: `cb-shah-pop 0.5s ease-out ${delayMs / 1000 + 0.2}s both`,
           }}
         >
           شاه مات

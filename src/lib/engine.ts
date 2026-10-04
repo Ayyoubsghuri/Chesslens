@@ -31,6 +31,11 @@ const MAX_WORKERS = Math.max(
   Math.min(4, (typeof navigator !== 'undefined' ? navigator.hardwareConcurrency || 2 : 2) - 1),
 );
 
+/** Result of a search; `second` is the 2nd-best line (only filled when MultiPV >= 2). White-positive like the rest. */
+export interface EngineEvalMulti extends EngineEval {
+  second: { evaluation: number | null; mate: number | null } | null;
+}
+
 /** One Stockfish WASM instance. Runs one command sequence at a time. */
 class EngineWorker {
   dead = false;
@@ -125,20 +130,21 @@ class EngineWorker {
     });
   }
 
-  search(fen: string, depth: number): Promise<EngineEval> {
+  search(fen: string, depth: number, multiPv = 1): Promise<EngineEvalMulti> {
     return this.enqueue(async () => {
       await this.ready;
-      return this.runSearch(fen, depth);
+      return this.runSearch(fen, depth, multiPv);
     });
   }
 
-  private runSearch(fen: string, depth: number): Promise<EngineEval> {
+  private runSearch(fen: string, depth: number, multiPv: number): Promise<EngineEvalMulti> {
     const worker = this.worker;
 
-    return new Promise<EngineEval>((resolve, reject) => {
+    return new Promise<EngineEvalMulti>((resolve, reject) => {
       let continuation = '';
       let evaluation: number | null = null;
       let mate: number | null = null;
+      let second: { evaluation: number | null; mate: number | null } | null = null;
       let reachedDepth = depth;
 
       // UCI scores are from the side to move's perspective; the rest of the
@@ -166,18 +172,31 @@ class EngineWorker {
           const depthMatch = line.match(/\bdepth (\d+)/);
           if (depthMatch) reachedDepth = Number(depthMatch[1]);
 
+          const mpvMatch = line.match(/\bmultipv (\d+)/);
+          const pvIdx = mpvMatch ? Number(mpvMatch[1]) : 1;
+
           const mateMatch = line.match(/score mate (-?\d+)/);
           const cpMatch = line.match(/score cp (-?\d+)/);
-          if (mateMatch) {
-            mate = Number(mateMatch[1]) * sideToMoveSign;
-            evaluation = null;
-          } else if (cpMatch) {
-            evaluation = (Number(cpMatch[1]) / 100) * sideToMoveSign;
-            mate = null;
-          }
 
-          const pvMatch = line.match(/\bpv (.+)$/);
-          if (pvMatch) continuation = pvMatch[1].trim();
+          if (pvIdx === 1) {
+            if (mateMatch) {
+              mate = Number(mateMatch[1]) * sideToMoveSign;
+              evaluation = null;
+            } else if (cpMatch) {
+              evaluation = (Number(cpMatch[1]) / 100) * sideToMoveSign;
+              mate = null;
+            }
+
+            const pvMatch = line.match(/\bpv (.+)$/);
+            if (pvMatch) continuation = pvMatch[1].trim();
+          } else if (pvIdx === 2 && !/\b(lowerbound|upperbound)\b/.test(line)) {
+            // 2nd-best line (only sent when MultiPV >= 2)
+            if (mateMatch) {
+              second = { evaluation: null, mate: Number(mateMatch[1]) * sideToMoveSign };
+            } else if (cpMatch) {
+              second = { evaluation: (Number(cpMatch[1]) / 100) * sideToMoveSign, mate: null };
+            }
+          }
         } else if (line.startsWith('bestmove')) {
           const parts = line.split(/\s+/);
           const bestMove = parts[1] && parts[1] !== '(none)' ? parts[1] : null;
@@ -190,6 +209,7 @@ class EngineWorker {
             mate,
             depth: reachedDepth,
             success: bestMove !== null,
+            second,
           });
         }
       };
@@ -202,6 +222,8 @@ class EngineWorker {
 
       worker.addEventListener('message', onMessage);
       worker.addEventListener('error', onError);
+      // Always set MultiPV: workers are reused, so a previous 2-line search must not leak.
+      worker.postMessage(`setoption name MultiPV value ${multiPv}`);
       worker.postMessage(`position fen ${fen}`);
       worker.postMessage(`go depth ${depth}`);
     });
@@ -254,10 +276,10 @@ class EnginePool {
     else this.idle.push(w);
   }
 
-  async analyze(fen: string, depth: number): Promise<EngineEval> {
+  async analyze(fen: string, depth: number, multiPv = 1): Promise<EngineEvalMulti> {
     const w = await this.acquire();
     try {
-      return await w.search(fen, depth);
+      return await w.search(fen, depth, multiPv);
     } finally {
       this.release(w);
     }
@@ -282,20 +304,41 @@ export function analyzePosition(fen: string, depth: number): Promise<EngineEval>
  * Returns results in the SAME ORDER as `fens`; a position that failed comes
  * back as `null`. `onProgress(done, total)` fires as each position finishes.
  */
-export async function analyzePositions(
+export function analyzePositions(
   fens: string[],
   depth: number,
   onProgress?: (done: number, total: number) => void,
 ): Promise<(EngineEval | null)[]> {
+  return runBatch(fens, depth, 1, onProgress);
+}
+
+/**
+ * Same as analyzePositions but searches the top 2 lines, so `result.second`
+ * holds the 2nd-best move's eval. Used to spot "only moves" (great moves).
+ */
+export function analyzeSecondBest(
+  fens: string[],
+  depth: number,
+  onProgress?: (done: number, total: number) => void,
+): Promise<(EngineEvalMulti | null)[]> {
+  return runBatch(fens, depth, 2, onProgress);
+}
+
+async function runBatch(
+  fens: string[],
+  depth: number,
+  multiPv: number,
+  onProgress?: (done: number, total: number) => void,
+): Promise<(EngineEvalMulti | null)[]> {
   const total = fens.length;
-  const results: (EngineEval | null)[] = new Array(total).fill(null);
+  const results: (EngineEvalMulti | null)[] = new Array(total).fill(null);
   let done = 0;
   const tick = () => onProgress?.(++done, total);
 
   await Promise.all(
     fens.map((fen, i) =>
       pool
-        .analyze(fen, depth)
+        .analyze(fen, depth, multiPv)
         .then((r) => {
           results[i] = r;
         })

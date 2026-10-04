@@ -4,6 +4,7 @@ import { analyzePositions, evalToPawns, evalToWinChance, resetEngine } from './e
 import { getMoveHistory } from './pgn';
 import { BookWalker } from './openings';
 import { detectSacrifice } from './sacrifice';
+import { markOnlyMoves } from './only-move';
 
 /**
  * Tuned to land close to Chess.com Game Review with in-browser Stockfish lite.
@@ -121,6 +122,10 @@ export function classifyMove(
  *
  * Results are identical to the old code at the same depth; only the time
  * taken changes. `onProgress(done, total)` counts positions (moves + 1).
+ *
+ * After classification, a short second pass (markOnlyMoves) re-searches only
+ * the candidate "best" moves with 2 engine lines and upgrades the ones where
+ * every alternative is clearly worse to 'great' (the only move that works).
  */
 export async function analyzeGame(
   game: ImportedGame,
@@ -133,8 +138,11 @@ export async function analyzeGame(
 
   // Pass 1: walk the game once (cheap, no engine) to collect every position.
   // fens[0] = start position, fens[i + 1] = position after move i.
-  const walker = new Chess();
+  // Start from the game's own first position (handles [FEN]/[SetUp] games too).
+  const startFen: string = history[0].before ?? new Chess().fen();
+  const walker = new Chess(startFen);
   const fens: string[] = [walker.fen()];
+  const standardStart = startFen.startsWith('rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w');
   for (const move of history) {
     walker.move(move.san);
     fens.push(walker.fen());
@@ -156,7 +164,7 @@ export async function analyzeGame(
     const evalBefore = evals[i];
     const evalAfter = evals[i + 1];
 
-    const isBook = book.step(move.lan);
+    const isBook = standardStart ? book.step(move.lan) : false;
     const opening = isBook ? book.current() : null;
 
     if (evalBefore && evalAfter) {
@@ -203,6 +211,16 @@ export async function analyzeGame(
         opening,
       });
     }
+  }
+
+  // Pass 4: "great" = the only move that works. Re-searches candidate
+  // positions with 2 lines. Never let a failure here break the analysis.
+  try {
+    await markOnlyMoves(analyzed, depth, (done, total) =>
+      onProgress?.(fens.length + done, fens.length + total),
+    );
+  } catch (e) {
+    console.warn('Only-move detection skipped', e);
   }
 
   return analyzed;

@@ -5,6 +5,8 @@ import { EvalBar } from './Evalbar';
 import { EvalGraph } from './EvalGraph';
 import { MoveList } from './MoveList';
 import { CoachBubble } from './CoachBubble';
+import { BrilliantLineButton } from './BrilliantLineButton';
+import { CapturedPieces } from './CapturedPieces';
 import { detectKnightFork } from '@/lib/knight-fork';
 import { formatEval, evalToPawns, analyzePosition } from '@/lib/engine';
 import { classifyMove } from '@/lib/analysis';
@@ -67,7 +69,7 @@ function qualityBlurb(quality: MoveQuality, isBest: boolean): string {
     case 'inaccuracy': return 'A better move was available, but this is playable.';
     case 'best': return 'The best move in this position!';
     case 'brilliant': return 'A stunning move that finds a difficult tactical solution.';
-    case 'great': return 'An excellent move that finds the best continuation.';
+    case 'great': return 'A critical move: the only move (or one of very few) that solves the problem or keeps the advantage here.';
     case 'excellent': return isBest ? "This was the engine's top choice — excellent play." : 'A very strong move, close to the best.';
     case 'good': return 'A solid move that maintains the position.';
     case 'book': return 'A known opening move.';
@@ -540,8 +542,19 @@ export function AnalysisView({ analysis, currentIndex, onIndexChange, onCoachExp
   }, [playing, currentIndex, moves.length, onIndexChange]);
 
   const [bestPreview, setBestPreview] = useState<{
-    fen: string; from: Square; to: Square; san: string; uci: string;
+    fen: string; from: Square; to: Square; san: string; uci: string; label?: string;
   } | null>(null);
+  const lineTimerRef = useRef<number | null>(null);
+
+  function stopLine() {
+    if (lineTimerRef.current !== null) {
+      window.clearTimeout(lineTimerRef.current);
+      lineTimerRef.current = null;
+    }
+  }
+  // Stop the line playback when the preview is closed or the component goes away
+  useEffect(() => { if (!bestPreview) stopLine(); }, [bestPreview]);
+  useEffect(() => stopLine, []);
 
   // Free-move exploration: leave the game line, try moves, then go back/forward through them
   const [exploreSteps, setExploreSteps] = useState<ExploreStep[]>([]); // moves made, oldest → newest (last = current)
@@ -804,6 +817,34 @@ export function AnalysisView({ analysis, currentIndex, onIndexChange, onCoachExp
     playedUci.slice(0, 4) === engineBestUci.slice(0, 4) &&
     (playedUci.length <= 4 || engineBestUci.length <= 4 || playedUci[4] === engineBestUci[4]);
 
+  /** Brilliant / great move: play the move + the engine's follow-up line on the board, one ply per second. */
+  function playBrilliantLine() {
+    if (!move) return;
+    stopLine();
+    setPlaying(false);
+    try {
+      const chess = new Chess(move.fenBefore);
+      const frames: { fen: string; from: Square; to: Square; san: string; uci: string }[] = [];
+      const add = (r: { from: string; to: string; san: string; promotion?: string }) =>
+        frames.push({ fen: chess.fen(), from: r.from as Square, to: r.to as Square, san: r.san, uci: r.from + r.to + (r.promotion ?? '') });
+      add(chess.move(move.san));
+      const line = (move.evalAfter?.continuation ?? '').split(/\s+/).filter(Boolean).slice(0, 8);
+      for (const uci of line) {
+        try {
+          add(chess.move({ from: uci.slice(0, 2), to: uci.slice(2, 4), promotion: uci.length > 4 ? uci[4] : undefined }));
+        } catch { break; }
+      }
+      let i = 0;
+      const show = () => {
+        const f = frames[i];
+        setBestPreview({ ...f, label: `${displayQuality === 'great' ? 'Great' : 'Brilliant'} line ${i + 1}/${frames.length}` });
+        i++;
+        lineTimerRef.current = i < frames.length ? window.setTimeout(show, 1000) : null;
+      };
+      show();
+    } catch {}
+  }
+
   function handleBestMoveClick(uci: string) {
     if (!move || uci.length < 4) return;
     if (playedUci && uci.slice(0, 4) === playedUci.slice(0, 4)) {
@@ -931,7 +972,7 @@ export function AnalysisView({ analysis, currentIndex, onIndexChange, onCoachExp
   const bestPreviewBanner = bestPreview && (
           <div className="flex items-center justify-between gap-2 rounded-lg bg-brand-500/10 border border-brand-500/30 px-3 py-2 text-sm text-brand-300">
             <span>
-              Previewing engine best: <span className="font-mono font-semibold">{bestPreview.san}</span>{' '}
+              {bestPreview.label ?? 'Previewing engine best'}: <span className="font-mono font-semibold">{bestPreview.san}</span>{' '}
               <span className="text-brand-400/70">({bestPreview.uci})</span>
             </span>
             <button onClick={() => setBestPreview(null)} className="btn-ghost text-xs px-2 py-1 shrink-0">
@@ -1139,6 +1180,7 @@ export function AnalysisView({ analysis, currentIndex, onIndexChange, onCoachExp
         <p className="px-2 pt-2 pb-1 text-xs text-ink-400">
           {forkBlurb ?? (displayQuality === 'book' ? bookText : qualityBlurb(displayQuality!, isPlayedBest))}
         </p>
+        {(displayQuality === 'brilliant' || displayQuality === 'great') && <BrilliantLineButton compact onClick={playBrilliantLine} />}
       </div>
     ) : null;
 
@@ -1169,6 +1211,7 @@ export function AnalysisView({ analysis, currentIndex, onIndexChange, onCoachExp
                 rating={ratingFor(topColor)}
                 accuracy={accuracyFor(topColor)}
                 active={toMove === topColor}
+                fen={fen}
               />
               <PlayerCard
                 name={bottomName}
@@ -1176,18 +1219,19 @@ export function AnalysisView({ analysis, currentIndex, onIndexChange, onCoachExp
                 rating={ratingFor(bottomColor)}
                 accuracy={accuracyFor(bottomColor)}
                 active={toMove === bottomColor}
+                fen={fen}
               />
             </div>
           )}
 
           {/* Board */}
           <div className="flex flex-col gap-2 shrink-0">
-            {!isWide && <PlayerBar name={topName} color={topColor} />}
+            {!isWide && <PlayerBar name={topName} color={topColor} fen={fen} />}
             <div className="flex items-stretch gap-2">
               <EvalBar evaluation={move?.evalAfter ?? null} orientation={orientation} height={theaterBoardPx} />
               <div style={{ width: theaterBoardPx }}>{renderBoard(theaterBoardPx)}</div>
             </div>
-            {!isWide && <PlayerBar name={bottomName} color={bottomColor} />}
+            {!isWide && <PlayerBar name={bottomName} color={bottomColor} fen={fen} />}
           </div>
 
           {/* Side panel */}
@@ -1343,10 +1387,10 @@ export function AnalysisView({ analysis, currentIndex, onIndexChange, onCoachExp
         <div className="flex justify-center items-stretch gap-1.5 sm:gap-2 w-full">
           <EvalBar evaluation={move?.evalAfter ?? null} orientation={orientation} height={boardSize} />
           <div ref={boardColRef} className="flex flex-col gap-1.5 flex-1 min-w-0" style={{ maxWidth: boardMaxSize }}>
-            <PlayerBar name={topName} color={topColor} />
+            <PlayerBar name={topName} color={topColor} fen={fen} />
             {renderBoard(boardMaxSize)}
             <div className="flex items-center justify-between gap-2">
-              <PlayerBar name={bottomName} color={bottomColor} />
+              <PlayerBar name={bottomName} color={bottomColor} fen={fen} />
               <div className="flex items-center gap-1.5 shrink-0">
                 <button
                   onClick={handleToggleTheater}
@@ -1405,6 +1449,7 @@ export function AnalysisView({ analysis, currentIndex, onIndexChange, onCoachExp
               />
             </div>
             <p className="px-4 py-3 text-sm text-ink-400">{blurbText}</p>
+            {(displayQuality === 'brilliant' || displayQuality === 'great') && <BrilliantLineButton onClick={playBrilliantLine} />}
             <div className="grid grid-cols-3 gap-px bg-ink-700/50 border-t border-ink-700/50">
               <button onClick={() => onCoachExplain(move)} className="flex items-center justify-center gap-2 py-2.5 text-sm text-ink-200 hover:bg-ink-700/50 transition-colors">
                 <MessageSquare size={14} className="text-brand-400" /> Explain
@@ -1466,6 +1511,7 @@ export function AnalysisView({ analysis, currentIndex, onIndexChange, onCoachExp
               />
             </div>
             <p className="px-4 py-3 text-sm text-ink-400">{blurbText}</p>
+            {(displayQuality === 'brilliant' || displayQuality === 'great') && <BrilliantLineButton onClick={playBrilliantLine} />}
             <div className="grid grid-cols-3 gap-px bg-ink-700/50 border-t border-ink-700/50">
               <button onClick={() => onCoachExplain(move)} className="flex items-center justify-center gap-2 py-2.5 text-sm text-ink-200 hover:bg-ink-700/50 transition-colors">
                 <MessageSquare size={14} className="text-brand-400" /> Explain
@@ -1570,11 +1616,12 @@ function FreeMoveReviewCard({ review }: { review: ExploreReview | null }) {
   );
 }
 
-function PlayerBar({ name, color }: { name: string; color: 'white' | 'black' }) {
+function PlayerBar({ name, color, fen }: { name: string; color: 'white' | 'black'; fen?: string }) {
   return (
     <div className="flex items-center gap-2 px-0.5">
       <span className="w-2.5 h-2.5 rounded-full border border-ink-600 shrink-0" style={{ backgroundColor: color === 'white' ? '#ebecd0' : '#2a2e39' }} />
       <span className="text-sm font-medium text-ink-200 truncate">{name}</span>
+      {fen && <CapturedPieces fen={fen} color={color} />}
     </div>
   );
 }
@@ -1622,13 +1669,14 @@ function QualityGlyph({ q, size = 20 }: { q: MoveQuality; size?: number }) {
 
 /** Player tile for the left column of theater mode. */
 function PlayerCard({
-  name, color, rating, accuracy, active,
+  name, color, rating, accuracy, active, fen,
 }: {
   name: string;
   color: 'white' | 'black';
   rating: number | null;
   accuracy: number;
   active: boolean;
+  fen?: string;
 }) {
   const isWhite = color === 'white';
   return (
@@ -1644,6 +1692,7 @@ function PlayerCard({
         <p className="text-sm font-semibold text-ink-100 truncate" title={name}>{name}</p>
         {rating != null && <p className="text-xs font-mono text-ink-400">{rating}</p>}
       </div>
+      {fen && <div className="flex justify-center"><CapturedPieces fen={fen} color={color} /></div>}
       <span className="rounded-full bg-ink-800 px-2.5 py-0.5 text-xs text-ink-300">
         {Math.round(accuracy)}% accuracy
       </span>

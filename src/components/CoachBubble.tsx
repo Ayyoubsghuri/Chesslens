@@ -3,7 +3,7 @@ import { Star, ThumbsUp, Check, BookOpen, X } from 'lucide-react';
 import type { MoveQuality } from '@/lib/types';
 
 /** How long each language stays on screen. Tweak freely. */
-const ENGLISH_MS = 3500;
+const ENGLISH_MS = 800;
 const DARIJA_MS = 2000; // the 2-second switch
 
 /** Qualities that make the coach angry. */
