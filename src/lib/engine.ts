@@ -1,3 +1,4 @@
+import { Chess } from 'chess.js';
 import type { EngineEval } from './types';
 
 /**
@@ -7,28 +8,30 @@ import type { EngineEval } from './types';
  *   cp node_modules/stockfish/stockfish-18-lite-single.js   public/stockfish/
  *   cp node_modules/stockfish/stockfish-18-lite-single.wasm public/stockfish/
  *
- * ── What changed ─────────────────────────────────────────────────────────
- * The old version had ONE worker and a serial queue, so a game was analyzed
- * one position at a time on one CPU core. Positions in a game are
- * independent (all FENs are known from the PGN), so we now run a POOL of
- * single-threaded workers and search different positions at the same time.
- *
- * The single-threaded build is used on purpose: no SharedArrayBuffer, so no
- * COOP/COEP headers needed. At shallow depths (~12), N workers each
- * searching a different position scale far better than N threads all
- * fighting over one position.
+ * ── Speed-ups in this version ────────────────────────────────────────────
+ *  1. Worker cap raised from 4 to 8 (still hardwareConcurrency - 1).
+ *  2. Terminal positions (mate / stalemate / dead draw) are evaluated
+ *     without the engine. This also fixes the last move of a mated game
+ *     falling back to 'good' (Stockfish returns `bestmove (none)` there).
+ *  3. Result cache keyed by position + depth. A MultiPV-2 result also
+ *     serves MultiPV-1 requests. Concurrent identical requests share one
+ *     search.
+ *  4. Batches are split into small contiguous chunks of plies. Each worker
+ *     is PINNED to a chunk, so consecutive plies reuse that worker's hash
+ *     table. Workers pull the next chunk when done, so there is no
+ *     straggler at the end.
  * ────────────────────────────────────────────────────────────────────────
  */
 const ENGINE_SCRIPT_PATH = `${import.meta.env.BASE_URL}stockfish/stockfish-18-lite-single.js`;
 const READY_TIMEOUT_MS = 10_000;
 const SEARCH_TIMEOUT_MS = 30_000;
 const HASH_MB_PER_WORKER = 16;
+const CHUNK_SIZE = 6; // contiguous plies per work unit
+const CACHE_LIMIT = 5_000;
 
-// Leave one core for the UI thread; cap at 4 (each worker holds its own WASM
-// instance + hash, so more than that costs memory for diminishing returns).
 const MAX_WORKERS = Math.max(
   1,
-  Math.min(4, (typeof navigator !== 'undefined' ? navigator.hardwareConcurrency || 2 : 2) - 1),
+  Math.min(8, (typeof navigator !== 'undefined' ? navigator.hardwareConcurrency || 2 : 2) - 1),
 );
 
 /** Result of a search; `second` is the 2nd-best line (only filled when MultiPV >= 2). White-positive like the rest. */
@@ -36,12 +39,50 @@ export interface EngineEvalMulti extends EngineEval {
   second: { evaluation: number | null; mate: number | null } | null;
 }
 
+/* ───────────────────────── Terminal positions + cache ───────────────────── */
+
+function terminalEval(fen: string, depth: number): EngineEvalMulti | null {
+  let c: Chess;
+  try {
+    c = new Chess(fen);
+  } catch {
+    return null;
+  }
+  let evaluation: number;
+  if (c.isCheckmate()) evaluation = c.turn() === 'w' ? -100 : 100; // White-positive
+  else if (c.isStalemate() || c.isInsufficientMaterial()) evaluation = 0;
+  else return null;
+  return { fen, bestMove: null, continuation: '', evaluation, mate: null, depth, success: true, second: null };
+}
+
+const evalCache = new Map<string, EngineEvalMulti>();
+const inflight = new Map<string, Promise<EngineEvalMulti>>();
+
+// Ignore halfmove/fullmove counters so transpositions hit the cache.
+const posKey = (fen: string, depth: number, mpv: number) =>
+  `${fen.split(' ').slice(0, 4).join(' ')}|${depth}|${mpv}`;
+
+function cacheGet(fen: string, depth: number, mpv: number): EngineEvalMulti | null {
+  const hit = evalCache.get(posKey(fen, depth, mpv)) ?? (mpv === 1 ? evalCache.get(posKey(fen, depth, 2)) : undefined);
+  return hit ? { ...hit, fen } : null;
+}
+
+function cachePut(fen: string, depth: number, mpv: number, r: EngineEvalMulti) {
+  if (!r.success) return;
+  if (evalCache.size >= CACHE_LIMIT) {
+    const oldest = evalCache.keys().next().value;
+    if (oldest !== undefined) evalCache.delete(oldest);
+  }
+  evalCache.set(posKey(fen, depth, mpv), r);
+}
+
+/* ───────────────────────────── Engine worker ────────────────────────────── */
+
 /** One Stockfish WASM instance. Runs one command sequence at a time. */
 class EngineWorker {
   dead = false;
   private worker: Worker;
   private ready: Promise<void>;
-  // Serializes work on THIS worker (a single instance can only `go` once at a time).
   private tail: Promise<unknown> = Promise.resolve();
 
   constructor() {
@@ -98,7 +139,6 @@ class EngineWorker {
 
   private enqueue<T>(job: () => Promise<T>): Promise<T> {
     const run = this.tail.then(job);
-    // A failed job must never wedge the queue for the next one.
     this.tail = run.catch(() => undefined);
     return run;
   }
@@ -147,14 +187,10 @@ class EngineWorker {
       let second: { evaluation: number | null; mate: number | null } | null = null;
       let reachedDepth = depth;
 
-      // UCI scores are from the side to move's perspective; the rest of the
-      // app expects White-positive, so flip when Black is to move.
       const sideToMoveSign = fen.split(' ')[1] === 'b' ? -1 : 1;
 
       const timeout = setTimeout(() => {
         cleanup();
-        // A timed-out search leaves the instance mid-`go`; it can't be trusted
-        // again, so kill it. The pool spawns a replacement on demand.
         this.kill();
         reject(new Error(`Engine analysis timed out after ${SEARCH_TIMEOUT_MS}ms`));
       }, SEARCH_TIMEOUT_MS);
@@ -190,7 +226,6 @@ class EngineWorker {
             const pvMatch = line.match(/\bpv (.+)$/);
             if (pvMatch) continuation = pvMatch[1].trim();
           } else if (pvIdx === 2 && !/\b(lowerbound|upperbound)\b/.test(line)) {
-            // 2nd-best line (only sent when MultiPV >= 2)
             if (mateMatch) {
               second = { evaluation: null, mate: Number(mateMatch[1]) * sideToMoveSign };
             } else if (cpMatch) {
@@ -230,59 +265,124 @@ class EngineWorker {
   }
 }
 
-/**
- * Lazily grows up to MAX_WORKERS. Callers just `await pool.analyze(...)`;
- * work beyond the worker count waits in a FIFO queue. Dead workers (crash /
- * timeout) are dropped and replaced automatically.
- */
+/* ─────────────────────────────── Worker pool ────────────────────────────── */
+
+interface Waiter {
+  resolve: (w: EngineWorker) => void;
+  reject: (e: unknown) => void;
+}
+
 class EnginePool {
   private workers: EngineWorker[] = [];
   private idle: EngineWorker[] = [];
-  private waiters: Array<(w: EngineWorker) => void> = [];
+  private waiters: Waiter[] = [];
 
-  private acquire(): Promise<EngineWorker> {
+  acquire(): Promise<EngineWorker> {
     while (this.idle.length > 0) {
       const w = this.idle.pop()!;
       if (!w.dead) return Promise.resolve(w);
     }
     this.workers = this.workers.filter((w) => !w.dead);
     if (this.workers.length < MAX_WORKERS) {
-      const w = new EngineWorker();
-      this.workers.push(w);
-      return Promise.resolve(w);
+      try {
+        const w = new EngineWorker();
+        this.workers.push(w);
+        return Promise.resolve(w);
+      } catch (e) {
+        return Promise.reject(e);
+      }
     }
-    return new Promise<EngineWorker>((resolve) => this.waiters.push(resolve));
+    return new Promise<EngineWorker>((resolve, reject) => this.waiters.push({ resolve, reject }));
   }
 
-  private release(w: EngineWorker) {
+  release(w: EngineWorker) {
     if (w.dead) {
       this.workers = this.workers.filter((x) => x !== w);
-      // A slot just opened up — if someone is waiting, spawn a replacement for them.
+      // A slot opened up; spawn a replacement for the next waiter.
       const next = this.waiters.shift();
       if (next) {
         try {
           const nw = new EngineWorker();
           this.workers.push(nw);
-          next(nw);
-        } catch {
-          // Can't spawn; leave the waiter's promise pending is worse than
-          // failing, so re-queue is not possible here — surface via timeout path.
+          next.resolve(nw);
+        } catch (e) {
+          next.reject(e);
         }
       }
       return;
     }
     const next = this.waiters.shift();
-    if (next) next(w);
+    if (next) next.resolve(w);
     else this.idle.push(w);
   }
 
+  /** Single position: terminal check, cache, de-duplicated in-flight search. */
   async analyze(fen: string, depth: number, multiPv = 1): Promise<EngineEvalMulti> {
-    const w = await this.acquire();
+    const t = terminalEval(fen, depth);
+    if (t) return t;
+
+    const hit = cacheGet(fen, depth, multiPv);
+    if (hit) return hit;
+
+    const key = posKey(fen, depth, multiPv);
+    const pending = inflight.get(key);
+    if (pending) return { ...(await pending), fen };
+
+    const job = (async () => {
+      const w = await this.acquire();
+      try {
+        const r = await w.search(fen, depth, multiPv);
+        cachePut(fen, depth, multiPv, r);
+        return r;
+      } finally {
+        this.release(w);
+      }
+    })();
+    inflight.set(key, job);
     try {
-      return await w.search(fen, depth, multiPv);
+      return await job;
     } finally {
-      this.release(w);
+      inflight.delete(key);
     }
+  }
+
+  /**
+   * Run `fens[start..end)` back-to-back on ONE worker so its hash table
+   * carries over between neighbouring plies. Writes into `results`.
+   */
+  async analyzeRun(
+    fens: string[],
+    start: number,
+    end: number,
+    depth: number,
+    multiPv: number,
+    results: (EngineEvalMulti | null)[],
+    tick: () => void,
+    worker: EngineWorker,
+  ): Promise<EngineWorker> {
+    let w = worker;
+    for (let i = start; i < end; i++) {
+      const fen = fens[i];
+      const quick = terminalEval(fen, depth) ?? cacheGet(fen, depth, multiPv);
+      if (quick) {
+        results[i] = quick;
+        tick();
+        continue;
+      }
+      try {
+        if (w.dead) {
+          this.release(w);
+          w = await this.acquire();
+        }
+        const r = await w.search(fen, depth, multiPv);
+        cachePut(fen, depth, multiPv, r);
+        results[i] = r;
+      } catch {
+        results[i] = null;
+      }
+      tick();
+    }
+    return w;
   }
 
   async reset(): Promise<void> {
@@ -292,17 +392,17 @@ class EnginePool {
 
 const pool = new EnginePool();
 
+/* ───────────────────────────────── Public API ───────────────────────────── */
+
 /** Single position. */
 export function analyzePosition(fen: string, depth: number): Promise<EngineEval> {
   return pool.analyze(fen, depth);
 }
 
 /**
- * Analyze many positions at once: all FENs are queued and the worker pool
- * searches several in parallel.
- *
- * Returns results in the SAME ORDER as `fens`; a position that failed comes
- * back as `null`. `onProgress(done, total)` fires as each position finishes.
+ * Analyze many positions at once. Returns results in the SAME ORDER as
+ * `fens`; a position that failed comes back as `null`.
+ * `onProgress(done, total)` fires as each position finishes.
  */
 export function analyzePositions(
   fens: string[],
@@ -312,10 +412,7 @@ export function analyzePositions(
   return runBatch(fens, depth, 1, onProgress);
 }
 
-/**
- * Same as analyzePositions but searches the top 2 lines, so `result.second`
- * holds the 2nd-best move's eval. Used to spot "only moves" (great moves).
- */
+/** Same as analyzePositions but searches the top 2 lines (`result.second`). */
 export function analyzeSecondBest(
   fens: string[],
   depth: number,
@@ -324,6 +421,14 @@ export function analyzeSecondBest(
   return runBatch(fens, depth, 2, onProgress);
 }
 
+/**
+ * Splits the list into small contiguous chunks. Each runner owns one worker
+ * and keeps pulling the next unclaimed chunk, so neighbouring plies share a
+ * hash table and no worker sits idle while another finishes a big block.
+ *
+ * Note: only valid for lists that are ordered game positions. Non-adjacent
+ * lists (e.g. only-move candidates) still work, they just see less reuse.
+ */
 async function runBatch(
   fens: string[],
   depth: number,
@@ -335,19 +440,33 @@ async function runBatch(
   let done = 0;
   const tick = () => onProgress?.(++done, total);
 
+  const chunkCount = Math.ceil(total / CHUNK_SIZE);
+  let nextChunk = 0;
+  const runners = Math.min(MAX_WORKERS, chunkCount);
+
   await Promise.all(
-    fens.map((fen, i) =>
-      pool
-        .analyze(fen, depth, multiPv)
-        .then((r) => {
-          results[i] = r;
-        })
-        .catch(() => {
-          results[i] = null;
-        })
-        .then(tick),
-    ),
+    Array.from({ length: runners }, async () => {
+      let w: EngineWorker;
+      try {
+        w = await pool.acquire();
+      } catch {
+        return; // can't spawn a worker; leftover chunks go to other runners
+      }
+      try {
+        while (nextChunk < chunkCount) {
+          const c = nextChunk++;
+          const start = c * CHUNK_SIZE;
+          const end = Math.min(total, start + CHUNK_SIZE);
+          w = await pool.analyzeRun(fens, start, end, depth, multiPv, results, tick, w);
+        }
+      } finally {
+        pool.release(w);
+      }
+    }),
   );
+
+  // If every runner failed to start, report the remainder as done so progress completes.
+  while (done < total) tick();
   return results;
 }
 
