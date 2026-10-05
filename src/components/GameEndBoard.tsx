@@ -4,7 +4,7 @@ import { Component, useEffect, useMemo, useState, type ReactNode } from 'react';
 /*  Game-end detection                                                 */
 /* ------------------------------------------------------------------ */
 
-export type GameEndKind = 'resign' | 'timeout';
+export type GameEndKind = 'resign' | 'timeout' | 'abandon';
 export interface GameEnd {
   kind: GameEndKind;
   /** Colour of the player who lost (resigned / ran out of time). */
@@ -35,6 +35,7 @@ export function detectGameEnd(game: any, moves: { san?: string }[]): GameEnd | n
 
   let kind: GameEndKind | null = null;
   if (/resign/.test(text)) kind = 'resign';
+  else if (/abandon|left the game|disconnect/.test(text)) kind = 'abandon';
   else if (/on time|timeout|time out|time forfeit|timeforfeit|outoftime|out of time|flag/.test(text)) kind = 'timeout';
   if (!kind) return null;
 
@@ -120,7 +121,7 @@ function PawnSprite({ white }: { white: boolean }) {
   );
 }
 
-type Mood = 'sad' | 'sleep' | 'panic' | 'done';
+type Mood = 'sad' | 'sleep' | 'panic' | 'done' | 'angry';
 
 function KingFace({ mood, stroke }: { mood: Mood; stroke: string }) {
   switch (mood) {
@@ -150,6 +151,15 @@ function KingFace({ mood, stroke }: { mood: Mood; stroke: string }) {
           <path d="M20.5 23.4 h4" />
         </g>
       );
+    case 'angry':
+      return (
+        <g fill="none" stroke={stroke} strokeWidth={1.1} strokeLinecap="round">
+          <circle cx="20" cy="19.4" r="0.9" fill={stroke} stroke="none" />
+          <circle cx="25" cy="19.4" r="0.9" fill={stroke} stroke="none" />
+          <path d="M18 16.4 L21.6 18 M27 16.4 L23.4 18" strokeWidth={1.4} />
+          <ellipse cx="22.5" cy="23.6" rx="1.9" ry="2.4" fill={stroke} />
+        </g>
+      );
     default: // sad
       return (
         <g fill="none" stroke={stroke} strokeWidth={1} strokeLinecap="round">
@@ -163,9 +173,9 @@ function KingFace({ mood, stroke }: { mood: Mood; stroke: string }) {
   }
 }
 
-function Crown({ falling }: { falling?: boolean }) {
+function Crown({ falling, className, style }: { falling?: boolean; className?: string; style?: React.CSSProperties }) {
   return (
-    <g className={falling ? 'ge-crown-drop' : undefined}>
+    <g className={className ?? (falling ? 'ge-crown-drop' : undefined)} style={style}>
       <path
         d="M16 13.8 L17.4 5.6 L20.5 10 L22.5 4.4 L24.5 10 L27.6 5.6 L29 13.8 Z"
         fill="#f2c230" stroke="#8a6a00" strokeWidth={1} strokeLinejoin="round"
@@ -175,24 +185,32 @@ function Crown({ falling }: { falling?: boolean }) {
 }
 
 function KingSprite({
-  white, mood, flag, crown,
+  white, mood, flag, crown, walking,
 }: {
   white: boolean;
   mood: Mood;
   flag?: boolean;
   /** 'on' = worn, 'drop' = falling to the floor, 'none' = not drawn */
-  crown: 'on' | 'drop';
+  crown: 'on' | 'drop' | 'none';
+  walking?: boolean;
 }) {
   const { fill, stroke } = palette(white);
   const bodyClass =
     mood === 'sleep' ? 'ge-king-sleep'
-    : mood === 'panic' ? 'ge-king-panic'
+    : mood === 'panic' || (mood === 'angry' && !walking) ? 'ge-king-panic'
     : mood === 'done' ? 'ge-king-done'
+    : mood === 'angry' ? undefined
     : 'ge-king-sad';
 
   return (
     <g strokeLinejoin="round" strokeLinecap="round">
       <g className={bodyClass}>
+        {walking && (
+          <g stroke={stroke} strokeWidth={2.4} fill="none">
+            <g className="ge-leg ge-leg-a"><line x1="19.5" y1="38" x2="19.5" y2="44.5" /></g>
+            <g className="ge-leg ge-leg-b"><line x1="25.5" y1="38" x2="25.5" y2="44.5" /></g>
+          </g>
+        )}
         <g fill={fill} stroke={stroke} strokeWidth={1.4}>
           <path d="M13 40 C13.5 30 17 25 22.5 25 C28 25 31.5 30 32 40 Z" />
           <rect x="12" y="38.4" width="21" height="3.6" rx="1.6" />
@@ -216,13 +234,13 @@ function KingSprite({
               </g>
             </>
           )}
-          {mood === 'panic' && (
+          {(mood === 'panic' || (mood === 'angry' && !walking)) && (
             <>
               <g className="ge-arm-l"><line x1="16" y1="29" x2="8" y2="17" /></g>
               <g className="ge-arm-r"><line x1="29" y1="29" x2="37" y2="17" /></g>
             </>
           )}
-          {(mood === 'sleep' || mood === 'done') && (
+          {(mood === 'sleep' || mood === 'done' || (mood === 'angry' && walking)) && (
             <>
               <line x1="16" y1="29" x2="13" y2="37" />
               <line x1="29" y1="29" x2="32" y2="37" />
@@ -291,6 +309,16 @@ const CSS = `
 @keyframes ge-fall { to { transform: translate(6px,2px) rotate(88deg); } }
 .ge-king-done { transform-origin: 22.5px 42px; animation: ge-fall .9s ease-in forwards; }
 
+@keyframes ge-throw {
+  0% { transform: translate(0,0) rotate(0); }
+  30% { transform: translate(calc(var(--tx) * .45),-34px) rotate(300deg); }
+  65% { transform: translate(calc(var(--tx) * .9),27px) rotate(560deg); }
+  78% { transform: translate(var(--tx),20px) rotate(640deg); }
+  100% { transform: translate(calc(var(--tx) * 1.05),27px) rotate(720deg); }
+}
+.ge-crown-throw { transform-origin: 22.5px 10px; animation: ge-throw 1.2s ease-in-out .4s both; }
+@keyframes ge-shout { from { transform: rotate(-2.5deg); } to { transform: rotate(2.5deg); } }
+.ge-shout { transform-origin: 0 0; animation: ge-shout .18s linear infinite alternate; }
 @keyframes ge-pop { from { transform: scale(.2); opacity: 0; } to { transform: scale(1); opacity: 1; } }
 .ge-clock-pop { transform-origin: 0 0; animation: ge-pop .35s cubic-bezier(.3,1.6,.5,1) both; }
 @keyframes ge-pulse { 50% { transform: scale(1.12); } }
@@ -344,6 +372,7 @@ export function GameEndBoard({ fen, orientation, size, end, atFinalPosition, chi
   const [dismissed, setDismissed] = useState(false);
   const [phase, setPhase] = useState<'sleep' | 'panic' | 'done'>('sleep');
   const [count, setCount] = useState(10);
+  const [leaving, setLeaving] = useState(false);
 
   // Each time we arrive at the final position, play from the start.
   useEffect(() => {
@@ -372,6 +401,14 @@ export function GameEndBoard({ fen, orientation, size, end, atFinalPosition, chi
       );
     }
     return () => ids.forEach((id) => window.clearTimeout(id));
+  }, [playing, kind, run]);
+
+  // Abandonment: yell "I QUIT!" and throw the crown (2.4s), then walk off the board.
+  useEffect(() => {
+    if (!playing || kind !== 'abandon') return;
+    setLeaving(false);
+    const id = window.setTimeout(() => setLeaving(true), 2400);
+    return () => window.clearTimeout(id);
   }, [playing, kind, run]);
 
   const kingChar = end?.loser === 'w' ? 'K' : 'k';
@@ -457,6 +494,72 @@ export function GameEndBoard({ fen, orientation, size, end, atFinalPosition, chi
               </g>
             </g>
           )}
+
+          {/* ---------- abandonment: throws crown, yells "I QUIT!", walks away ---------- */}
+          {end.kind === 'abandon' && king && (() => {
+            const kx = king.col * CELL;
+            const ky = king.row * CELL;
+            const exitDir = king.col < 4 ? -1 : 1;
+            const dist = exitDir < 0 ? king.col + 1 : 8 - king.col;
+            const above = king.row > 0;
+            const bx = Math.max(105, Math.min(695, kx + 50));
+            const by = above ? ky - 52 : ky + CELL + 52;
+            return (
+              <>
+                {!leaving ? (
+                  <g transform={`translate(${kx},${ky}) scale(${SPRITE_SCALE})`}>
+                    <KingSprite white={loserWhite} mood="angry" crown="none" />
+                  </g>
+                ) : (
+                  <g transform={`translate(${kx},${ky})`}>
+                    <g
+                      className="ge-pawn-walk"
+                      style={{
+                        ['--dx' as any]: `${exitDir * dist * CELL}px`,
+                        ['--dur' as any]: `${dist * 0.6}s`,
+                        ['--delay' as any]: '0s',
+                      }}
+                    >
+                      <g transform={`scale(${SPRITE_SCALE})`}>
+                        <g className="ge-bob" style={{ ['--delay' as any]: '0s' }}>
+                          <KingSprite white={loserWhite} mood="angry" crown="none" walking />
+                        </g>
+                      </g>
+                    </g>
+                  </g>
+                )}
+
+                {/* the thrown crown stays on the board */}
+                <g transform={`translate(${kx},${ky}) scale(${SPRITE_SCALE})`}>
+                  <Crown
+                    className="ge-crown-throw"
+                    style={{ ['--tx' as any]: `${-exitDir * 65}px` }}
+                  />
+                </g>
+
+                {!leaving && (
+                  <g transform={`translate(${bx},${by})`}>
+                    <g className="ge-clock-pop">
+                      <g className="ge-shout">
+                        <rect x="-100" y="-30" width="200" height="60" rx="16" fill="#fff" stroke="#1b1f2a" strokeWidth="4" />
+                        <polygon
+                          points={above ? '-14,29 14,29 0,50' : '-14,-29 14,-29 0,-50'}
+                          fill="#fff" stroke="#1b1f2a" strokeWidth="4" strokeLinejoin="round"
+                        />
+                        <rect x="-16" y={above ? 24 : -32} width="32" height="8" fill="#fff" />
+                        <text
+                          textAnchor="middle" dominantBaseline="central" fontSize="38" fontWeight="900"
+                          fill="#d92d20" fontFamily="ui-sans-serif, system-ui, sans-serif"
+                        >
+                          I QUIT!
+                        </text>
+                      </g>
+                    </g>
+                  </g>
+                )}
+              </>
+            );
+          })()}
 
           {/* ---------- timeout: sleeping king -> clock + panic ---------- */}
           {end.kind === 'timeout' && king && (
