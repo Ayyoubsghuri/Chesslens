@@ -197,7 +197,7 @@ function PawnSprite({ white }: { white: boolean }) {
   );
 }
 
-type Mood = 'sad' | 'sleep' | 'panic' | 'done' | 'angry' | 'happy';
+type Mood = 'sad' | 'sleep' | 'panic' | 'done' | 'angry' | 'happy' | 'dance';
 
 function KingFace({ mood, stroke }: { mood: Mood; stroke: string }) {
   switch (mood) {
@@ -227,6 +227,7 @@ function KingFace({ mood, stroke }: { mood: Mood; stroke: string }) {
           <path d="M20.5 23.4 h4" />
         </g>
       );
+    case 'dance':
     case 'happy':
       return (
         <g fill="none" stroke={stroke} strokeWidth={1.1} strokeLinecap="round">
@@ -280,7 +281,8 @@ function KingSprite({
 }) {
   const { fill, stroke } = palette(white);
   const bodyClass =
-    mood === 'sleep' ? 'ge-king-sleep'
+    mood === 'dance' ? 'ge-king-dance'
+    : mood === 'sleep' ? 'ge-king-sleep'
     : mood === 'panic' || (mood === 'angry' && !walking) ? 'ge-king-panic'
     : mood === 'done' ? 'ge-king-done'
     : mood === 'angry' ? undefined
@@ -316,6 +318,12 @@ function KingSprite({
                   />
                 </g>
               </g>
+            </>
+          )}
+          {mood === 'dance' && (
+            <>
+              <g className="ge-dance-l"><line x1="16" y1="29" x2="8" y2="17" /></g>
+              <g className="ge-dance-r"><line x1="29" y1="29" x2="37" y2="17" /></g>
             </>
           )}
           {(mood === 'panic' || (mood === 'angry' && !walking)) && (
@@ -403,6 +411,16 @@ const CSS = `
 .ge-crown-throw { transform-origin: 22.5px 10px; animation: ge-throw 1.2s ease-in-out .4s both; }
 @keyframes ge-shout { from { transform: rotate(-2.5deg); } to { transform: rotate(2.5deg); } }
 .ge-shout { transform-origin: 0 0; animation: ge-shout .18s linear infinite alternate; }
+@keyframes ge-dance {
+  0%,100% { transform: translate(0,0) rotate(-9deg); }
+  25% { transform: translate(0,-9px) rotate(0); }
+  50% { transform: translate(0,0) rotate(9deg); }
+  75% { transform: translate(0,-9px) rotate(0); }
+}
+.ge-king-dance { transform-origin: 22.5px 42px; animation: ge-dance .6s ease-in-out infinite; }
+@keyframes ge-dance-arm { from { transform: rotate(-35deg); } to { transform: rotate(15deg); } }
+.ge-dance-l { transform-origin: 16px 29px; animation: ge-dance-arm .3s ease-in-out infinite alternate; }
+.ge-dance-r { transform-origin: 29px 29px; animation: ge-dance-arm .3s ease-in-out infinite alternate-reverse; }
 @keyframes ge-bump {
   0%,16%,32%,48%,64%,80%,100% { transform: translate(0,0); }
   8% { transform: translate(-18px,0); } 24% { transform: translate(18px,0); }
@@ -482,7 +500,7 @@ export function GameEndBoard({ fen, orientation, size, end, atFinalPosition, chi
   const [leaving, setLeaving] = useState(false);
   const [dphase, setDphase] = useState<'walk' | 'shake' | 'sign' | 'done'>('walk');
   const [step, setStep] = useState(0);
-  const [sphase, setSphase] = useState<'trapped' | 'sink' | 'gone'>('trapped');
+  const [sphase, setSphase] = useState<'trapped' | 'scream' | 'dance'>('trapped');
 
   // Each time we arrive at the final position, play from the start.
   useEffect(() => {
@@ -576,13 +594,13 @@ export function GameEndBoard({ fen, orientation, size, end, atFinalPosition, chi
     return () => ids.forEach((id) => window.clearTimeout(id));
   }, [playing, kind, run, drawPlan]);
 
-  // Stalemate: bump into the walls, "I have nowhere to move!", then sink into the square.
+  // Stalemate: bump into the walls shouting "Call an ambulance!", scream "But not for me!", then dance.
   useEffect(() => {
     if (!playing || kind !== 'stalemate') return;
     setSphase('trapped');
     const ids = [
-      window.setTimeout(() => setSphase('sink'), 2800),
-      window.setTimeout(() => setSphase('gone'), 2800 + 2300),
+      window.setTimeout(() => setSphase('scream'), 2800),
+      window.setTimeout(() => setSphase('dance'), 2800 + 2000),
     ];
     return () => ids.forEach((id) => window.clearTimeout(id));
   }, [playing, kind, run]);
@@ -813,74 +831,66 @@ export function GameEndBoard({ fen, orientation, size, end, atFinalPosition, chi
             );
           })()}
 
-          {/* ---------- stalemate: nowhere to move, then drowns in his own square ---------- */}
+          {/* ---------- stalemate: "Call an ambulance!" -> "But not for me!" -> dance ---------- */}
           {end.kind === 'stalemate' && king && (() => {
             const kx = king.col * CELL;
             const ky = king.row * CELL;
             const above = king.row >= 2;
             const bx = clamp(kx + 50, 135, 665);
             const by = above ? ky - 60 : ky + CELL + 60;
-            const sinking = sphase === 'sink' || sphase === 'gone';
-            const clipId = `ge-clip-${run}`;
+            const screaming = sphase === 'scream';
+            const lines = screaming ? ['But not', 'for me!'] : ['Call an', 'ambulance!'];
+            const mood: Mood = sphase === 'trapped' ? 'panic' : sphase === 'scream' ? 'angry' : 'dance';
             return (
               <>
-                <defs>
-                  <clipPath id={clipId}>
-                    <rect x={kx - 20} y={ky - 60} width={140} height={160} />
-                  </clipPath>
-                </defs>
-
-                {sphase !== 'gone' && (
-                  <g clipPath={`url(#${clipId})`}>
-                    <g transform={`translate(${kx},${ky})`}>
-                      <g className={sphase === 'trapped' ? 'ge-bump' : 'ge-sink'}>
-                        <g transform={`scale(${SPRITE_SCALE})`}>
-                          <KingSprite white={loserWhite} mood={sphase === 'trapped' ? 'sad' : 'panic'} crown="on" />
-                        </g>
-                      </g>
+                <g transform={`translate(${kx},${ky})`}>
+                  <g className={sphase === 'trapped' ? 'ge-bump' : undefined}>
+                    <g transform={`scale(${SPRITE_SCALE})`}>
+                      <KingSprite white={loserWhite} mood={mood} crown="on" walking={sphase === 'dance'} />
                     </g>
                   </g>
-                )}
+                </g>
 
-                {sinking && (
-                  <g transform={`translate(${kx},${ky})`}>
-                    <rect className="ge-water" width="100" height="100" fill="#2f8cff" />
-                    {[0, 1, 2].map((i) => (
-                      <ellipse
-                        key={`rp-${i}`} className="ge-ripple" cx="50" cy="62" rx="14" ry="6"
-                        fill="none" stroke="#fff" strokeWidth="2.5"
-                        style={{ animationDelay: `${0.8 + i * 0.6}s` }}
-                      />
-                    ))}
-                    {[38, 52, 64].map((x, i) => (
-                      <circle
-                        key={`bb-${i}`} className="ge-bubble" cx={x} cy={84 - i * 4} r={4 + (i % 2) * 2}
-                        fill="rgba(255,255,255,.35)" stroke="#fff" strokeWidth="1.5"
-                        style={{ animationDelay: `${i * 0.5}s` }}
-                      />
-                    ))}
-                  </g>
-                )}
-
-                {sphase !== 'gone' && (
-                  <g transform={`translate(${bx},${by})`}>
+                {sphase !== 'dance' && (
+                  <g transform={`translate(${bx},${by})`} key={sphase}>
                     <g className="ge-clock-pop">
-                      <g className="ge-shout">
+                      <g className="ge-shout" style={screaming ? { animationDuration: '.09s' } : undefined}>
                         <rect x="-125" y="-42" width="250" height="84" rx="18" fill="#fff" stroke="#1b1f2a" strokeWidth="4" />
                         <polygon
                           points={above ? '-16,41 16,41 0,62' : '-16,-41 16,-41 0,-62'}
                           fill="#fff" stroke="#1b1f2a" strokeWidth="4" strokeLinejoin="round"
                         />
                         <rect x="-18" y={above ? 36 : -44} width="36" height="8" fill="#fff" />
-                        <text textAnchor="middle" fontSize="28" fontWeight="900" fill="#d92d20"
-                          fontFamily="ui-sans-serif, system-ui, sans-serif">
-                          <tspan x="0" dy="-8">I have nowhere</tspan>
-                          <tspan x="0" dy="34">to move!</tspan>
+                        <text
+                          textAnchor="middle" fontSize={screaming ? 34 : 29} fontWeight="900"
+                          fill={screaming ? '#d92d20' : '#1b1f2a'}
+                          fontFamily="ui-sans-serif, system-ui, sans-serif"
+                        >
+                          <tspan x="0" dy="-8">{lines[0]}</tspan>
+                          <tspan x="0" dy="36">{lines[1]}</tspan>
                         </text>
                       </g>
                     </g>
                   </g>
                 )}
+
+                {sphase === 'dance' &&
+                  ['♪', '♫', '♪', '♫'].map((note, i) => {
+                    const dir = i % 2 === 0 ? 1 : -1;
+                    return (
+                      <g key={`note-${i}`} transform={`translate(${kx + 50 + dir * 62},${ky + 36})`}>
+                        <text
+                          className="ge-z"
+                          style={{ ['--zx' as any]: `${dir * 18}px`, animationDelay: `${i * 0.6}s` }}
+                          fontSize="40" fontWeight="800" textAnchor="middle"
+                          fill={i % 2 ? '#f2c230' : '#26c2a3'} stroke="#1b1f2a" strokeWidth="2" paintOrder="stroke"
+                          fontFamily="ui-sans-serif, system-ui, sans-serif"
+                        >
+                          {note}
+                        </text>
+                      </g>
+                    );
+                  })}
               </>
             );
           })()}
