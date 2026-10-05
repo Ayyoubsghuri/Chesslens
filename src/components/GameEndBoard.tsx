@@ -1,13 +1,14 @@
 import { Component, useEffect, useMemo, useState, type ReactNode } from 'react';
+import { Chess } from 'chess.js';
 
 /* ------------------------------------------------------------------ */
 /*  Game-end detection                                                 */
 /* ------------------------------------------------------------------ */
 
-export type GameEndKind = 'resign' | 'timeout' | 'abandon';
+export type GameEndKind = 'resign' | 'timeout' | 'abandon' | 'draw' | 'stalemate';
 export interface GameEnd {
   kind: GameEndKind;
-  /** Colour of the player who lost (resigned / ran out of time). */
+  /** Colour of the player who lost (resigned / ran out of time) or who is stalemated. Unused for draws. */
   loser: 'w' | 'b';
 }
 
@@ -17,7 +18,7 @@ export interface GameEnd {
  * PGN `[Termination "..."]` header), because the exact shape of `analysis.game` can vary.
  * Checkmate is never an effect.
  */
-export function detectGameEnd(game: any, moves: { san?: string }[]): GameEnd | null {
+export function detectGameEnd(game: any, moves: { san?: string; fenAfter?: string }[]): GameEnd | null {
   if (!game || moves.length === 0) return null;
   if (moves[moves.length - 1]?.san?.includes('#')) return null;
 
@@ -32,6 +33,25 @@ export function detectGameEnd(game: any, moves: { san?: string }[]): GameEnd | n
     if (/term|reason|status|outcome|ending|endedby|result_?detail/i.test(key)) parts.push(value);
   }
   const text = parts.join(' | ').toLowerCase();
+
+  // Stalemate: the side to move in the final position has no legal move and is not in check.
+  const lastFen = moves[moves.length - 1]?.fenAfter;
+  let turn: 'w' | 'b' = 'w';
+  let stale = false;
+  if (lastFen) {
+    try {
+      const c = new Chess(lastFen);
+      turn = c.turn();
+      stale = c.isStalemate();
+    } catch { /* ignore */ }
+  }
+  if (stale || /stalemate/.test(text)) return { kind: 'stalemate', loser: turn };
+
+  // Any other draw (agreement, repetition, insufficient material, 50-move rule...)
+  const res0 = typeof game.result === 'string' ? game.result.trim() : '';
+  if (/^(1\/2|½)/.test(res0) || /\bdraw|agreed|repetition|insufficient|fifty|50.move/.test(text)) {
+    return { kind: 'draw', loser: 'w' };
+  }
 
   let kind: GameEndKind | null = null;
   if (/resign/.test(text)) kind = 'resign';
@@ -78,6 +98,44 @@ function stripPieces(fen: string, shouldRemove: (ch: string) => boolean): string
 
 interface Placed { ch: string; col: number; row: number }
 
+/** Shortest 8-direction path over empty squares from `from` to `to` (the goal square itself may be occupied). */
+function findPath(
+  from: { col: number; row: number },
+  to: { col: number; row: number },
+  blocked: Set<number>
+): { col: number; row: number }[] | null {
+  const key = (c: number, r: number) => c * 8 + r;
+  const start = key(from.col, from.row);
+  const goal = key(to.col, to.row);
+  const prev = new Map<number, number>([[start, -1]]);
+  const queue = [start];
+  for (let qi = 0; qi < queue.length; qi++) {
+    const cur = queue[qi];
+    if (cur === goal) break;
+    const c = Math.floor(cur / 8);
+    const r = cur % 8;
+    for (let dc = -1; dc <= 1; dc++) {
+      for (let dr = -1; dr <= 1; dr++) {
+        if (!dc && !dr) continue;
+        const nc = c + dc;
+        const nr = r + dr;
+        if (nc < 0 || nc > 7 || nr < 0 || nr > 7) continue;
+        const k = key(nc, nr);
+        if (prev.has(k)) continue;
+        if (k !== goal && blocked.has(k)) continue;
+        prev.set(k, cur);
+        queue.push(k);
+      }
+    }
+  }
+  if (!prev.has(goal)) return null;
+  const path: { col: number; row: number }[] = [];
+  for (let k = goal; k !== -1; k = prev.get(k)!) path.push({ col: Math.floor(k / 8), row: k % 8 });
+  return path.reverse();
+}
+
+const clamp = (v: number, lo: number, hi: number) => Math.max(lo, Math.min(hi, v));
+
 /** Pieces with their on-screen column/row (0-7) for the given orientation. */
 function parseBoard(fen: string, orientation: 'white' | 'black'): Placed[] {
   const out: Placed[] = [];
@@ -121,7 +179,7 @@ function PawnSprite({ white }: { white: boolean }) {
   );
 }
 
-type Mood = 'sad' | 'sleep' | 'panic' | 'done' | 'angry';
+type Mood = 'sad' | 'sleep' | 'panic' | 'done' | 'angry' | 'happy';
 
 function KingFace({ mood, stroke }: { mood: Mood; stroke: string }) {
   switch (mood) {
@@ -149,6 +207,14 @@ function KingFace({ mood, stroke }: { mood: Mood; stroke: string }) {
           <path d="M18.6 17.8 l2.4 2.4 M21 17.8 l-2.4 2.4" />
           <path d="M24 17.8 l2.4 2.4 M26.4 17.8 l-2.4 2.4" />
           <path d="M20.5 23.4 h4" />
+        </g>
+      );
+    case 'happy':
+      return (
+        <g fill="none" stroke={stroke} strokeWidth={1.1} strokeLinecap="round">
+          <circle cx="20" cy="18.8" r="0.9" fill={stroke} stroke="none" />
+          <circle cx="25" cy="18.8" r="0.9" fill={stroke} stroke="none" />
+          <path d="M19.4 22.2 Q22.5 25.6 25.6 22.2" />
         </g>
       );
     case 'angry':
@@ -240,7 +306,7 @@ function KingSprite({
               <g className="ge-arm-r"><line x1="29" y1="29" x2="37" y2="17" /></g>
             </>
           )}
-          {(mood === 'sleep' || mood === 'done' || (mood === 'angry' && walking)) && (
+          {(mood === 'sleep' || mood === 'done' || mood === 'happy' || (mood === 'angry' && walking)) && (
             <>
               <line x1="16" y1="29" x2="13" y2="37" />
               <line x1="29" y1="29" x2="32" y2="37" />
@@ -319,6 +385,29 @@ const CSS = `
 .ge-crown-throw { transform-origin: 22.5px 10px; animation: ge-throw 1.2s ease-in-out .4s both; }
 @keyframes ge-shout { from { transform: rotate(-2.5deg); } to { transform: rotate(2.5deg); } }
 .ge-shout { transform-origin: 0 0; animation: ge-shout .18s linear infinite alternate; }
+@keyframes ge-bump {
+  0%,16%,32%,48%,64%,80%,100% { transform: translate(0,0); }
+  8% { transform: translate(-18px,0); } 24% { transform: translate(18px,0); }
+  40% { transform: translate(0,-18px); } 56% { transform: translate(0,18px); }
+  72% { transform: translate(-16px,-16px); } 90% { transform: translate(16px,16px); }
+}
+.ge-bump { animation: ge-bump 2.6s ease-in-out both; }
+@keyframes ge-sink { from { transform: translateY(0); } to { transform: translateY(125px); } }
+.ge-sink { animation: ge-sink 2.2s ease-in forwards; }
+@keyframes ge-rise { from { transform: scaleY(0); opacity: 0; } to { transform: scaleY(1); opacity: .6; } }
+.ge-water { transform-origin: 0 100px; animation: ge-rise 2.2s ease-in forwards; }
+@keyframes ge-ripple { from { transform: scale(.3); opacity: .9; } to { transform: scale(2.2); opacity: 0; } }
+.ge-ripple { transform-origin: 50px 62px; animation: ge-ripple 1.8s ease-out infinite; }
+@keyframes ge-bubble { 0% { transform: translateY(0); opacity: 0; } 20% { opacity: 1; } 100% { transform: translateY(-70px); opacity: 0; } }
+.ge-bubble { animation: ge-bubble 1.6s ease-in infinite; }
+@keyframes ge-clasp { from { transform: rotate(-6deg); } to { transform: rotate(6deg); } }
+.ge-clasp { transform-origin: 0 0; animation: ge-clasp .22s ease-in-out infinite alternate; }
+@keyframes ge-scribble { from { transform: translate(0,0); } to { transform: translate(3px,-3px); } }
+.ge-scribble { animation: ge-scribble .14s linear infinite alternate; }
+@keyframes ge-sig { from { stroke-dashoffset: 100; } to { stroke-dashoffset: 0; } }
+.ge-sig { stroke-dasharray: 100; animation: ge-sig 1.2s ease-in-out both; }
+@keyframes ge-stamp { from { transform: scale(2.6); opacity: 0; } to { transform: scale(1); opacity: .92; } }
+.ge-stamp { transform-origin: 0 0; animation: ge-stamp .3s ease-in 3.1s both; }
 @keyframes ge-pop { from { transform: scale(.2); opacity: 0; } to { transform: scale(1); opacity: 1; } }
 .ge-clock-pop { transform-origin: 0 0; animation: ge-pop .35s cubic-bezier(.3,1.6,.5,1) both; }
 @keyframes ge-pulse { 50% { transform: scale(1.12); } }
@@ -373,6 +462,9 @@ export function GameEndBoard({ fen, orientation, size, end, atFinalPosition, chi
   const [phase, setPhase] = useState<'sleep' | 'panic' | 'done'>('sleep');
   const [count, setCount] = useState(10);
   const [leaving, setLeaving] = useState(false);
+  const [dphase, setDphase] = useState<'walk' | 'shake' | 'sign' | 'done'>('walk');
+  const [step, setStep] = useState(0);
+  const [sphase, setSphase] = useState<'trapped' | 'sink' | 'gone'>('trapped');
 
   // Each time we arrive at the final position, play from the start.
   useEffect(() => {
@@ -416,9 +508,9 @@ export function GameEndBoard({ fen, orientation, size, end, atFinalPosition, chi
 
   const boardFen = useMemo(() => {
     if (!playing || !end) return fen;
-    return end.kind === 'resign'
-      ? stripPieces(fen, (ch) => ch === pawnChar || ch === kingChar)
-      : stripPieces(fen, (ch) => ch === kingChar);
+    if (end.kind === 'resign') return stripPieces(fen, (ch) => ch === pawnChar || ch === kingChar);
+    if (end.kind === 'draw') return stripPieces(fen, (ch) => ch === 'K' || ch === 'k');
+    return stripPieces(fen, (ch) => ch === kingChar);
   }, [playing, end, fen, kingChar, pawnChar]);
 
   const fallbackFen = useMemo(() => {
@@ -429,6 +521,53 @@ export function GameEndBoard({ fen, orientation, size, end, atFinalPosition, chi
   const placed = useMemo(() => (playing ? parseBoard(fen, orientation) : []), [playing, fen, orientation]);
   const king = placed.find((p) => p.ch === kingChar) || null;
   const loserWhite = end?.loser === 'w';
+
+  const kings = useMemo(
+    () => ({ wk: placed.find((p) => p.ch === 'K') || null, bk: placed.find((p) => p.ch === 'k') || null }),
+    [placed]
+  );
+
+  // Draw: both kings walk toward each other over empty squares only and meet in the middle.
+  const drawPlan = useMemo(() => {
+    if (!playing || kind !== 'draw' || !kings.wk || !kings.bk) return null;
+    const blocked = new Set(placed.map((p) => p.col * 8 + p.row));
+    const path = findPath(kings.wk, kings.bk, blocked);
+    if (!path) return null;
+    const m = path.length - 2; // squares strictly between the two kings
+    const a = Math.floor(m / 2);
+    return { path, m, a, maxSteps: Math.max(a, m - a) };
+  }, [playing, kind, placed, kings]);
+
+  useEffect(() => {
+    if (!playing || kind !== 'draw') return;
+    setStep(0);
+    const ids: number[] = [];
+    const SIGN_MS = 4200;
+    if (!drawPlan) {
+      setDphase('sign');
+      ids.push(window.setTimeout(() => setDphase('done'), SIGN_MS));
+    } else {
+      setDphase('walk');
+      const n = drawPlan.maxSteps;
+      for (let i = 1; i <= n; i++) ids.push(window.setTimeout(() => setStep(i), 300 + (i - 1) * 450));
+      const shakeAt = 300 + n * 450 + 150;
+      ids.push(window.setTimeout(() => setDphase('shake'), shakeAt));
+      ids.push(window.setTimeout(() => setDphase('sign'), shakeAt + 2000));
+      ids.push(window.setTimeout(() => setDphase('done'), shakeAt + 2000 + SIGN_MS));
+    }
+    return () => ids.forEach((id) => window.clearTimeout(id));
+  }, [playing, kind, run, drawPlan]);
+
+  // Stalemate: bump into the walls, "I have nowhere to move!", then sink into the square.
+  useEffect(() => {
+    if (!playing || kind !== 'stalemate') return;
+    setSphase('trapped');
+    const ids = [
+      window.setTimeout(() => setSphase('sink'), 2800),
+      window.setTimeout(() => setSphase('gone'), 2800 + 2300),
+    ];
+    return () => ids.forEach((id) => window.clearTimeout(id));
+  }, [playing, kind, run]);
 
   const gray = playing && kind === 'timeout' && phase !== 'sleep';
 
@@ -552,6 +691,173 @@ export function GameEndBoard({ fen, orientation, size, end, atFinalPosition, chi
                           fill="#d92d20" fontFamily="ui-sans-serif, system-ui, sans-serif"
                         >
                           I QUIT!
+                        </text>
+                      </g>
+                    </g>
+                  </g>
+                )}
+              </>
+            );
+          })()}
+
+          {/* ---------- draw: kings walk to each other, shake hands, sign the peace treaty ---------- */}
+          {end.kind === 'draw' && kings.wk && kings.bk && (() => {
+            const plan = drawPlan;
+            const w = kings.wk!;
+            const b = kings.bk!;
+            const p1 = plan ? plan.path[Math.min(step, plan.a)] : w;
+            const p2 = plan ? plan.path[plan.m + 1 - Math.min(step, plan.m - plan.a)] : b;
+            const walking1 = !!plan && dphase === 'walk' && step < plan.a;
+            const walking2 = !!plan && dphase === 'walk' && step < plan.m - plan.a;
+            const s1 = { x: p1.col * CELL + 50, y: p1.row * CELL + 64 };
+            const s2 = { x: p2.col * CELL + 50, y: p2.row * CELL + 64 };
+            const mid = { x: (s1.x + s2.x) / 2, y: (s1.y + s2.y) / 2 };
+            const pc = { x: clamp(mid.x, 95, 705), y: clamp(mid.y, 125, 675) };
+            const firstIsLeft = s1.x <= s2.x;
+            const sig = [
+              { x: pc.x - 50, y: pc.y + 72 },
+              { x: pc.x + 50, y: pc.y + 72 },
+            ];
+            const t1 = firstIsLeft ? sig[0] : sig[1];
+            const t2 = firstIsLeft ? sig[1] : sig[0];
+            const armStyle = { strokeWidth: 6, strokeLinecap: 'round' as const };
+            const kingNode = (p: { col: number; row: number }, white: boolean, walking: boolean, id: string) => (
+              <g
+                key={id}
+                style={{
+                  transform: `translate(${p.col * CELL}px,${p.row * CELL}px)`,
+                  transition: 'transform .45s linear',
+                }}
+              >
+                <g transform={`scale(${SPRITE_SCALE})`}>
+                  <g className={walking ? 'ge-bob' : undefined} style={{ ['--delay' as any]: '0s' }}>
+                    <KingSprite white={white} mood="happy" crown="on" walking={walking} />
+                  </g>
+                </g>
+              </g>
+            );
+            return (
+              <>
+                {kingNode(p1, true, walking1, 'dk-w')}
+                {kingNode(p2, false, walking2, 'dk-b')}
+
+                {dphase === 'shake' && (
+                  <g transform={`translate(${mid.x},${mid.y})`}>
+                    <g className="ge-clasp">
+                      <line x1={s1.x - mid.x} y1={s1.y - mid.y} x2={0} y2={0} stroke="#1a1a1a" {...armStyle} />
+                      <line x1={s2.x - mid.x} y1={s2.y - mid.y} x2={0} y2={0} stroke="#ebebeb" {...armStyle} />
+                      <circle r="9" fill="#f2c9a0" stroke="#7a5a3a" strokeWidth="2" />
+                    </g>
+                  </g>
+                )}
+
+                {dphase === 'sign' && (
+                  <>
+                    <g className="ge-scribble"><line x1={s1.x} y1={s1.y} x2={t1.x} y2={t1.y} stroke="#1a1a1a" {...armStyle} /></g>
+                    <g className="ge-scribble"><line x1={s2.x} y1={s2.y} x2={t2.x} y2={t2.y} stroke="#ebebeb" {...armStyle} /></g>
+                  </>
+                )}
+
+                {(dphase === 'sign' || dphase === 'done') && (
+                  <g transform={`translate(${pc.x},${pc.y})`}>
+                    <g className="ge-clock-pop">
+                      <rect x="-90" y="-115" width="180" height="230" rx="6" fill="#fffdf5" stroke="#bfb8a5" strokeWidth="3" />
+                      <text
+                        y="-85" textAnchor="middle" fontSize="21" fontWeight="800" fill="#2a2e39"
+                        fontFamily="ui-serif, Georgia, serif"
+                      >
+                        PEACE TREATY
+                      </text>
+                      {[-55, -33, -11, 11, 33].map((y) => (
+                        <line key={y} x1="-68" y1={y} x2="68" y2={y} stroke="#cfc9b8" strokeWidth="3" />
+                      ))}
+                      <line x1="-80" y1="72" x2="-20" y2="72" stroke="#2a2e39" strokeWidth="2" />
+                      <line x1="20" y1="72" x2="80" y2="72" stroke="#2a2e39" strokeWidth="2" />
+                      <g transform="translate(-50,66)">
+                        <path className="ge-sig" pathLength={100} style={{ animationDelay: '.6s' }}
+                          d="M-34,0 q8,-26 14,0 t14,0 t14,0 t14,-4" fill="none" stroke="#1d4ed8" strokeWidth="3" strokeLinecap="round" />
+                      </g>
+                      <g transform="translate(50,66)">
+                        <path className="ge-sig" pathLength={100} style={{ animationDelay: '1.9s' }}
+                          d="M-34,0 q8,-26 14,0 t14,0 t14,0 t14,-4" fill="none" stroke="#1d4ed8" strokeWidth="3" strokeLinecap="round" />
+                      </g>
+                      <g transform="translate(0,10) rotate(-14)">
+                        <g className="ge-stamp">
+                          <circle r="40" fill="none" stroke="#d92d20" strokeWidth="5" />
+                          <text textAnchor="middle" dominantBaseline="central" fontSize="32" fontWeight="900" fill="#d92d20"
+                            fontFamily="ui-sans-serif, system-ui, sans-serif">½–½</text>
+                        </g>
+                      </g>
+                    </g>
+                  </g>
+                )}
+              </>
+            );
+          })()}
+
+          {/* ---------- stalemate: nowhere to move, then drowns in his own square ---------- */}
+          {end.kind === 'stalemate' && king && (() => {
+            const kx = king.col * CELL;
+            const ky = king.row * CELL;
+            const above = king.row >= 2;
+            const bx = clamp(kx + 50, 135, 665);
+            const by = above ? ky - 60 : ky + CELL + 60;
+            const sinking = sphase === 'sink' || sphase === 'gone';
+            const clipId = `ge-clip-${run}`;
+            return (
+              <>
+                <defs>
+                  <clipPath id={clipId}>
+                    <rect x={kx - 20} y={ky - 60} width={140} height={160} />
+                  </clipPath>
+                </defs>
+
+                {sphase !== 'gone' && (
+                  <g clipPath={`url(#${clipId})`}>
+                    <g transform={`translate(${kx},${ky})`}>
+                      <g className={sphase === 'trapped' ? 'ge-bump' : 'ge-sink'}>
+                        <g transform={`scale(${SPRITE_SCALE})`}>
+                          <KingSprite white={loserWhite} mood={sphase === 'trapped' ? 'sad' : 'panic'} crown="on" />
+                        </g>
+                      </g>
+                    </g>
+                  </g>
+                )}
+
+                {sinking && (
+                  <g transform={`translate(${kx},${ky})`}>
+                    <rect className="ge-water" width="100" height="100" fill="#2f8cff" />
+                    {[0, 1, 2].map((i) => (
+                      <ellipse
+                        key={`rp-${i}`} className="ge-ripple" cx="50" cy="62" rx="14" ry="6"
+                        fill="none" stroke="#fff" strokeWidth="2.5"
+                        style={{ animationDelay: `${0.8 + i * 0.6}s` }}
+                      />
+                    ))}
+                    {[38, 52, 64].map((x, i) => (
+                      <circle
+                        key={`bb-${i}`} className="ge-bubble" cx={x} cy={84 - i * 4} r={4 + (i % 2) * 2}
+                        fill="rgba(255,255,255,.35)" stroke="#fff" strokeWidth="1.5"
+                        style={{ animationDelay: `${i * 0.5}s` }}
+                      />
+                    ))}
+                  </g>
+                )}
+
+                {sphase !== 'gone' && (
+                  <g transform={`translate(${bx},${by})`}>
+                    <g className="ge-clock-pop">
+                      <g className="ge-shout">
+                        <rect x="-125" y="-42" width="250" height="84" rx="18" fill="#fff" stroke="#1b1f2a" strokeWidth="4" />
+                        <polygon
+                          points={above ? '-16,41 16,41 0,62' : '-16,-41 16,-41 0,-62'}
+                          fill="#fff" stroke="#1b1f2a" strokeWidth="4" strokeLinejoin="round"
+                        />
+                        <rect x="-18" y={above ? 36 : -44} width="36" height="8" fill="#fff" />
+                        <text textAnchor="middle" fontSize="28" fontWeight="900" fill="#d92d20"
+                          fontFamily="ui-sans-serif, system-ui, sans-serif">
+                          <tspan x="0" dy="-8">I have nowhere</tspan>
+                          <tspan x="0" dy="34">to move!</tspan>
                         </text>
                       </g>
                     </g>
