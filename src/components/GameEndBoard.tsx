@@ -49,8 +49,26 @@ export function detectGameEnd(game: any, moves: { san?: string; fenAfter?: strin
 
   // Any other draw (agreement, repetition, insufficient material, 50-move rule...)
   const res0 = typeof game.result === 'string' ? game.result.trim() : '';
-  if (/^(1\/2|½)/.test(res0) || /\bdraw|agreed|repetition|insufficient|fifty|50.move/.test(text)) {
+  if (
+    /^(1\/2|½)/.test(res0) ||
+    /\bdraw|agreed|repetition|repeat|threefold|three.fold|3.fold|insufficient|fifty|50.move/.test(text)
+  ) {
     return { kind: 'draw', loser: 'w' };
+  }
+
+  // No explicit result/termination: work it out from the moves (threefold repetition, insufficient material, 50-move rule).
+  const decisive = /^(1-0|0-1)/.test(res0);
+  if (!decisive && !/resign|abandon|time|flag/.test(text)) {
+    try {
+      const replay = new Chess();
+      let ok = true;
+      for (const m of moves) {
+        if (!m.san || !replay.move(m.san)) { ok = false; break; }
+      }
+      if (ok && (replay.isThreefoldRepetition() || replay.isInsufficientMaterial() || replay.isDrawByFiftyMoves())) {
+        return { kind: 'draw', loser: 'w' };
+      }
+    } catch { /* ignore */ }
   }
 
   let kind: GameEndKind | null = null;
