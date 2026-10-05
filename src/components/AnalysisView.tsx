@@ -1486,16 +1486,37 @@ export function AnalysisView({ analysis, currentIndex, onIndexChange, onCoachExp
           </div>
         </div>
 
-        <div className="flex items-center justify-center gap-2">
-          <button onClick={() => onIndexChange(0)} disabled={currentIndex === 0} className="btn-secondary px-2.5" title="First move (Home)">«</button>
-          <button onClick={() => onIndexChange(Math.max(0, currentIndex - 1))} disabled={currentIndex === 0} className="btn-secondary px-2.5" title="Previous (←)">
-            <ChevronLeft size={16} />
+        {/* Navigation: big touch targets on phones, compact from sm: up */}
+        <div className="grid grid-cols-[1fr_1fr_auto_1fr_1fr] items-center gap-2 sm:flex sm:justify-center">
+          <button
+            onClick={() => onIndexChange(0)}
+            disabled={currentIndex === 0}
+            className="btn-secondary h-14 justify-center text-2xl sm:h-auto sm:px-2.5 sm:text-base"
+            title="First move (Home)"
+          >«</button>
+          <button
+            onClick={() => onIndexChange(Math.max(0, currentIndex - 1))}
+            disabled={currentIndex === 0}
+            className="btn-secondary h-14 justify-center sm:h-auto sm:px-2.5"
+            title="Previous (←)"
+          >
+            <ChevronLeft className="h-7 w-7 sm:h-4 sm:w-4" />
           </button>
-          <span className="text-sm text-ink-400 font-mono px-3">{currentIndex + 1} / {moves.length}</span>
-          <button onClick={() => onIndexChange(Math.min(moves.length - 1, currentIndex + 1))} disabled={currentIndex === moves.length - 1} className="btn-secondary px-2.5" title="Next (→)">
-            <ChevronRight size={16} />
+          <span className="px-2 text-center font-mono text-base text-ink-400 sm:px-3 sm:text-sm">{currentIndex + 1} / {moves.length}</span>
+          <button
+            onClick={() => onIndexChange(Math.min(moves.length - 1, currentIndex + 1))}
+            disabled={currentIndex === moves.length - 1}
+            className="btn-secondary h-14 justify-center sm:h-auto sm:px-2.5"
+            title="Next (→)"
+          >
+            <ChevronRight className="h-7 w-7 sm:h-4 sm:w-4" />
           </button>
-          <button onClick={() => onIndexChange(moves.length - 1)} disabled={currentIndex === moves.length - 1} className="btn-secondary px-2.5" title="Last (End)">»</button>
+          <button
+            onClick={() => onIndexChange(moves.length - 1)}
+            disabled={currentIndex === moves.length - 1}
+            className="btn-secondary h-14 justify-center text-2xl sm:h-auto sm:px-2.5 sm:text-base"
+            title="Last (End)"
+          >»</button>
         </div>
         {liveOpening && !isExploring && (
           <div className="flex items-center justify-center gap-1.5 text-xs text-ink-400">
