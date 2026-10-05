@@ -183,6 +183,46 @@ function findOpeningForMoves(
   return best;
 }
 
+/** True when this move delivered checkmate (SAN "#" or the resulting position is mate). */
+function deliversMate(move: { san?: string; fenAfter?: string }): boolean {
+  if (move.san && move.san.includes('#')) return true;
+  try {
+    return !!move.fenAfter && new Chess(move.fenAfter).isCheckmate();
+  } catch {
+    return false;
+  }
+}
+
+/** Eval in pawns from the mover's point of view (mate = ±100). Evals are stored from White's view. */
+function moverPawns(ev: any, color: 'w' | 'b'): number | null {
+  if (!ev) return null;
+  let white: number;
+  if (typeof ev.mate === 'number' && ev.mate !== 0) {
+    white = ev.mate > 0 ? 100 : -100;
+  } else {
+    try {
+      white = evalToPawns(ev);
+    } catch {
+      return null;
+    }
+    if (typeof white !== 'number' || !Number.isFinite(white)) return null;
+  }
+  return color === 'w' ? white : -white;
+}
+
+/**
+ * A "Miss" is letting a winning/clearly better position slip WITHOUT falling into a bad one
+ * (e.g. skipping a winning tactic or a mate, but still fine afterwards).
+ * A "Blunder" is a move that leaves you worse/losing. So blunder/mistake labels on a move where the
+ * mover was winning before and is still OK after are really misses.
+ */
+function looksLikeMiss(move: AnalyzedMove): boolean {
+  const before = moverPawns(move.evalBefore, move.color as 'w' | 'b');
+  const after = moverPawns(move.evalAfter, move.color as 'w' | 'b');
+  if (before == null || after == null) return false;
+  return before >= 1.2 && after >= -0.6 && after < before - 0.3;
+}
+
 /**
  * Soften over-harsh engine labels and fix obvious misclassifications.
  *
@@ -218,13 +258,13 @@ function correctedQuality(move: AnalyzedMove): MoveQuality {
   }
 
   // 2) Delivering mate is never a blunder
+  if (deliversMate(move)) {
+    if (['blunder', 'mistake', 'inaccuracy', 'miss', 'good', 'excellent'].includes(move.quality)) {
+      return 'best';
+    }
+  }
   try {
     const after = new Chess(move.fenAfter);
-    if (after.isCheckmate()) {
-      if (['blunder', 'mistake', 'inaccuracy', 'miss', 'good', 'excellent'].includes(move.quality)) {
-        return 'best';
-      }
-    }
     if (after.isStalemate() || after.isDraw()) {
       if (move.quality === 'blunder' || move.quality === 'mistake') return 'good';
     }
@@ -239,6 +279,11 @@ function correctedQuality(move: AnalyzedMove): MoveQuality {
     if (moverWins && ['blunder', 'mistake', 'inaccuracy', 'miss'].includes(move.quality)) {
       return Math.abs(mate) <= 1 ? 'best' : 'excellent';
     }
+  }
+
+  // 3b) Winning before and still fine after → it's a Miss, not a Blunder/Mistake
+  if ((move.quality === 'blunder' || move.quality === 'mistake') && looksLikeMiss(move)) {
+    return 'miss';
   }
 
   // 4) Soften blunder/mistake/miss when eval loss is small
@@ -306,14 +351,15 @@ function scoringQuality(move: AnalyzedMove): MoveQuality {
     } catch { /* ignore */ }
   }
 
-  try {
-    const after = new Chess(move.fenAfter);
-    if (after.isCheckmate()) {
-      if (['blunder', 'mistake', 'inaccuracy', 'miss', 'good', 'excellent'].includes(move.quality)) {
-        return 'best';
-      }
+  if (deliversMate(move)) {
+    if (['blunder', 'mistake', 'inaccuracy', 'miss', 'good', 'excellent'].includes(move.quality)) {
+      return 'best';
     }
-  } catch { /* ignore */ }
+  }
+
+  if ((move.quality === 'blunder' || move.quality === 'mistake') && looksLikeMiss(move)) {
+    return 'miss';
+  }
 
   // Only escalate for scoring when the eval swing is clearly severe
   const loss =
@@ -321,7 +367,7 @@ function scoringQuality(move: AnalyzedMove): MoveQuality {
       ? Math.abs(move.evalLoss)
       : null;
   if (loss != null) {
-    if (loss > 2.2 && (move.quality === 'inaccuracy' || move.quality === 'mistake' || move.quality === 'miss')) {
+    if (loss > 2.2 && (move.quality === 'inaccuracy' || move.quality === 'mistake')) {
       return 'blunder';
     }
     if (loss > 1.3 && move.quality === 'inaccuracy') {
@@ -616,11 +662,19 @@ export function AnalysisView({ analysis, currentIndex, onIndexChange, onCoachExp
         step.san,
         step.fenBefore,
       );
+      let finalQuality = quality;
+      if (deliversMate({ san: step.san, fenAfter: step.fenAfter })) {
+        if (['blunder', 'mistake', 'inaccuracy', 'miss', 'good', 'excellent'].includes(finalQuality)) finalQuality = 'best';
+      } else if (finalQuality === 'blunder' || finalQuality === 'mistake') {
+        const b = moverPawns(evalBefore, step.color as 'w' | 'b');
+        const a = moverPawns(evalAfter, step.color as 'w' | 'b');
+        if (b != null && a != null && b >= 1.2 && a >= -0.6 && a < b - 0.3) finalQuality = 'miss';
+      }
       updateStepReview(step.id, {
         status: 'done',
         san: step.san,
         color: step.color,
-        quality,
+        quality: finalQuality,
         evalLoss,
         winPercentLoss,
         isBest,
@@ -1385,50 +1439,6 @@ export function AnalysisView({ analysis, currentIndex, onIndexChange, onCoachExp
       className="grid grid-cols-1 lg:grid-cols-[minmax(0,580px)_1fr_380px] gap-4 sm:gap-6"
     >
       <div className="flex flex-col gap-4 min-w-0">
-        {/* Mobile: coach card on top, above the eval bar and board */}
-        <div className="lg:hidden">
-        {isExploring ? (
-          <FreeMoveReviewCard review={exploreReview} />
-        ) : move && moveMeta && (
-          <div className="card p-0 overflow-hidden">
-            <div className="p-3 pb-0">
-              <CoachBubble
-                san={move.san}
-                quality={displayQuality!}
-                color={moveMeta.color}
-                evalText={move.evalAfter ? formatEval(move.evalAfter) : null}
-                moveKey={move.index}
-                fork={!!forkTargets}
-              />
-            </div>
-            <p className="px-4 py-3 text-sm text-ink-400">{blurbText}</p>
-            {(displayQuality === 'brilliant' || displayQuality === 'great') && <BrilliantLineButton onClick={playBrilliantLine} />}
-            <div className="grid grid-cols-3 gap-px bg-ink-700/50 border-t border-ink-700/50">
-              <button onClick={() => onCoachExplain(move)} className="flex items-center justify-center gap-2 py-2.5 text-sm text-ink-200 hover:bg-ink-700/50 transition-colors">
-                <MessageSquare size={14} className="text-brand-400" /> Explain
-              </button>
-              <button
-                onClick={() => handleBestMoveClick(move.evalBefore?.bestMove || '')}
-                disabled={isPlayedBest || !engineBestUci}
-                title={isPlayedBest ? "This move was already the engine's best choice" : engineBestUci ? "Preview the engine's best move" : 'No engine best move'}
-                className="flex items-center justify-center gap-2 py-2.5 text-sm text-ink-200 hover:bg-ink-700/50 transition-colors disabled:opacity-40 disabled:cursor-default"
-              >
-                <Sparkles size={14} className={isPlayedBest ? 'text-brand-400/50' : 'text-brand-400'} />
-                {isPlayedBest ? 'Was Best' : 'Best'}
-              </button>
-              <button
-                onClick={() => onIndexChange(Math.min(moves.length - 1, currentIndex + 1))}
-                disabled={currentIndex === moves.length - 1}
-                className="flex items-center justify-center gap-2 py-2.5 text-sm text-ink-200 hover:bg-ink-700/50 transition-colors disabled:opacity-40"
-              >
-                <ChevronRight size={14} className="text-brand-400" /> Next
-              </button>
-            </div>
-          </div>
-        )}
-
-        </div>
-
         {/* Mobile: row runs edge to edge (cancels the page's px-4). Desktop: unchanged. */}
         <div className="flex justify-center items-stretch gap-1.5 sm:gap-2 -mx-4 w-[calc(100%+2rem)] lg:mx-0 lg:w-full">
           <div className="hidden lg:flex">
@@ -1479,6 +1489,50 @@ export function AnalysisView({ analysis, currentIndex, onIndexChange, onCoachExp
         )}
 
 
+
+        {/* Mobile: coach card right below the navigation buttons */}
+        <div className="lg:hidden">
+        {isExploring ? (
+          <FreeMoveReviewCard review={exploreReview} />
+        ) : move && moveMeta && (
+          <div className="card p-0 overflow-hidden">
+            <div className="p-3 pb-0">
+              <CoachBubble
+                san={move.san}
+                quality={displayQuality!}
+                color={moveMeta.color}
+                evalText={move.evalAfter ? formatEval(move.evalAfter) : null}
+                moveKey={move.index}
+                fork={!!forkTargets}
+              />
+            </div>
+            <p className="px-4 py-3 text-sm text-ink-400">{blurbText}</p>
+            {(displayQuality === 'brilliant' || displayQuality === 'great') && <BrilliantLineButton onClick={playBrilliantLine} />}
+            <div className="grid grid-cols-3 gap-px bg-ink-700/50 border-t border-ink-700/50">
+              <button onClick={() => onCoachExplain(move)} className="flex items-center justify-center gap-2 py-2.5 text-sm text-ink-200 hover:bg-ink-700/50 transition-colors">
+                <MessageSquare size={14} className="text-brand-400" /> Explain
+              </button>
+              <button
+                onClick={() => handleBestMoveClick(move.evalBefore?.bestMove || '')}
+                disabled={isPlayedBest || !engineBestUci}
+                title={isPlayedBest ? "This move was already the engine's best choice" : engineBestUci ? "Preview the engine's best move" : 'No engine best move'}
+                className="flex items-center justify-center gap-2 py-2.5 text-sm text-ink-200 hover:bg-ink-700/50 transition-colors disabled:opacity-40 disabled:cursor-default"
+              >
+                <Sparkles size={14} className={isPlayedBest ? 'text-brand-400/50' : 'text-brand-400'} />
+                {isPlayedBest ? 'Was Best' : 'Best'}
+              </button>
+              <button
+                onClick={() => onIndexChange(Math.min(moves.length - 1, currentIndex + 1))}
+                disabled={currentIndex === moves.length - 1}
+                className="flex items-center justify-center gap-2 py-2.5 text-sm text-ink-200 hover:bg-ink-700/50 transition-colors disabled:opacity-40"
+              >
+                <ChevronRight size={14} className="text-brand-400" /> Next
+              </button>
+            </div>
+          </div>
+        )}
+
+        </div>
 
         {exploreBanner}
 
