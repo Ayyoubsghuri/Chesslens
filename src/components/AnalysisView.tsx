@@ -761,6 +761,14 @@ export function AnalysisView({ analysis, currentIndex, onIndexChange, onCoachExp
   const gameEnd = useMemo(() => detectGameEnd(analysis.game, moves), [analysis.game, moves]);
   const atFinalPosition = moves.length > 0 && currentIndex === moves.length - 1 && !isExploring && !bestPreview;
 
+  // Auto-play: 1 second after the analysis opens, jump to the final position so the effect runs by itself.
+  useEffect(() => {
+    if (!gameEnd || moves.length === 0) return;
+    const t = window.setTimeout(() => onIndexChange(moves.length - 1), 1000);
+    return () => window.clearTimeout(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [analysis]);
+
   const moveCoords = useMemo(() => {
     if (exploreLastMove) return exploreLastMove;
     if (bestPreview) return { from: bestPreview.from, to: bestPreview.to };

@@ -375,18 +375,19 @@ export function GameEndBoard({ fen, orientation, size, end, atFinalPosition, chi
   }, [playing, kind, run]);
 
   const kingChar = end?.loser === 'w' ? 'K' : 'k';
+  const pawnChar = end?.loser === 'w' ? 'P' : 'p';
 
   const boardFen = useMemo(() => {
     if (!playing || !end) return fen;
     return end.kind === 'resign'
-      ? stripPieces(fen, (ch) => ch === 'p' || ch === 'P' || ch === kingChar)
+      ? stripPieces(fen, (ch) => ch === pawnChar || ch === kingChar)
       : stripPieces(fen, (ch) => ch === kingChar);
-  }, [playing, end, fen, kingChar]);
+  }, [playing, end, fen, kingChar, pawnChar]);
 
   const fallbackFen = useMemo(() => {
     if (!playing || !end) return fen;
-    return end.kind === 'resign' ? stripPieces(fen, (ch) => ch === 'p' || ch === 'P') : fen;
-  }, [playing, end, fen]);
+    return end.kind === 'resign' ? stripPieces(fen, (ch) => ch === pawnChar) : fen;
+  }, [playing, end, fen, pawnChar]);
 
   const placed = useMemo(() => (playing ? parseBoard(fen, orientation) : []), [playing, fen, orientation]);
   const king = placed.find((p) => p.ch === kingChar) || null;
@@ -420,10 +421,10 @@ export function GameEndBoard({ fen, orientation, size, end, atFinalPosition, chi
           className="pointer-events-none absolute inset-0 h-full w-full"
           style={{ overflow: 'hidden' }}
         >
-          {/* ---------- resignation: all pawns walk off the board ---------- */}
+          {/* ---------- resignation: the losing side's pawns walk off the board ---------- */}
           {end.kind === 'resign' &&
             placed
-              .filter((p) => p.ch === 'p' || p.ch === 'P')
+              .filter((p) => p.ch === pawnChar)
               .map((p, i) => {
                 const dir = p.col < 4 ? -1 : 1;
                 const dist = dir < 0 ? p.col + 1 : 8 - p.col;
