@@ -19,7 +19,7 @@ const DARIJA: Record<MoveQuality, string> = {
   book: 'قضي وعدي',
   inaccuracy: 'بقا تحل عينيك',
   mistake: 'عور شوية',
-  miss: 'مطنگ امدير',
+  miss: 'غا كتخور',
   blunder: 'مصرفق فكرك لا ؟',
 };
 
