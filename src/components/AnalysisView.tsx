@@ -6,6 +6,7 @@ import { EvalGraph } from './EvalGraph';
 import { MoveList } from './MoveList';
 import { CoachBubble } from './CoachBubble';
 import { BrilliantLineButton } from './BrilliantLineButton';
+import { GameEndBoard, detectGameEnd } from './GameEndBoard';
 import { CapturedPieces } from './CapturedPieces';
 import { detectKnightFork } from '@/lib/knight-fork';
 import { formatEval, evalToPawns, analyzePosition } from '@/lib/engine';
@@ -756,6 +757,10 @@ export function AnalysisView({ analysis, currentIndex, onIndexChange, onCoachExp
     return move.fenAfter;
   }, [move, bestPreview, exploreFen]);
 
+  // Resignation / time-loss board effects (only on the final position, never while exploring)
+  const gameEnd = useMemo(() => detectGameEnd(analysis.game, moves), [analysis.game, moves]);
+  const atFinalPosition = moves.length > 0 && currentIndex === moves.length - 1 && !isExploring && !bestPreview;
+
   const moveCoords = useMemo(() => {
     if (exploreLastMove) return exploreLastMove;
     if (bestPreview) return { from: bestPreview.from, to: bestPreview.to };
@@ -951,8 +956,10 @@ export function AnalysisView({ analysis, currentIndex, onIndexChange, onCoachExp
       : null;
 
   const renderBoard = (boardPx: number) => (
+    <GameEndBoard fen={fen} orientation={orientation} size={boardPx} end={gameEnd} atFinalPosition={atFinalPosition}>
+      {(boardFen, effectPlaying) => (
             <ChessBoard
-              fen={fen}
+              fen={boardFen}
               orientation={orientation}
               lastMove={moveCoords}
               bestMoveUci={
@@ -984,10 +991,12 @@ export function AnalysisView({ analysis, currentIndex, onIndexChange, onCoachExp
               size={boardPx}
               whiteName={whiteName}
               blackName={blackName}
-              interactive
+              interactive={!effectPlaying}
               edgeToEdge
               onUserMove={handleUserMove}
             />
+      )}
+    </GameEndBoard>
   );
 
   const exploreBanner = (isExploring || canExploreRedo) && (
