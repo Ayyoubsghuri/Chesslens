@@ -1,6 +1,8 @@
 import { useEffect, useState } from 'react';
 import { Star, ThumbsUp, Check, BookOpen, X } from 'lucide-react';
 import type { MoveQuality } from '@/lib/types';
+import type { TbFrame } from '@/lib/tablebase';
+import { TablebaseNote } from './TablebaseNote';
 
 /** How long each language stays on screen. Tweak freely. */
 const ENGLISH_MS = 800;
@@ -165,9 +167,13 @@ interface CoachBubbleProps {
   compact?: boolean;
   /** Knight fork: the coach shouts the fork phrase instead of the usual lines. */
   fork?: boolean;
+  /** Position after the move. With 7 pieces or fewer, the tablebase verdict is shown under the bubble. */
+  fen?: string;
+  /** Plays the tablebase sequence on the board (frames, label). */
+  onPlayTablebase?: (frames: TbFrame[], label: string) => void;
 }
 
-export function CoachBubble({ san, quality, color, evalText, moveKey, compact, fork }: CoachBubbleProps) {
+export function CoachBubble({ san, quality, color, evalText, moveKey, compact, fork, fen, onPlayTablebase }: CoachBubbleProps) {
   const [lang, setLang] = useState<'en' | 'ar'>('en');
 
   // English -> (2s of Darija) -> English -> ..., restarting on every new move.
@@ -192,6 +198,7 @@ export function CoachBubble({ san, quality, color, evalText, moveKey, compact, f
   const dot = compact ? 24 : 34;
 
   return (
+    <div>
     <div className="flex items-end gap-1 rounded-xl bg-ink-900 px-3 pt-3" style={{ minHeight: avatar + 12 }}>
       <CoachAvatar size={avatar} angry={angry} />
 
@@ -239,6 +246,8 @@ export function CoachBubble({ san, quality, color, evalText, moveKey, compact, f
         .coach-anger-mark { animation: coach-pop 300ms ease-out; }
         @media (prefers-reduced-motion: reduce) { .coach-swap, .coach-angry, .coach-anger-mark { animation: none; } }
       `}</style>
+    </div>
+    {fen && <TablebaseNote fen={fen} compact={compact} onPlayLine={onPlayTablebase} />}
     </div>
   );
 }

@@ -912,6 +912,20 @@ export function AnalysisView({ analysis, currentIndex, onIndexChange, onCoachExp
     } catch {}
   }
 
+  /** Play a list of positions on the board, one per second (used by the tablebase sequence). */
+  function playFrames(frames: { fen: string; from: Square; to: Square; san: string; uci: string }[], label: string) {
+    if (frames.length === 0) return;
+    stopLine();
+    setPlaying(false);
+    let i = 0;
+    const show = () => {
+      setBestPreview({ ...frames[i], label: `${label} ${i + 1}/${frames.length}` });
+      i++;
+      lineTimerRef.current = i < frames.length ? window.setTimeout(show, 1000) : null;
+    };
+    show();
+  }
+
   function handleBestMoveClick(uci: string) {
     if (!move || uci.length < 4) return;
     if (playedUci && uci.slice(0, 4) === playedUci.slice(0, 4)) {
@@ -1248,6 +1262,8 @@ export function AnalysisView({ analysis, currentIndex, onIndexChange, onCoachExp
           evalText={move.evalAfter ? formatEval(move.evalAfter) : null}
           moveKey={move.index}
                 fork={!!forkTargets}
+                fen={move.fenAfter}
+                onPlayTablebase={playFrames}
         />
         <p className="px-2 pt-2 pb-1 text-xs text-ink-400">
           {forkBlurb ?? (displayQuality === 'book' ? bookText : qualityBlurb(displayQuality!, isPlayedBest))}
@@ -1542,6 +1558,8 @@ export function AnalysisView({ analysis, currentIndex, onIndexChange, onCoachExp
                 evalText={move.evalAfter ? formatEval(move.evalAfter) : null}
                 moveKey={move.index}
                 fork={!!forkTargets}
+                fen={move.fenAfter}
+                onPlayTablebase={playFrames}
               />
             </div>
             <p className="px-4 py-3 text-sm text-ink-400">{blurbText}</p>
@@ -1608,6 +1626,8 @@ export function AnalysisView({ analysis, currentIndex, onIndexChange, onCoachExp
                 evalText={move.evalAfter ? formatEval(move.evalAfter) : null}
                 moveKey={move.index}
                 fork={!!forkTargets}
+                fen={move.fenAfter}
+                onPlayTablebase={playFrames}
               />
             </div>
             <p className="px-4 py-3 text-sm text-ink-400">{blurbText}</p>

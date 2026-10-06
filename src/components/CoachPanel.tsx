@@ -6,15 +6,21 @@ import { MoveText, type MovePreview } from './MoveText';
 import { getCoachExplanation, getBestLineExplanation } from '@/lib/coach';
 import { formatEval } from '@/lib/engine';
 import { useElementSize } from '@/lib/useElementSize';
+import { PlayVsComputer } from './PlayVsComputer';
+import { GuessGamePanel } from './GuessGamePanel';
 import type { AnalyzedMove, Settings, CoachMessage } from '@/lib/types';
-import { Play, Pause, Loader2, Sparkles, FastForward, RotateCcw, MessageSquare, X, AlertTriangle } from 'lucide-react';
+import { Play, Pause, Loader2, Sparkles, FastForward, RotateCcw, MessageSquare, X, AlertTriangle, ChevronLeft, ChevronRight, ChevronsLeft, ChevronsRight } from 'lucide-react';
 
 interface CoachPanelProps {
   move: AnalyzedMove | null;
   settings: Settings;
+  /** All analyzed moves of the selected game (for "Find the best move"). */
+  moves?: AnalyzedMove[];
+  /** Jump to another move of the game without leaving the Coach tab. */
+  onNavigate?: (index: number) => void;
 }
 
-export function CoachPanel({ move, settings }: CoachPanelProps) {
+function ExplainView({ move, settings, total, onNavigate }: CoachPanelProps & { total: number }) {
   const [explanation, setExplanation] = useState('');
   const [loadingExplain, setLoadingExplain] = useState(false);
   const [lineMessages, setLineMessages] = useState<CoachMessage[]>([]);
@@ -24,7 +30,8 @@ export function CoachPanel({ move, settings }: CoachPanelProps) {
   const [lineExplanation, setLineExplanation] = useState('');
   const [loadingLineExplain, setLoadingLineExplain] = useState(false);
   const [preview, setPreview] = useState<MovePreview | null>(null);
-  const [orientation, setOrientation] = useState<'white' | 'black'>('white');
+  // Chosen once (from the first move shown) and then left alone, so Back/Next never flips the board.
+  const [orientation, setOrientation] = useState<'white' | 'black'>(move?.color === 'b' ? 'black' : 'white');
   const playTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // Reset when move changes — start from the position AFTER the move was played
@@ -36,7 +43,6 @@ export function CoachPanel({ move, settings }: CoachPanelProps) {
     setPlaying(false);
     setLineExplanation('');
     setPreview(null);
-    setOrientation(move?.color === 'b' ? 'black' : 'white');
     if (playTimer.current) clearTimeout(playTimer.current);
   }, [move?.index]);
 
@@ -119,6 +125,33 @@ export function CoachPanel({ move, settings }: CoachPanelProps) {
 
   const handleFlip = () => setOrientation(prev => prev === 'white' ? 'black' : 'white');
 
+  // Move navigation (buttons + arrow keys) so you never have to go back to the Analysis tab
+  const curIndex = move?.index ?? 0;
+  const canPrev = !!move && curIndex > 0;
+  const canNext = !!move && curIndex < total - 1;
+  const go = (i: number) => { if (onNavigate && i >= 0 && i < total) onNavigate(i); };
+
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      const t = e.target as HTMLElement | null;
+      if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.tagName === 'SELECT' || t.isContentEditable)) return;
+      if (e.ctrlKey || e.metaKey || e.altKey) return;
+      if (e.key === 'ArrowLeft' && canPrev) { e.preventDefault(); go(curIndex - 1); }
+      else if (e.key === 'ArrowRight' && canNext) { e.preventDefault(); go(curIndex + 1); }
+      else if (e.key === 'Home' && canPrev) { e.preventDefault(); go(0); }
+      else if (e.key === 'End' && canNext) { e.preventDefault(); go(total - 1); }
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [curIndex, canPrev, canNext, total, onNavigate]);
+
+  // The board sizes itself responsively via CSS up to this cap; we measure
+  // its real rendered width so the eval bar's pixel height stays in sync.
+  const boardMaxSize = 480;
+  const { ref: boardColRef, width: boardRenderedSize } = useElementSize<HTMLDivElement>();
+  const boardSize = boardRenderedSize || boardMaxSize;
+
   if (!move) {
     return (
       <div className="card p-8 text-center text-ink-400">
@@ -150,11 +183,6 @@ export function CoachPanel({ move, settings }: CoachPanelProps) {
 
   const boardFenToShow = preview ? preview.fen : lineFen;
   const boardLastMove = preview ? { from: preview.from, to: preview.to } : lastMoveCoords;
-  // The board sizes itself responsively via CSS up to this cap; we measure
-  // its real rendered width so the eval bar's pixel height stays in sync.
-  const boardMaxSize = 480;
-  const { ref: boardColRef, width: boardRenderedSize } = useElementSize<HTMLDivElement>();
-  const boardSize = boardRenderedSize || boardMaxSize;
 
   return (
     <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 sm:gap-6">
@@ -187,6 +215,17 @@ export function CoachPanel({ move, settings }: CoachPanelProps) {
               </button>
             </div>
           </div>
+        </div>
+
+        {/* Move navigation */}
+        <div className="flex items-center gap-1.5">
+          <button onClick={() => go(0)} disabled={!canPrev} className="btn-secondary px-2.5 py-2" title="First move"><ChevronsLeft size={16} /></button>
+          <button onClick={() => go(curIndex - 1)} disabled={!canPrev} className="btn-secondary px-3 py-2 flex-1 justify-center" title="Previous move (←)"><ChevronLeft size={16} /> Back</button>
+          <span className="text-xs font-mono text-ink-400 min-w-[5.5rem] text-center">
+            {curIndex + 1} / {total}
+          </span>
+          <button onClick={() => go(curIndex + 1)} disabled={!canNext} className="btn-secondary px-3 py-2 flex-1 justify-center" title="Next move (→)">Next <ChevronRight size={16} /></button>
+          <button onClick={() => go(total - 1)} disabled={!canNext} className="btn-secondary px-2.5 py-2" title="Last move"><ChevronsRight size={16} /></button>
         </div>
 
         {preview && (
@@ -323,6 +362,35 @@ export function CoachPanel({ move, settings }: CoachPanelProps) {
           </div>
         )}
       </div>
+    </div>
+  );
+}
+
+type CoachMode = 'explain' | 'vs' | 'guess';
+
+export function CoachPanel({ move, settings, moves = [], onNavigate }: CoachPanelProps) {
+  const [mode, setMode] = useState<CoachMode>('explain');
+  const tabs: { id: CoachMode; label: string }[] = [
+    { id: 'explain', label: 'Explain move' },
+    { id: 'guess', label: 'Find best moves (this game)' },
+    { id: 'vs', label: 'Play vs computer' },
+  ];
+  return (
+    <div className="space-y-4">
+      <div className="flex flex-wrap gap-2">
+        {tabs.map((t) => (
+          <button
+            key={t.id}
+            onClick={() => setMode(t.id)}
+            className={`${mode === t.id ? 'btn-primary' : 'btn-secondary'} text-sm`}
+          >
+            {t.label}
+          </button>
+        ))}
+      </div>
+      {mode === 'explain' && <ExplainView move={move} settings={settings} total={moves.length} onNavigate={onNavigate} />}
+      {mode === 'guess' && <GuessGamePanel moves={moves} settings={settings} />}
+      {mode === 'vs' && <PlayVsComputer settings={settings} />}
     </div>
   );
 }

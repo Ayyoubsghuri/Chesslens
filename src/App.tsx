@@ -92,6 +92,12 @@ function App() {
     setView('coach');
   };
 
+  // Coach tab navigation: move through the game without returning to Analysis
+  const handleCoachNavigate = (index: number) => {
+    setCurrentMoveIndex(index);
+    setCoachMove(null);
+  };
+
   const handleSaveSettings = (s: SettingsType) => {
     setSettings(s);
     saveSettings(s);
@@ -234,7 +240,7 @@ function App() {
                 depth={settings.analysisDepth}
               />
             ) : view === 'coach' ? (
-              <CoachPanel move={coachMove || currentMove} settings={settings} />
+              <CoachPanel move={coachMove || currentMove} settings={settings} moves={selectedAnalysis.moves} onNavigate={handleCoachNavigate} />
             ) : (
               <DrillsPanel moves={selectedAnalysis.moves} settings={settings} />
             )}
