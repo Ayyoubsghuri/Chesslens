@@ -217,7 +217,7 @@ export function parsePuzzleCsv(text: string, limit = 3000): Puzzle[] {
 }
 
 /** Loads the trimmed database sample from public/puzzles.csv (see scripts/trim-puzzles.mjs). */
-export async function fetchBundledPuzzles(limit = 20000): Promise<Puzzle[]> {
+export async function fetchBundledPuzzles(limit = Number.POSITIVE_INFINITY): Promise<Puzzle[]> {
   try {
     const base = (import.meta as any).env?.BASE_URL ?? '/';
     const res = await fetch(`${base}puzzles.csv`);
@@ -235,9 +235,15 @@ export function pickFromBank(bank: Puzzle[], progress: PuzzleProgress): Puzzle |
   const seen = new Set(progress.seenIds);
   let pool = bank.filter(p => !seen.has(p.id));
   if (pool.length === 0) pool = bank;
-  pool = [...pool].sort((a, b) => Math.abs(a.rating - progress.rating) - Math.abs(b.rating - progress.rating));
-  const top = pool.slice(0, 10);
-  return top[Math.floor(Math.random() * top.length)];
+  // Widen the rating window until there are enough candidates. This avoids sorting the whole bank
+  // on every pick, which gets slow with hundreds of thousands of puzzles.
+  let near: Puzzle[] = pool;
+  for (const w of [50, 100, 200, 400, 800]) {
+    near = pool.filter(p => Math.abs(p.rating - progress.rating) <= w);
+    if (near.length >= 10) break;
+  }
+  if (near.length === 0) near = pool;
+  return near[Math.floor(Math.random() * near.length)];
 }
 
 export const prettyTheme = (t: string) =>
