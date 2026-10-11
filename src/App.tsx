@@ -6,6 +6,7 @@ import { AnalysisView } from '@/components/AnalysisView';
 import { CoachPanel } from '@/components/CoachPanel';
 import { DrillsPanel } from '@/components/DrillsPanel';
 import { PuzzleTrainer } from '@/components/PuzzleTrainer';
+import { ChessStory } from '@/components/ChessStory';
 import { PlayVsComputer, type PlayedGame } from '@/components/PlayVsComputer';
 import { analyzeGame, computeAccuracy, countByQuality } from '@/lib/analysis';
 import { getMoveHistory } from '@/lib/pgn';
@@ -21,7 +22,7 @@ function App() {
   const [selectedGameId, setSelectedGameId] = useState<string | null>(null);
   const [currentMoveIndex, setCurrentMoveIndex] = useState(0);
   const [view, setView] = useState<View>('analysis');
-  const [page, setPage] = useState<'home' | 'play'>('home');
+  const [page, setPage] = useState<'home' | 'play' | 'puzzles'>('home');
   const [showImport, setShowImport] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
   const [analyzing, setAnalyzing] = useState(false);
@@ -179,6 +180,7 @@ function App() {
 
           <nav className="flex items-center gap-1 order-last sm:order-none w-full sm:w-auto" aria-label="Main">
             <NavTab active={page === 'home'} onClick={() => setPage('home')} icon={Home} label="Home" />
+            <NavTab active={page === 'puzzles'} onClick={() => setPage('puzzles')} icon={Target} label="Practice Puzzles" />
             <NavTab active={page === 'play'} onClick={() => setPage('play')} icon={Swords} label="Play vs Computer" />
           </nav>
 
@@ -196,8 +198,10 @@ function App() {
       <main className="flex-1 max-w-7xl mx-auto w-full px-4 py-6">
         {page === 'play' ? (
           <PlayVsComputer settings={settings} onAnalyze={handlePlayedGame} />
+        ) : page === 'puzzles' ? (
+          <PuzzleTrainer />
         ) : !selectedGame ? (
-          /* Home: empty state / game library + puzzles */
+          /* Home: empty state / game library + story */
           <>
           <div className={`flex flex-col items-center justify-center text-center ${games.length === 0 ? 'min-h-[50vh]' : 'min-h-[30vh]'}`}>
             {games.length === 0 ? (
@@ -217,7 +221,7 @@ function App() {
               <GameLibrary games={games} analyses={analyses} onSelect={handleSelectGame} onDelete={handleDeleteGame} onDeleteMany={handleDeleteMany} />
             )}
           </div>
-          <PuzzleTrainer />
+          <ChessStory games={games} />
           </>
         ) : (
           <>
