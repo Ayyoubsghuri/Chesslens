@@ -165,6 +165,4 @@ Games, analyses and settings stay in your browser's `localStorage`. Engine analy
 
 ## License
 
-Add your license here.
-
 Stockfish is licensed under GPL-3.0, so check its terms before distributing a build that bundles the engine files.
