@@ -978,7 +978,15 @@ export function AnalysisView({ analysis, currentIndex, onIndexChange, onCoachExp
       : null;
 
   const renderBoard = (boardPx: number) => (
-    <GameEndBoard fen={fen} orientation={orientation} size={boardPx} end={gameEnd} atFinalPosition={atFinalPosition}>
+    <GameEndBoard
+      fen={fen}
+      orientation={orientation}
+      size={boardPx}
+      end={gameEnd}
+      atFinalPosition={atFinalPosition}
+      whiteName={analysis.game?.white}
+      blackName={analysis.game?.black}
+    >
       {(boardFen, effectPlaying) => (
             <ChessBoard
               fen={boardFen}

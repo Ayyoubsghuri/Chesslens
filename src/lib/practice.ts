@@ -1,5 +1,5 @@
 import { Chess, type Square } from 'chess.js';
-import { analyzePosition, analyzePositions, evalToPawns } from '@/lib/engine';
+import { analyzePosition, evalToPawns, playMove } from '@/lib/engine';
 import { classifyMove } from '@/lib/analysis';
 import type { EngineEval, MoveQuality, PieceColor } from '@/lib/types';
 
@@ -109,87 +109,31 @@ export async function judgeMove(
 /* Computer opponent with an Elo dial                                  */
 /* ------------------------------------------------------------------ */
 
-function depthForElo(elo: number): number {
-  if (elo < 700) return 1;
-  if (elo < 1100) return 2;
-  if (elo < 1500) return 3;
-  if (elo < 1900) return 4;
-  if (elo < 2300) return 6;
-  return 8;
-}
-
-/** Higher temperature = more willing to play an inferior move. */
-function temperatureForElo(elo: number): number {
-  return Math.max(0.02, 3 * Math.exp(-(elo - 400) / 450));
-}
-
 /**
  * Pick a reply for the computer at roughly the given Elo.
- * Every legal move is searched shallowly, then one is sampled with a
- * softmax: weak settings often pick second-rate moves (and sometimes pure
- * blunders), strong settings nearly always pick the best one.
+ * One search, weakened by Stockfish itself (see playMove in engine.ts), so it stays fast and
+ * never floods the CPU. Beginners also have a chance of just playing a random legal move.
  */
 export async function pickComputerMove(fen: string, elo: number): Promise<SimpleMove | null> {
-  const chess = new Chess(fen);
-  const legal = chess.moves({ verbose: true });
+  const legal = new Chess(fen).moves({ verbose: true });
   if (legal.length === 0) return null;
 
-  const fromVerbose = (m: (typeof legal)[number]): SimpleMove => {
-    const c = new Chess(fen);
-    c.move(m.san);
-    return { uci: m.from + m.to + (m.promotion ?? ''), san: m.san, from: m.from as Square, to: m.to as Square, promotion: m.promotion, fen: c.fen() };
-  };
+  const fromVerbose = (m: (typeof legal)[number]) => applyUci(fen, m.from + m.to + (m.promotion ?? ''));
+  const randomMove = () => fromVerbose(legal[Math.floor(Math.random() * legal.length)]);
 
   if (legal.length === 1) return fromVerbose(legal[0]);
 
-  if (elo >= 2400) {
-    try {
-      const ev = await analyzePosition(fen, 12);
-      const best = ev.bestMove ? applyUci(fen, ev.bestMove) : null;
-      if (best) return best;
-    } catch { /* fall through to the sampling path */ }
-  }
-
-  // Beginners sometimes just play something random.
   const blunderP = elo < 1000 ? ((1000 - elo) / 600) * 0.3 : 0;
-  if (Math.random() < blunderP) return fromVerbose(legal[Math.floor(Math.random() * legal.length)]);
+  if (Math.random() < blunderP) return randomMove();
 
-  const mover = chess.turn();
-  const sign = mover === 'w' ? 1 : -1;
-  const cands = legal.map((m) => {
-    const c = new Chess(fen);
-    c.move(m.san);
-    return { m, fen: c.fen(), mate: c.isCheckmate(), draw: c.isGameOver() && !c.isCheckmate() };
-  });
-
-  const search = cands.filter((c) => !c.mate && !c.draw);
-  let evals: (EngineEval | null)[] = [];
   try {
-    evals = await analyzePositions(search.map((c) => c.fen), depthForElo(elo));
-  } catch {
-    return fromVerbose(legal[Math.floor(Math.random() * legal.length)]);
+    const uci = await playMove(fen, elo);
+    const m = uci ? applyUci(fen, uci) : null;
+    if (m) return m;
+  } catch (e) {
+    console.error('Computer move failed, playing a random move', e);
   }
-
-  const scores = new Map<string, number>();
-  search.forEach((c, i) => {
-    const ev = evals[i];
-    scores.set(c.fen, ev ? Math.max(-15, Math.min(15, sign * evalToPawns(ev))) : 0);
-  });
-  const scored = cands.map((c) => ({
-    c,
-    s: c.mate ? 20 : c.draw ? 0 : scores.get(c.fen) ?? 0,
-  }));
-
-  const T = temperatureForElo(elo);
-  const max = Math.max(...scored.map((x) => x.s));
-  const weights = scored.map((x) => Math.exp((x.s - max) / T));
-  const total = weights.reduce((a, b) => a + b, 0);
-  let r = Math.random() * total;
-  for (let i = 0; i < scored.length; i++) {
-    r -= weights[i];
-    if (r <= 0) return fromVerbose(scored[i].c.m);
-  }
-  return fromVerbose(scored[0].c.m);
+  return randomMove();
 }
 
 export function gameOverText(fen: string): string | null {

@@ -84,6 +84,8 @@ class EngineWorker {
   private worker: Worker;
   private ready: Promise<void>;
   private tail: Promise<unknown> = Promise.resolve();
+  /** UCI options advertised by this Stockfish build (filled during the handshake). */
+  private optionNames = new Set<string>();
 
   constructor() {
     if (typeof Worker === 'undefined') {
@@ -113,7 +115,10 @@ class EngineWorker {
 
       const onMessage = (e: MessageEvent) => {
         const line = String(e.data);
-        if (line === 'uciok') {
+        if (line.startsWith('option name ')) {
+          const m = line.match(/^option name (.+?) type /);
+          if (m) this.optionNames.add(m[1]);
+        } else if (line === 'uciok') {
           worker.postMessage(`setoption name Hash value ${HASH_MB_PER_WORKER}`);
           worker.postMessage('isready');
         } else if (line === 'readyok') {
@@ -174,6 +179,55 @@ class EngineWorker {
     return this.enqueue(async () => {
       await this.ready;
       return this.runSearch(fen, depth, multiPv);
+    });
+  }
+
+  /** Ask for ONE move at roughly the given Elo (a single search, limited by Stockfish itself). */
+  play(fen: string, elo: number): Promise<string | null> {
+    return this.enqueue(async () => {
+      await this.ready;
+      return this.runPlay(fen, elo);
+    });
+  }
+
+  private runPlay(fen: string, elo: number): Promise<string | null> {
+    const worker = this.worker;
+    const { options, go } = buildPlayCommands(elo, (n) => this.optionNames.has(n));
+
+    return new Promise<string | null>((resolve, reject) => {
+      const timeout = setTimeout(() => {
+        cleanup();
+        this.kill();
+        reject(new Error(`Computer move timed out after ${SEARCH_TIMEOUT_MS}ms`));
+      }, SEARCH_TIMEOUT_MS);
+
+      const onError = (e: ErrorEvent) => {
+        cleanup();
+        this.kill();
+        reject(new Error(`Stockfish worker crashed: ${e.message || 'unknown error'}`));
+      };
+
+      const onMessage = (e: MessageEvent) => {
+        const line = String(e.data);
+        if (line.startsWith('bestmove')) {
+          const mv = line.split(/\s+/)[1];
+          cleanup();
+          resolve(mv && mv !== '(none)' ? mv : null);
+        }
+      };
+
+      function cleanup() {
+        clearTimeout(timeout);
+        worker.removeEventListener('message', onMessage);
+        worker.removeEventListener('error', onError);
+      }
+
+      worker.addEventListener('message', onMessage);
+      worker.addEventListener('error', onError);
+      worker.postMessage('setoption name MultiPV value 1');
+      for (const cmd of options) worker.postMessage(cmd);
+      worker.postMessage(`position fen ${fen}`);
+      worker.postMessage(go);
     });
   }
 
@@ -263,6 +317,40 @@ class EngineWorker {
       worker.postMessage(`go depth ${depth}`);
     });
   }
+}
+
+/* ─────────────────────── Playing strength (Elo dial) ─────────────────────── */
+
+const clamp = (v: number, lo: number, hi: number) => Math.max(lo, Math.min(hi, v));
+
+/**
+ * Turn an Elo into UCI commands. Stockfish's own UCI_LimitStrength / UCI_Elo does the weakening
+ * (it needs only ONE search), with fallbacks for builds that don't advertise those options.
+ */
+function buildPlayCommands(elo: number, has: (name: string) => boolean): { options: string[]; go: string } {
+  const options: string[] = [];
+  const hasElo = has('UCI_LimitStrength') && has('UCI_Elo');
+  const hasSkill = has('Skill Level');
+
+  // Stockfish's supported Elo range starts around 1320.
+  if (hasElo && elo >= 1320 && elo < 2800) {
+    options.push('setoption name UCI_LimitStrength value true', `setoption name UCI_Elo value ${Math.round(elo)}`);
+    const ms = Math.round(250 + ((elo - 1320) / 1480) * 650); // 250 ms .. 900 ms
+    return { options, go: `go movetime ${ms}` };
+  }
+
+  if (hasElo) options.push('setoption name UCI_LimitStrength value false');
+
+  if (elo >= 2800) {
+    if (hasSkill) options.push('setoption name Skill Level value 20');
+    return { options, go: 'go movetime 800' };
+  }
+
+  // Below the engine's Elo range (or no Elo option): lowest skill + a very shallow search.
+  const skill = elo < 1320 ? clamp(Math.floor((elo - 400) / 230), 0, 3) : clamp(Math.round((elo - 1000) / 90), 0, 20);
+  if (hasSkill) options.push(`setoption name Skill Level value ${skill}`);
+  const depth = elo < 700 ? 1 : elo < 1100 ? 2 : elo < 1500 ? 3 : elo < 1900 ? 4 : elo < 2300 ? 6 : 8;
+  return { options, go: `go depth ${depth}` };
 }
 
 /* ─────────────────────────────── Worker pool ────────────────────────────── */
@@ -468,6 +556,17 @@ async function runBatch(
   // If every runner failed to start, report the remainder as done so progress completes.
   while (done < total) tick();
   return results;
+}
+
+/**
+ * Computer opponent. Uses its OWN worker so strength-limiting options never leak into the
+ * analysis pool (and so a computer move never waits behind an analysis search).
+ */
+let playWorker: EngineWorker | null = null;
+
+export function playMove(fen: string, elo: number): Promise<string | null> {
+  if (!playWorker || playWorker.dead) playWorker = new EngineWorker();
+  return playWorker.play(fen, elo);
 }
 
 /** Clear every worker's hash table (fresh state for a new game). */

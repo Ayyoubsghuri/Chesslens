@@ -88,6 +88,18 @@ export function saveAnalysis(
   } catch {}
 }
 
+/** Remove a game's saved analysis from storage (used when the game is deleted). */
+export function deleteAnalysis(gameId: string): void {
+  try {
+    const raw = localStorage.getItem(ANALYSIS_KEY);
+    if (!raw) return;
+    const all: Record<string, StoredAnalysis> = JSON.parse(raw);
+    if (!(gameId in all)) return;
+    delete all[gameId];
+    localStorage.setItem(ANALYSIS_KEY, JSON.stringify(all));
+  } catch {}
+}
+
 /**
  * True if a cached analysis was computed at a different depth than the
  * current setting — meaning it should be treated as stale and recomputed,

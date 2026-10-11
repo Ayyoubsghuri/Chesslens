@@ -1,4 +1,4 @@
-import { Component, useEffect, useMemo, useState, type ReactNode } from 'react';
+import { Component, useEffect, useLayoutEffect, useMemo, useState, type ReactNode } from 'react';
 import { Chess } from 'chess.js';
 
 /* ------------------------------------------------------------------ */
@@ -91,6 +91,58 @@ export function detectGameEnd(game: any, moves: { san?: string; fenAfter?: strin
     else if (/black won/.test(text)) loser = 'w';
   }
   return loser ? { kind, loser } : null;
+}
+
+/* ------------------------------------------------------------------ */
+/*  Announcement: the text that pops up before the animation           */
+/* ------------------------------------------------------------------ */
+
+/** How long the announcement is on screen before the end-of-game animation starts. */
+const ANNOUNCE_MS = 2200;
+
+type AnnounceKind = GameEndKind | 'checkmate';
+
+interface Announcement {
+  icon: string;
+  title: string;
+  sub: string;
+  accent: string;
+}
+
+function announcementFor(
+  kind: AnnounceKind,
+  loser: 'w' | 'b',
+  names: { w: string; b: string }
+): Announcement {
+  const who = loser === 'w' ? names.w : names.b;
+  const winner = loser === 'w' ? names.b : names.w;
+  const were = who === 'You' ? 'were' : 'was';
+  switch (kind) {
+    case 'resign':
+      return { icon: '\u{1F3F3}\uFE0F', title: `${who} resigned`, sub: `${winner} wins`, accent: '#f7c631' };
+    case 'checkmate':
+      return { icon: '\u265A\uFE0E', title: `${who} ${were} checkmated`, sub: `${winner} wins by checkmate`, accent: '#fa412d' };
+    case 'timeout':
+      return { icon: '\u23F1\uFE0F', title: `${who} lost on time`, sub: `${winner} wins on time`, accent: '#ffa459' };
+    case 'abandon':
+      return { icon: '\u{1F6AA}', title: `${who} abandoned the game`, sub: `${winner} wins`, accent: '#a78bfa' };
+    case 'stalemate':
+      return { icon: '\u{1F6A7}', title: 'Stalemate', sub: `${who} has no legal moves`, accent: '#81b64c' };
+    default:
+      return { icon: '\u{1F91D}', title: 'Draw', sub: 'The game ended in a draw', accent: '#81b64c' };
+  }
+}
+
+/**
+ * Same position, other side to move. Used to hold back the board's checkmate effects until the
+ * announcement has finished (the board only plays them when it sees a mate position).
+ */
+function holdMateFen(fen: string): string {
+  const parts = fen.split(' ');
+  if (parts.length < 4) return fen;
+  parts[1] = parts[1] === 'w' ? 'b' : 'w';
+  parts[3] = '-';
+  return parts.join(' ');
 }
 
 /* ------------------------------------------------------------------ */
@@ -449,6 +501,16 @@ const CSS = `
 @keyframes ge-pulse { 50% { transform: scale(1.12); } }
 .ge-clock-urgent { transform-origin: 0 0; animation: ge-pulse .5s ease-in-out infinite; }
 
+@keyframes ge-ann-fade { 0% { opacity: 0; } 8% { opacity: 1; } 88% { opacity: 1; } 100% { opacity: 0; } }
+@keyframes ge-ann-pop {
+  0% { opacity: 0; transform: scale(.6) translateY(10px); }
+  12% { opacity: 1; transform: scale(1.07) translateY(0); }
+  20%, 100% { opacity: 1; transform: scale(1) translateY(0); }
+}
+.ge-ann { animation-name: ge-ann-fade; animation-timing-function: ease-out; animation-fill-mode: both; }
+.ge-ann-card { animation-name: ge-ann-pop; animation-timing-function: ease-out; animation-fill-mode: both; }
+@media (prefers-reduced-motion: reduce) { .ge-ann-card { animation-name: none; } }
+
 @media (prefers-reduced-motion: reduce) {
   .ge-bob, .ge-leg, .ge-flag, .ge-arm-wave, .ge-king-panic, .ge-arm-l, .ge-arm-r { animation-duration: 1.2s; }
 }
@@ -487,12 +549,26 @@ interface GameEndBoardProps {
   end: GameEnd | null;
   /** True only while viewing the final position (not exploring / previewing). */
   atFinalPosition: boolean;
+  /** Names used in the announcement ("Ayyoub resigned"). Default to White / Black. */
+  whiteName?: string;
+  blackName?: string;
   /** Render the real board. `playing` is true while an effect is running (disable dragging then). */
   children: (boardFen: string, playing: boolean) => ReactNode;
 }
 
-export function GameEndBoard({ fen, orientation, size, end, atFinalPosition, children }: GameEndBoardProps) {
-  const active = !!end && atFinalPosition;
+export function GameEndBoard({ fen, orientation, size, end, atFinalPosition, whiteName, blackName, children }: GameEndBoardProps) {
+  // Checkmate has no sprite animation here (the board plays its own), but it still gets the announcement.
+  const mate = useMemo(() => {
+    if (end) return null;
+    try {
+      const c = new Chess(fen);
+      return c.isCheckmate() ? { loser: c.turn() as 'w' | 'b' } : null;
+    } catch {
+      return null;
+    }
+  }, [fen, end]);
+  const active = (!!end || !!mate) && atFinalPosition;
+  const [announced, setAnnounced] = useState(false);
   const [run, setRun] = useState(0);
   const [dismissed, setDismissed] = useState(false);
   const [phase, setPhase] = useState<'sleep' | 'panic' | 'done'>('sleep');
@@ -502,20 +578,37 @@ export function GameEndBoard({ fen, orientation, size, end, atFinalPosition, chi
   const [step, setStep] = useState(0);
   const [sphase, setSphase] = useState<'trapped' | 'scream' | 'dance'>('trapped');
 
-  // Each time we arrive at the final position, play from the start.
-  useEffect(() => {
+  // Each time we arrive at the final position, play from the start (announcement first).
+  // Layout effect so the reset happens before the browser paints.
+  useLayoutEffect(() => {
+    setAnnounced(false);
     if (active) {
       setDismissed(false);
       setRun((r) => r + 1);
     }
-  }, [active, end?.kind, end?.loser]);
+  }, [active, end?.kind, end?.loser, mate?.loser]);
 
   const playing = active && !dismissed;
+  const announcing = playing && !announced;
+  const animating = !!end && playing && announced; // the sprite animation runs only after the announcement
   const kind = end?.kind;
+
+  useEffect(() => {
+    if (!announcing) return;
+    const id = window.setTimeout(() => setAnnounced(true), ANNOUNCE_MS);
+    return () => window.clearTimeout(id);
+  }, [announcing, run]);
+
+  const announcement = useMemo<Announcement | null>(() => {
+    const names = { w: whiteName || 'White', b: blackName || 'Black' };
+    if (end) return announcementFor(end.kind, end.loser, names);
+    if (mate) return announcementFor('checkmate', mate.loser, names);
+    return null;
+  }, [end, mate, whiteName, blackName]);
 
   // Time-loss timeline: ZZZZ (3s) -> clock counts 10..1 while the board drains of colour.
   useEffect(() => {
-    if (!playing || kind !== 'timeout') return;
+    if (!animating || kind !== 'timeout') return;
     setPhase('sleep');
     setCount(10);
     const ids: number[] = [];
@@ -529,32 +622,33 @@ export function GameEndBoard({ fen, orientation, size, end, atFinalPosition, chi
       );
     }
     return () => ids.forEach((id) => window.clearTimeout(id));
-  }, [playing, kind, run]);
+  }, [animating, kind, run]);
 
   // Abandonment: yell "I QUIT!" and throw the crown (2.4s), then walk off the board.
   useEffect(() => {
-    if (!playing || kind !== 'abandon') return;
+    if (!animating || kind !== 'abandon') return;
     setLeaving(false);
     const id = window.setTimeout(() => setLeaving(true), 2400);
     return () => window.clearTimeout(id);
-  }, [playing, kind, run]);
+  }, [animating, kind, run]);
 
   const kingChar = end?.loser === 'w' ? 'K' : 'k';
   const pawnChar = end?.loser === 'w' ? 'P' : 'p';
 
   const boardFen = useMemo(() => {
-    if (!playing || !end) return fen;
+    if (announcing && mate) return holdMateFen(fen);
+    if (!animating || !end) return fen;
     if (end.kind === 'resign') return stripPieces(fen, (ch) => ch === pawnChar || ch === kingChar);
     if (end.kind === 'draw') return stripPieces(fen, (ch) => ch === 'K' || ch === 'k');
     return stripPieces(fen, (ch) => ch === kingChar);
-  }, [playing, end, fen, kingChar, pawnChar]);
+  }, [announcing, animating, mate, end, fen, kingChar, pawnChar]);
 
   const fallbackFen = useMemo(() => {
-    if (!playing || !end) return fen;
+    if (!animating || !end) return fen;
     return end.kind === 'resign' ? stripPieces(fen, (ch) => ch === pawnChar) : fen;
-  }, [playing, end, fen, pawnChar]);
+  }, [animating, end, fen, pawnChar]);
 
-  const placed = useMemo(() => (playing ? parseBoard(fen, orientation) : []), [playing, fen, orientation]);
+  const placed = useMemo(() => (animating ? parseBoard(fen, orientation) : []), [animating, fen, orientation]);
   const king = placed.find((p) => p.ch === kingChar) || null;
   const loserWhite = end?.loser === 'w';
 
@@ -565,17 +659,17 @@ export function GameEndBoard({ fen, orientation, size, end, atFinalPosition, chi
 
   // Draw: both kings walk toward each other over empty squares only and meet in the middle.
   const drawPlan = useMemo(() => {
-    if (!playing || kind !== 'draw' || !kings.wk || !kings.bk) return null;
+    if (!animating || kind !== 'draw' || !kings.wk || !kings.bk) return null;
     const blocked = new Set(placed.map((p) => p.col * 8 + p.row));
     const path = findPath(kings.wk, kings.bk, blocked);
     if (!path) return null;
     const m = path.length - 2; // squares strictly between the two kings
     const a = Math.floor(m / 2);
     return { path, m, a, maxSteps: Math.max(a, m - a) };
-  }, [playing, kind, placed, kings]);
+  }, [animating, kind, placed, kings]);
 
   useEffect(() => {
-    if (!playing || kind !== 'draw') return;
+    if (!animating || kind !== 'draw') return;
     setStep(0);
     const ids: number[] = [];
     const SIGN_MS = 4200;
@@ -592,23 +686,23 @@ export function GameEndBoard({ fen, orientation, size, end, atFinalPosition, chi
       ids.push(window.setTimeout(() => setDphase('done'), shakeAt + 2000 + SIGN_MS));
     }
     return () => ids.forEach((id) => window.clearTimeout(id));
-  }, [playing, kind, run, drawPlan]);
+  }, [animating, kind, run, drawPlan]);
 
   // Stalemate: bump into the walls shouting "Call an ambulance!", scream "But not for me!", then dance.
   useEffect(() => {
-    if (!playing || kind !== 'stalemate') return;
+    if (!animating || kind !== 'stalemate') return;
     setSphase('trapped');
     const ids = [
       window.setTimeout(() => setSphase('scream'), 2800),
       window.setTimeout(() => setSphase('dance'), 2800 + 2000),
     ];
     return () => ids.forEach((id) => window.clearTimeout(id));
-  }, [playing, kind, run]);
+  }, [animating, kind, run]);
 
-  const gray = playing && kind === 'timeout' && phase !== 'sleep';
+  const gray = animating && kind === 'timeout' && phase !== 'sleep';
 
   return (
-    <div style={{ position: 'relative', width: '100%', maxWidth: size }}>
+    <div style={{ position: 'relative', width: '100%', maxWidth: size, containerType: 'inline-size' }}>
       <style>{CSS}</style>
 
       <div
@@ -625,7 +719,7 @@ export function GameEndBoard({ fen, orientation, size, end, atFinalPosition, chi
         </BoardBoundary>
       </div>
 
-      {playing && end && (
+      {animating && end && (
         <svg
           key={run}
           viewBox="0 0 800 800"
@@ -963,13 +1057,46 @@ export function GameEndBoard({ fen, orientation, size, end, atFinalPosition, chi
         </svg>
       )}
 
+      {/* Announcement: says how the game ended, before the animation starts */}
+      {announcing && announcement && (
+        <div
+          key={`ann-${run}`}
+          role="status"
+          aria-live="assertive"
+          className="ge-ann pointer-events-none absolute inset-0 z-20 flex items-center justify-center rounded-lg"
+          style={{ background: 'rgba(8, 9, 12, 0.42)', animationDuration: `${ANNOUNCE_MS}ms` }}
+        >
+          <div
+            className="ge-ann-card flex max-w-[88%] flex-col items-center text-center"
+            style={{
+              animationDuration: `${ANNOUNCE_MS}ms`,
+              background: 'linear-gradient(160deg, #1c2028, #0f1115)',
+              border: '1px solid rgba(255,255,255,0.1)',
+              borderTop: `0.8cqw solid ${announcement.accent}`,
+              borderRadius: '2.4cqw',
+              padding: '3.4cqw 6cqw',
+              boxShadow: '0 1.6cqw 5cqw rgba(0,0,0,0.55)',
+              fontFamily: 'ui-sans-serif, system-ui, sans-serif',
+            }}
+          >
+            <span style={{ fontSize: '9cqw', lineHeight: 1 }} aria-hidden="true">{announcement.icon}</span>
+            <p style={{ margin: '1.6cqw 0 0', fontSize: '6.4cqw', lineHeight: 1.1, fontWeight: 800, color: '#fff' }}>
+              {announcement.title}
+            </p>
+            <p style={{ margin: '1cqw 0 0', fontSize: '3.4cqw', fontWeight: 600, color: announcement.accent }}>
+              {announcement.sub}
+            </p>
+          </div>
+        </div>
+      )}
+
       {/* Skip / replay */}
       {active && (
         <button
           type="button"
           onClick={() => {
             if (playing) setDismissed(true);
-            else { setDismissed(false); setRun((r) => r + 1); }
+            else { setDismissed(false); setAnnounced(false); setRun((r) => r + 1); }
           }}
           className="absolute bottom-2 right-2 z-10 rounded-full bg-black/60 px-2.5 py-1 text-xs font-medium text-white backdrop-blur hover:bg-black/80"
         >
