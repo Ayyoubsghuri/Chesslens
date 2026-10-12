@@ -14,6 +14,7 @@ import {
   savePuzzleProgress,
 } from '@/lib/puzzles';
 import type { Puzzle, PuzzleProgress } from '@/lib/puzzles';
+import { logPuzzle } from '@/lib/activity';
 import { Flame, Lightbulb, Loader2, RotateCcw, SkipForward, Eye, Puzzle as PuzzleIcon } from 'lucide-react';
 
 type Status = 'loading' | 'playing' | 'solved' | 'failed' | 'error';
@@ -35,12 +36,13 @@ function applyUci(chess: Chess, uci: string) {
   return chess.move({ from: uci.slice(0, 2), to: uci.slice(2, 4), promotion: uci[4] });
 }
 
-export function PuzzleTrainer() {
+export function PuzzleTrainer({ initialCategory }: { initialCategory?: string } = {}) {
+  const startCat = initialCategory && initialCategory !== 'all' ? initialCategory : 'all';
   const [progress, setProgress] = useState<PuzzleProgress>(loadPuzzleProgress);
   const [bank, setBank] = useState<Puzzle[]>([]);
-  const [source, setSource] = useState<Source>('lichess');
-  const [category, setCategory] = useState('all');
-  const filterRef = useRef({ category: 'all' });
+  const [source, setSource] = useState<Source>(startCat !== 'all' ? 'bank' : 'lichess');
+  const [category, setCategory] = useState(startCat);
+  const filterRef = useRef({ category: startCat });
 
   const [puzzle, setPuzzle] = useState<Puzzle | null>(null);
   const [status, setStatus] = useState<Status>('loading');
@@ -82,6 +84,7 @@ export function PuzzleTrainer() {
     if (recordedRef.current || !puzzleRef.current) return;
     recordedRef.current = true;
     const p = puzzleRef.current;
+    logPuzzle(p.themes ?? [], win);
     setProgress(prev => recordResult(prev, p, win));
   }, []);
 
@@ -193,15 +196,33 @@ export function PuzzleTrainer() {
       clearPuzzleBank(); // remove any set imported with the old Import button
       const local = await fetchBundledPuzzles();
       if (local.length > 0) setBank(local);
+      const cat = filterRef.current.category;
       if (local.length > 0) {
         setSource('bank');
+        // If Learn Path requested a theme, keep it; otherwise default bank load
         loadNext('bank', progress, local);
+      } else if (cat === 'all') {
+        loadNext('lichess', progress);
       } else {
+        // Theme requested but no local bank — fall back to random Lichess
         loadNext('lichess', progress);
       }
     })();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  // When Learn Path navigates here with a new theme
+  useEffect(() => {
+    if (!initialCategory) return;
+    const cat = initialCategory === 'all' ? 'all' : initialCategory;
+    setCategory(cat);
+    filterRef.current = { category: cat };
+    if (cat !== 'all' && bank.length > 0) {
+      setSource('bank');
+      loadNext('bank', progress);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [initialCategory]);
 
   const switchSource = (s: Source) => {
     if (s === 'lichess') {

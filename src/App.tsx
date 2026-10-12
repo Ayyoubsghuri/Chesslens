@@ -8,12 +8,17 @@ import { DrillsPanel } from '@/components/DrillsPanel';
 import { PuzzleTrainer } from '@/components/PuzzleTrainer';
 import { ChessStory } from '@/components/ChessStory';
 import { PlayVsComputer, type PlayedGame } from '@/components/PlayVsComputer';
+import { OpeningsTrainer } from '@/components/OpeningsTrainer';
+import { MissionBanner } from '@/components/MissionBanner';
+import type { Mission } from '@/lib/mission';
+import { LearnPath, type LearnNavigate } from '@/components/LearnPath';
 import { analyzeGame, computeAccuracy, countByQuality } from '@/lib/analysis';
 import { getMoveHistory } from '@/lib/pgn';
 import { getGameOutcome } from '@/lib/outcome';
+import { logEvent } from '@/lib/activity';
 import { loadGames, saveGames, loadAnalyses, saveAnalysis, deleteAnalysis, loadSettings, saveSettings } from '@/lib/storage';
 import type { ImportedGame, AnalysisResult, AnalyzedMove, Settings as SettingsType, View } from '@/lib/types';
-import { Loader2, Plus, Settings as SettingsIcon, BarChart3, GraduationCap, Target, Crown as ChessIcon, Upload, Swords, Home, Trash2, ChevronLeft, ChevronRight, Search, X } from 'lucide-react';
+import { Loader2, Plus, Settings as SettingsIcon, BarChart3, GraduationCap, Target, Crown as ChessIcon, Upload, Swords, Home, Trash2, ChevronLeft, ChevronRight, Search, X, BookOpen } from 'lucide-react';
 
 function App() {
   const [games, setGames] = useState<ImportedGame[]>([]);
@@ -22,13 +27,30 @@ function App() {
   const [selectedGameId, setSelectedGameId] = useState<string | null>(null);
   const [currentMoveIndex, setCurrentMoveIndex] = useState(0);
   const [view, setView] = useState<View>('analysis');
-  const [page, setPage] = useState<'home' | 'play' | 'puzzles'>('home');
+  const [page, setPage] = useState<'home' | 'play' | 'puzzles' | 'openings' | 'learn'>('home');
+  const [puzzleTheme, setPuzzleTheme] = useState<string | undefined>(undefined);
   const [showImport, setShowImport] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
   const [analyzing, setAnalyzing] = useState(false);
   const [analysisProgress, setAnalysisProgress] = useState({ current: 0, total: 0 });
   const [coachMove, setCoachMove] = useState<AnalyzedMove | null>(null);
   const [pendingAnalyzeId, setPendingAnalyzeId] = useState<string | null>(null);
+  const [missionCtx, setMissionCtx] = useState<{ mission: Mission; page: 'puzzles' | 'play' | 'openings' | 'home' } | null>(null);
+
+  const handleLearnNavigate = useCallback((target: LearnNavigate) => {
+    setMissionCtx(target.mission ? { mission: target.mission, page: target.page } : null);
+    if (target.page === 'puzzles') {
+      setPuzzleTheme(target.theme);
+      setPage('puzzles');
+    } else {
+      setPuzzleTheme(undefined);
+      setPage(target.page);
+      if (target.page === 'home') {
+        setSelectedGameId(null);
+        setCoachMove(null);
+      }
+    }
+  }, []);
 
   useEffect(() => {
     setGames(loadGames());
@@ -79,6 +101,7 @@ function App() {
         saveAnalysis(selectedGame.id, result, settings.analysisDepth);
         return updated;
       });
+      logEvent('review');
     } catch (e) {
       console.error('Analysis failed', e);
     } finally {
@@ -86,9 +109,9 @@ function App() {
     }
   }, [selectedGame, settings.analysisDepth]);
 
-  // Game finished in "Play vs Computer": import it, open it, and start the analysis right away
   const handlePlayedGame = useCallback((g: PlayedGame) => {
     const id = `play-${Date.now()}`;
+    logEvent('game');
     const game = {
       id,
       white: g.white,
@@ -150,7 +173,6 @@ function App() {
     setView('coach');
   };
 
-  // Coach tab navigation: move through the game without returning to Analysis
   const handleCoachNavigate = (index: number) => {
     setCurrentMoveIndex(index);
     setCoachMove(null);
@@ -165,7 +187,6 @@ function App() {
 
   return (
     <div className="min-h-screen flex flex-col">
-      {/* Header */}
       <header className="border-b border-ink-800 bg-ink-900/80 backdrop-blur-md sticky top-0 z-40">
         <div className="max-w-7xl mx-auto px-4 py-3 flex flex-wrap items-center justify-between gap-x-4 gap-y-2">
           <button onClick={() => setPage('home')} className="flex items-center gap-2.5 text-left" title="Home">
@@ -178,8 +199,10 @@ function App() {
             </div>
           </button>
 
-          <nav className="flex items-center gap-1 order-last sm:order-none w-full sm:w-auto" aria-label="Main">
+          <nav className="flex items-center gap-1 order-last sm:order-none w-full sm:w-auto overflow-x-auto" aria-label="Main">
             <NavTab active={page === 'home'} onClick={() => setPage('home')} icon={Home} label="Home" />
+            <NavTab active={page === 'learn'} onClick={() => setPage('learn')} icon={GraduationCap} label="Learn Path" />
+            <NavTab active={page === 'openings'} onClick={() => setPage('openings')} icon={BookOpen} label="Openings" />
             <NavTab active={page === 'puzzles'} onClick={() => setPage('puzzles')} icon={Target} label="Practice Puzzles" />
             <NavTab active={page === 'play'} onClick={() => setPage('play')} icon={Swords} label="Play vs Computer" />
           </nav>
@@ -196,12 +219,22 @@ function App() {
       </header>
 
       <main className="flex-1 max-w-7xl mx-auto w-full px-4 py-6">
-        {page === 'play' ? (
+        {missionCtx && page === missionCtx.page && (
+          <MissionBanner
+            mission={missionCtx.mission}
+            onBack={() => { setPage('learn'); setMissionCtx(null); }}
+            onDismiss={() => setMissionCtx(null)}
+          />
+        )}
+        {page === 'learn' ? (
+          <LearnPath onNavigate={handleLearnNavigate} />
+        ) : page === 'openings' ? (
+          <OpeningsTrainer />
+        ) : page === 'play' ? (
           <PlayVsComputer settings={settings} onAnalyze={handlePlayedGame} />
         ) : page === 'puzzles' ? (
-          <PuzzleTrainer />
+          <PuzzleTrainer initialCategory={puzzleTheme} />
         ) : !selectedGame ? (
-          /* Home: empty state / game library + story */
           <>
           <div className={`flex flex-col items-center justify-center text-center ${games.length === 0 ? 'min-h-[50vh]' : 'min-h-[30vh]'}`}>
             {games.length === 0 ? (
@@ -225,7 +258,6 @@ function App() {
           </>
         ) : (
           <>
-            {/* Game header + tabs */}
             <div className="mb-6">
               <div className="flex flex-wrap items-center justify-between gap-3 mb-4">
                 <div>
@@ -285,7 +317,6 @@ function App() {
                 </div>
               )}
 
-              {/* View tabs */}
               {selectedAnalysis && (
                 <div className="flex gap-1 border-b border-ink-800">
                   <TabButton active={view === 'analysis'} onClick={() => setView('analysis')} icon={BarChart3} label="Analysis" />
@@ -295,7 +326,6 @@ function App() {
               )}
             </div>
 
-            {/* Content */}
             {!selectedAnalysis ? (
               <div className="card p-12 text-center">
                 <BarChart3 size={32} className="mx-auto mb-3 text-ink-500" />
@@ -330,7 +360,7 @@ function NavTab({ active, onClick, icon: Icon, label }: { active: boolean; onCli
     <button
       onClick={onClick}
       aria-current={active ? 'page' : undefined}
-      className={`flex items-center gap-2 px-3 py-2 rounded-lg text-sm font-medium transition-colors ${active ? 'bg-ink-800 text-white' : 'text-ink-400 hover:text-ink-200 hover:bg-ink-800/60'}`}
+      className={`flex items-center gap-2 px-3 py-2 rounded-lg text-sm font-medium transition-colors whitespace-nowrap ${active ? 'bg-ink-800 text-white' : 'text-ink-400 hover:text-ink-200 hover:bg-ink-800/60'}`}
     >
       <Icon size={16} /> {label}
     </button>
@@ -359,7 +389,6 @@ function GameLibrary({ games, analyses, onSelect, onDelete, onDeleteMany }: { ga
     : games;
   const analyzedIds = games.filter(g => analyses[g.id]).map(g => g.id);
   const pageCount = Math.max(1, Math.ceil(filtered.length / PAGE_SIZE));
-  // Stay on a valid page after deleting the last game of a page
   const current = Math.min(pageNum, pageCount - 1);
   const visible = filtered.slice(current * PAGE_SIZE, (current + 1) * PAGE_SIZE);
 

@@ -24,7 +24,7 @@ interface Game {
   how: 'mate' | 'resign' | 'time' | 'other'; // how the game ended (for wins and losses)
 }
 
-const MAX_GAMES = 300;
+const MAX_GAMES = 1000;
 
 /** Group variations into a family: "Sicilian Defense: Najdorf" -> "Sicilian Defense". */
 const FAMILIES = [
@@ -54,7 +54,7 @@ async function fetchChessCom(user: string): Promise<{ games: Game[]; display: st
 
   const games: Game[] = [];
   let display = user;
-  for (const url of [...archives].reverse().slice(0, 8)) {
+  for (const url of [...archives].reverse().slice(0, 36)) {
     if (games.length >= MAX_GAMES) break;
     const res = await fetch(url);
     if (!res.ok) continue;
@@ -159,6 +159,8 @@ interface Story {
   platform: Platform;
   count: number;
   rating: number | null;
+  /** Time control the displayed rating belongs to (e.g. blitz, rapid). */
+  ratingSpeed: string | null;
   winRate: number;
   record: { w: number; d: number; l: number };
   rows: Row[];
@@ -180,6 +182,21 @@ interface Story {
   winTotal: number;
   formats: { speed: string; n: number; score: number }[];
   ratings: number[];
+  // New insight fields
+  avoid: { name: string; score: number; n: number; side: string }[];
+  learn: { name: string; score: number; n: number; reason: string }[];
+  colorPerf: { white: { n: number; score: number }; black: { n: number; score: number } };
+  losses: { label: string; n: number }[];
+  lossTotal: number;
+  bestVictim: { name: string; games: number; w: number; d: number; l: number } | null;
+  underdogWins: number;
+  favoriteColor: 'w' | 'b' | null;
+  worstTime: Bucket | null;
+  recentForm: { score: number; n: number } | null;
+  peakRating: number | null;
+  ratingSwing: number | null;
+  mateRate: number;
+  resignRate: number;
 }
 
 const pct = (a: number, b: number) => (b > 0 ? Math.round((a / b) * 100) : 0);
@@ -293,10 +310,89 @@ function buildStory(name: string, platform: Platform, all: Game[]): Story {
   });
   const formats = [...fm.entries()].sort((a, b) => b[1].n - a[1].n).map(([speed, s]) => ({ speed, n: s.n, score: pct(s.points, s.n) }));
 
-  const rated = games.filter((g) => g.myRating != null).map((g) => g.myRating as number);
+  // Sparkline: prefer ratings from the most-played format so it matches the headline rating
+  const mainSpeed = formats[0]?.speed;
+  const ratedFromMain = mainSpeed
+    ? games.filter((g) => g.speed === mainSpeed && g.myRating != null).map((g) => g.myRating as number)
+    : [];
+  const ratedAll = games.filter((g) => g.myRating != null).map((g) => g.myRating as number);
+  const rated = ratedFromMain.length >= 5 ? ratedFromMain : ratedAll;
   // Keep the sparkline light: at most ~60 points
   const step = Math.max(1, Math.ceil(rated.length / 60));
   const ratings = rated.filter((_, i) => i % step === 0 || i === rated.length - 1);
+
+  // ---- New insight stats ----
+  // Openings to avoid: lowest score rate with enough games (min 4)
+  const avoid = allOpenings
+    .filter(([, s]) => s.n >= 4)
+    .sort((a, b) => a[1].points / a[1].n - b[1].points / b[1].n || b[1].n - a[1].n)
+    .slice(0, 4)
+    .map(([name, s]) => {
+      const sideW = openingMap(games, 'w').get(name);
+      const sideB = openingMap(games, 'b').get(name);
+      let side = '';
+      if (sideW && sideB) side = sideW.n >= sideB.n ? 'as White' : 'as Black';
+      else if (sideW) side = 'as White';
+      else if (sideB) side = 'as Black';
+      return { name, score: pct(s.points, s.n), n: s.n, side };
+    });
+
+  // What to learn: openings played often but mediocre score, or high volume with room to improve
+  const learn = allOpenings
+    .filter(([, s]) => s.n >= 5 && s.points / s.n < 0.55 && s.points / s.n > 0.25)
+    .sort((a, b) => b[1].n - a[1].n || a[1].points / a[1].n - b[1].points / b[1].n)
+    .slice(0, 4)
+    .map(([name, s]) => ({
+      name,
+      score: pct(s.points, s.n),
+      n: s.n,
+      reason: s.points / s.n < 0.4 ? 'leaking points' : 'room to improve',
+    }));
+
+  // Color performance
+  const whiteGames = games.filter((g) => g.color === 'w');
+  const blackGames = games.filter((g) => g.color === 'b');
+  const colorPerf = {
+    white: { n: whiteGames.length, score: pct(whiteGames.reduce((a, g) => a + points(g.outcome), 0), whiteGames.length) },
+    black: { n: blackGames.length, score: pct(blackGames.reduce((a, g) => a + points(g.outcome), 0), blackGames.length) },
+  };
+  const favoriteColor: 'w' | 'b' | null =
+    colorPerf.white.n >= 10 && colorPerf.black.n >= 10
+      ? colorPerf.white.score >= colorPerf.black.score + 5 ? 'w' : colorPerf.black.score >= colorPerf.white.score + 5 ? 'b' : null
+      : null;
+
+  // How you lose
+  const lossGames = games.filter((g) => g.outcome === 'l');
+  const losses = [
+    { label: 'Checkmated', n: lossGames.filter((g) => g.how === 'mate').length },
+    { label: 'Resigned', n: lossGames.filter((g) => g.how === 'resign').length },
+    { label: 'On time', n: lossGames.filter((g) => g.how === 'time').length },
+    { label: 'Other', n: lossGames.filter((g) => g.how === 'other').length },
+  ].filter((w) => w.n > 0);
+  const lossTotal = lossGames.length;
+
+  // Best victim (most wins against one opponent)
+  const vict = [...vs.entries()].filter(([, s]) => s.w >= 2).sort((a, b) => b[1].w - a[1].w || b[1].games - a[1].games)[0];
+  const bestVictim = vict ? { name: vict[0], ...vict[1] } : null;
+
+  // Underdog wins (beat higher rated)
+  const underdogWins = games.filter((g) => g.outcome === 'w' && g.oppRating != null && g.myRating != null && g.oppRating > g.myRating).length;
+
+  // Worst time of day
+  const worstTime = [...times].filter((t) => t.n >= 5).sort((a, b) => a.score - b.score)[0] ?? null;
+
+  // Recent form (last 30 games or 20%)
+  const recentN = Math.min(30, Math.max(10, Math.floor(games.length * 0.2)));
+  const recent = games.slice(-recentN);
+  const recentForm = recent.length >= 10
+    ? { score: pct(recent.reduce((a, g) => a + points(g.outcome), 0), recent.length), n: recent.length }
+    : null;
+
+  const peakRating = rated.length ? Math.max(...rated) : null;
+  const ratingSwing = rated.length >= 2 ? Math.max(...rated) - Math.min(...rated) : null;
+
+  const mateRate = winGames.length ? pct(winGames.filter((g) => g.how === 'mate').length, winGames.length) : 0;
+  const resignRate = lossGames.length ? pct(lossGames.filter((g) => g.how === 'resign').length, lossGames.length) : 0;
 
   // Poster rows (summary)
   const rows: Row[] = [{ icon: Swords, title: 'Record', value: `${record.w}W · ${record.d}D · ${record.l}L` }];
@@ -309,12 +405,38 @@ function buildStory(name: string, platform: Platform, all: Game[]): Story {
   const bestTime = [...times].filter((t) => t.n >= 5).sort((a, b) => b.score - a.score)[0];
   if (bestTime && times.length > 1) rows.push({ icon: Clock, title: 'Plays best', value: `${bestTime.label} · ${bestTime.score}%` });
   if (formats[0]) rows.push({ icon: Zap, title: 'Favorite format', value: `${cap(formats[0].speed)} · ${pct(formats[0].n, games.length)}%` });
+  if (favoriteColor) rows.push({ icon: BookOpen, title: 'Stronger as', value: favoriteColor === 'w' ? 'White' : 'Black' });
 
-  const latest = [...games].reverse().find((g) => g.myRating != null);
+  // Prefer rating from the player's main time control:
+  // most-played format first; if that has no rated games, fall back to rapid → blitz → any.
+  const preferredSpeeds: string[] = [];
+  if (formats[0]) preferredSpeeds.push(formats[0].speed);
+  for (const s of ['rapid', 'blitz', 'bullet', 'classical', 'daily']) {
+    if (!preferredSpeeds.includes(s)) preferredSpeeds.push(s);
+  }
+  let rating: number | null = null;
+  let ratingSpeed: string | null = null;
+  for (const speed of preferredSpeeds) {
+    const hit = [...games].reverse().find((g) => g.speed === speed && g.myRating != null);
+    if (hit) {
+      rating = hit.myRating;
+      ratingSpeed = speed;
+      break;
+    }
+  }
+  if (rating == null) {
+    const any = [...games].reverse().find((g) => g.myRating != null);
+    if (any) {
+      rating = any.myRating;
+      ratingSpeed = any.speed;
+    }
+  }
+
   return {
-    name, platform, count: games.length, rating: latest?.myRating ?? null,
+    name, platform, count: games.length, rating, ratingSpeed,
     winRate: pct(record.w + record.d / 2, games.length), record, rows,
     white, black, weapon, identity, giant, nemesis, streak, times, wins, winTotal: winGames.length, formats, ratings,
+    avoid, learn, colorPerf, losses, lossTotal, bestVictim, underdogWins, favoriteColor, worstTime, recentForm, peakRating, ratingSwing, mateRate, resignRate,
   };
 }
 
@@ -476,7 +598,8 @@ export function ChessStory({ games: imported }: { games: ImportedGame[] }) {
           </div>
           <h3 className="mt-6 text-3xl font-extrabold tracking-tight leading-tight break-words">{s.name}</h3>
           <p className="text-xs text-white/60 mt-0.5">
-            {s.platform === 'chesscom' ? 'Chess.com' : 'Lichess'}{s.rating != null && ` · rated ${s.rating}`}
+            {s.platform === 'chesscom' ? 'Chess.com' : 'Lichess'}
+            {s.rating != null && ` · ${s.ratingSpeed ? cap(s.ratingSpeed) + ' ' : ''}${s.rating}`}
           </p>
           <div className="mt-4 rounded-2xl bg-white p-3 flex items-center gap-3 shadow-lg" style={{ color: '#111827' }}>
             <Ring value={s.winRate} />
@@ -691,6 +814,203 @@ export function ChessStory({ games: imported }: { games: ImportedGame[] }) {
         ),
       });
     }
+
+    // 9. What to avoid
+    if (s.avoid.length > 0) {
+      list.push({
+        id: 'avoid', label: 'What to avoid',
+        node: (
+          <Shell grad={GRADS.red} kicker="What to avoid" story={s} footer="Lowest score rates among openings you've played at least 4 times.">
+            <h4 className="text-2xl font-extrabold leading-tight">Drop these lines</h4>
+            <p className="text-sm text-white/70 mt-1">Openings that cost you points</p>
+            <div className="mt-4">
+              {s.avoid.map((a) => (
+                <Bar
+                  key={a.name}
+                  label={a.name}
+                  value={`${a.score}%`}
+                  sub={`${a.n} games${a.side ? ` · ${a.side}` : ''}`}
+                  fill={Math.max(8, a.score)}
+                />
+              ))}
+            </div>
+          </Shell>
+        ),
+      });
+    }
+
+    // 10. What to learn
+    if (s.learn.length > 0) {
+      list.push({
+        id: 'learn', label: 'What to learn',
+        node: (
+          <Shell grad={GRADS.plum} kicker="What to study" story={s} footer="High-volume openings with room to improve your score rate.">
+            <h4 className="text-2xl font-extrabold leading-tight">Study these next</h4>
+            <p className="text-sm text-white/70 mt-1">You play them a lot — make them weapons</p>
+            <div className="mt-4">
+              {s.learn.map((l) => (
+                <Bar
+                  key={l.name}
+                  label={l.name}
+                  value={`${l.score}%`}
+                  sub={`${l.n} games · ${l.reason}`}
+                  fill={Math.max(8, l.score)}
+                />
+              ))}
+            </div>
+          </Shell>
+        ),
+      });
+    }
+
+    // 11. Color performance
+    if (s.colorPerf.white.n >= 5 && s.colorPerf.black.n >= 5) {
+      const stronger = s.favoriteColor === 'w' ? 'White' : s.favoriteColor === 'b' ? 'Black' : 'Balanced';
+      list.push({
+        id: 'colors', label: 'Colors',
+        node: (
+          <Shell grad={GRADS.blue} kicker="White vs Black" story={s}>
+            <h4 className="text-3xl font-extrabold leading-tight">{stronger}</h4>
+            <p className="text-sm text-white/70 mt-1">
+              {s.favoriteColor ? `You score better as ${stronger}` : 'No big color edge yet'}
+            </p>
+            <div className="mt-5">
+              <Bar label="As White" value={`${s.colorPerf.white.score}%`} sub={`${s.colorPerf.white.n} games`} fill={s.colorPerf.white.score} />
+              <Bar label="As Black" value={`${s.colorPerf.black.score}%`} sub={`${s.colorPerf.black.n} games`} fill={s.colorPerf.black.score} />
+            </div>
+          </Shell>
+        ),
+      });
+    }
+
+    // 12. How you lose
+    if (s.lossTotal >= 3) {
+      list.push({
+        id: 'losing-ways', label: 'How you lose',
+        node: (
+          <Shell grad={GRADS.red} kicker="How you lose" story={s}>
+            <div className="flex items-end gap-3">
+              <p className="text-6xl font-extrabold tracking-tight" style={{ color: GOLD }}>{s.lossTotal}</p>
+              <p className="pb-2 text-sm text-white/70">losses</p>
+            </div>
+            <div className="mt-4">
+              {s.losses.map((w) => <Bar key={w.label} label={w.label} value={`${pct(w.n, s.lossTotal)}%`} fill={pct(w.n, s.lossTotal)} />)}
+            </div>
+          </Shell>
+        ),
+      });
+    }
+
+    // 13. Best victim
+    if (s.bestVictim) {
+      list.push({
+        id: 'victim', label: 'Best victim',
+        node: (
+          <Shell grad={GRADS.green} kicker="Your favorite opponent" story={s}>
+            <p className="text-sm text-white/70">Most wins against one player</p>
+            <p className="mt-2 text-4xl font-extrabold tracking-tight break-words">{s.bestVictim.name}</p>
+            <p className="mt-4 text-5xl font-extrabold" style={{ color: GOLD }}>{s.bestVictim.w}–{s.bestVictim.d}–{s.bestVictim.l}</p>
+            <p className="text-sm text-white/70">your wins · draws · losses ({s.bestVictim.games} games)</p>
+          </Shell>
+        ),
+      });
+    }
+
+    // 14. Underdog / giant killer count
+    if (s.underdogWins >= 2) {
+      list.push({
+        id: 'underdog', label: 'Underdog wins',
+        node: (
+          <Shell grad={GRADS.amber} kicker="Underdog spirit" story={s}>
+            <p className="text-sm text-white/70">Wins against higher-rated opponents</p>
+            <p className="mt-2 text-6xl font-extrabold tracking-tight" style={{ color: GOLD }}>{s.underdogWins}</p>
+            <p className="mt-2 text-lg font-bold">upsets</p>
+            {s.giant && (
+              <p className="mt-4 text-sm text-white/70">
+                Biggest: beat <b className="text-white">{s.giant.oppName}</b> ({s.giant.oppRating})
+              </p>
+            )}
+          </Shell>
+        ),
+      });
+    }
+
+    // 15. Worst time of day
+    if (s.worstTime && s.times.length > 1) {
+      list.push({
+        id: 'worst-time', label: 'Avoid this time',
+        node: (
+          <Shell grad={GRADS.red} kicker="When to skip" story={s} footer="Score rate is lowest in this window (min 5 games).">
+            <h4 className="text-3xl font-extrabold leading-tight">{s.worstTime.label}</h4>
+            <p className="mt-2 text-6xl font-extrabold" style={{ color: GOLD }}>{s.worstTime.score}%</p>
+            <p className="text-sm text-white/70 mt-1">{s.worstTime.n} games · your weakest window</p>
+          </Shell>
+        ),
+      });
+    }
+
+    // 16. Recent form
+    if (s.recentForm) {
+      const hot = s.recentForm.score >= s.winRate + 5;
+      const cold = s.recentForm.score <= s.winRate - 5;
+      list.push({
+        id: 'form', label: 'Recent form',
+        node: (
+          <Shell grad={hot ? GRADS.green : cold ? GRADS.red : GRADS.blue} kicker="Recent form" story={s}>
+            <p className="text-sm text-white/70">Last {s.recentForm.n} games</p>
+            <p className="mt-2 text-6xl font-extrabold tracking-tight" style={{ color: GOLD }}>{s.recentForm.score}%</p>
+            <p className="mt-2 text-lg font-bold">
+              {hot ? 'On a hot streak' : cold ? 'Cooling off' : 'Steady as usual'}
+            </p>
+            <p className="mt-3 text-sm text-white/70">
+              Overall score rate: {s.winRate}%
+            </p>
+          </Shell>
+        ),
+      });
+    }
+
+    // 17. Peak & swing
+    if (s.peakRating != null && s.ratingSwing != null && s.ratingSwing >= 50) {
+      list.push({
+        id: 'peak', label: 'Peak rating',
+        node: (
+          <Shell grad={GRADS.plum} kicker="Rating highs" story={s}>
+            <p className="text-sm text-white/70">Peak in this sample</p>
+            <p className="mt-2 text-6xl font-extrabold tracking-tight" style={{ color: GOLD }}>{s.peakRating}</p>
+            <p className="mt-4 text-sm text-white/70">
+              Swing of <b className="text-white">{s.ratingSwing}</b> points from low to high
+            </p>
+          </Shell>
+        ),
+      });
+    }
+
+    // 18. Finishing style
+    if (s.winTotal >= 5) {
+      list.push({
+        id: 'finish', label: 'Finishing style',
+        node: (
+          <Shell grad={GRADS.green} kicker="How you finish" story={s}>
+            <p className="text-sm text-white/70">Your conversion style</p>
+            <div className="mt-4 grid grid-cols-2 gap-3">
+              <div className="rounded-2xl bg-white/10 p-3 text-center">
+                <p className="text-3xl font-extrabold" style={{ color: GOLD }}>{s.mateRate}%</p>
+                <p className="text-xs text-white/70 mt-1">wins by mate</p>
+              </div>
+              <div className="rounded-2xl bg-white/10 p-3 text-center">
+                <p className="text-3xl font-extrabold" style={{ color: GOLD }}>{s.resignRate}%</p>
+                <p className="text-xs text-white/70 mt-1">losses by resign</p>
+              </div>
+            </div>
+            <p className="mt-4 text-sm text-white/70">
+              {s.mateRate >= 40 ? 'You love delivering mate.' : s.resignRate >= 50 ? 'Opponents often resign to you — or you resign early.' : 'A mix of finishes.'}
+            </p>
+          </Shell>
+        ),
+      });
+    }
+
     return list;
   }, [story]);
 
@@ -706,7 +1026,7 @@ export function ChessStory({ games: imported }: { games: ImportedGame[] }) {
       <div className="mb-5">
         <h2 id="story-heading" className="text-xl font-bold">Your chess, as a story</h2>
         <p className="text-sm text-ink-400 mt-0.5">
-          Enter any Chess.com or Lichess username to get a set of cards from their recent games: openings, giant killer, nemesis and more.
+          Enter any Chess.com or Lichess username to get a set of cards from up to 1000 recent games: openings, what to avoid, what to learn, giant killer, nemesis and more.
         </p>
       </div>
 
