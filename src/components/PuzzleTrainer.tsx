@@ -15,7 +15,10 @@ import {
 } from '@/lib/puzzles';
 import type { Puzzle, PuzzleProgress } from '@/lib/puzzles';
 import { logPuzzle } from '@/lib/activity';
-import { Flame, Lightbulb, Loader2, RotateCcw, SkipForward, Eye, Puzzle as PuzzleIcon } from 'lucide-react';
+import { Flame, Lightbulb, Loader2, RotateCcw, SkipForward, Eye, Zap, Puzzle as PuzzleIcon } from 'lucide-react';
+
+const AUTO_NEXT_KEY = 'chesslens:puzzle-auto-next';
+const AUTO_NEXT_DELAY = 1200; // ms to enjoy the solved position before the next puzzle
 
 type Status = 'loading' | 'playing' | 'solved' | 'failed' | 'error';
 type Source = 'lichess' | 'bank';
@@ -55,6 +58,9 @@ export function PuzzleTrainer({ initialCategory }: { initialCategory?: string } 
   const [wrong, setWrong] = useState<string | null>(null);
   const [message, setMessage] = useState('');
   const [error, setError] = useState('');
+  const [autoNext, setAutoNext] = useState(() => {
+    try { return localStorage.getItem(AUTO_NEXT_KEY) === '1'; } catch { return false; }
+  });
 
   const chessRef = useRef(new Chess());
   const idxRef = useRef(0);
@@ -70,6 +76,14 @@ export function PuzzleTrainer({ initialCategory }: { initialCategory?: string } 
   }, [progress]);
 
   /* ---------------- helpers ---------------- */
+  const toggleAutoNext = () => {
+    setAutoNext((on) => {
+      const next = !on;
+      try { localStorage.setItem(AUTO_NEXT_KEY, next ? '1' : '0'); } catch { /* ignore */ }
+      return next;
+    });
+  };
+
   const clearTimers = () => {
     timersRef.current.forEach(t => window.clearTimeout(t));
     timersRef.current = [];
@@ -187,6 +201,15 @@ export function PuzzleTrainer({ initialCategory }: { initialCategory?: string } 
     },
     [source, progress, bank, startPuzzle],
   );
+
+  // Auto next: move on shortly after a puzzle is solved
+  const loadNextRef = useRef(loadNext);
+  loadNextRef.current = loadNext;
+  useEffect(() => {
+    if (!autoNext || status !== 'solved') return;
+    const t = window.setTimeout(() => loadNextRef.current(), AUTO_NEXT_DELAY);
+    return () => window.clearTimeout(t);
+  }, [autoNext, status, puzzle]);
 
   // First puzzle on mount
   // Prefer the local database sample (public/puzzles.csv) or a previously imported set;
@@ -497,6 +520,15 @@ export function PuzzleTrainer({ initialCategory }: { initialCategory?: string } 
                       </button>
                     </>
                   )}
+                  <button
+                    type="button"
+                    onClick={toggleAutoNext}
+                    aria-pressed={autoNext}
+                    title="Automatically load the next puzzle after you solve one"
+                    className={`${autoNext ? 'btn-primary' : 'btn-secondary'} text-sm`}
+                  >
+                    <Zap size={14} /> Auto next: {autoNext ? 'On' : 'Off'}
+                  </button>
                   <button
                     onClick={() => loadNext()}
                     disabled={status === 'loading'}

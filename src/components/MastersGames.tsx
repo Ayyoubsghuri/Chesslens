@@ -1,17 +1,78 @@
 // "GM games" tab: master games that reached the end of this opening line, replayable on a board.
 // Place in src/components/MastersGames.tsx
 import { useEffect, useState } from 'react';
+import { Chess } from 'chess.js';
 import { ChessBoard } from './ChessBoard';
+import { CapturedPieces } from './CapturedPieces';
 import {
   fetchMastersGames, fetchMasterGame, getLichessToken, setLichessToken,
   MastersError, type MasterGame, type MastersResult, type ParsedGame,
 } from '@/lib/masters';
-import { ChevronLeft, ChevronRight, ChevronsLeft, ChevronsRight, KeyRound, Loader2, Trophy } from 'lucide-react';
+import { ChevronLeft, ChevronRight, ChevronsLeft, ChevronsRight, KeyRound, Loader2, Trophy, BarChart3 } from 'lucide-react';
+
+
+export type AnalyzeGamePayload = {
+  pgn: string;
+  white: string;
+  black: string;
+  result: string;
+};
+
+/** App can register once: registerAnalyzeHandler((game) => startAnalysis(game.pgn)) */
+let globalAnalyzeHandler: ((game: AnalyzeGamePayload) => void) | null = null;
+
+export function registerAnalyzeHandler(handler: ((game: AnalyzeGamePayload) => void) | null) {
+  globalAnalyzeHandler = handler;
+}
+
+export function requestAnalyze(game: AnalyzeGamePayload): boolean {
+  try {
+    sessionStorage.setItem('chess-pending-analyze', JSON.stringify(game));
+  } catch { /* ignore */ }
+  // Always notify the app (App.tsx should listen or registerAnalyzeHandler once)
+  window.dispatchEvent(new CustomEvent('chess-analyze', { detail: game }));
+  if (globalAnalyzeHandler) {
+    globalAnalyzeHandler(game);
+    return true;
+  }
+  return false;
+}
 
 const resultText = (w: MasterGame['winner']) => (w === 'white' ? '1-0' : w === 'black' ? '0-1' : '½-½');
 const toErr = (e: unknown) => (e instanceof MastersError ? e : new MastersError('other', 'Something went wrong loading master games.'));
 
-export function MastersGames({ uci, orientation }: { uci: string[]; orientation: 'white' | 'black' }) {
+function buildMasterPgn(game: MasterGame, parsed: ParsedGame): string {
+  const chess = new Chess();
+  for (const san of parsed.sans) {
+    try { chess.move(san); } catch { break; }
+  }
+  const result = resultText(game.winner).replace('½-½', '1/2-1/2');
+  const headers: Record<string, string> = {
+    Event: 'Master game',
+    White: game.white,
+    Black: game.black,
+    Result: result,
+  };
+  if (game.year) headers.Date = `${game.year}.??.??`;
+  if (game.whiteRating) headers.WhiteElo = String(game.whiteRating);
+  if (game.blackRating) headers.BlackElo = String(game.blackRating);
+  chess.header(...Object.entries(headers).flat());
+  let pgn = chess.pgn();
+  if (!/\s(1-0|0-1|1\/2-1\/2|\*)\s*$/.test(pgn.trim())) {
+    pgn = `${pgn.trim()} ${result}`;
+  }
+  return pgn;
+}
+
+export function MastersGames({
+  uci,
+  orientation,
+  onAnalyze,
+}: {
+  uci: string[];
+  orientation: 'white' | 'black';
+  onAnalyze?: (game: AnalyzeGamePayload) => void;
+}) {
   const [token, setToken] = useState(getLichessToken());
   const [draft, setDraft] = useState('');
   const [res, setRes] = useState<MastersResult | null>(null);
@@ -33,7 +94,17 @@ export function MastersGames({ uci, orientation }: { uci: string[]; orientation:
     return () => { dead = true; };
   }, [key, token]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  if (open) return <GameViewer game={open} startPly={uci.length} orientation={orientation} onBack={() => setOpen(null)} />;
+  if (open) {
+    return (
+      <GameViewer
+        game={open}
+        startPly={uci.length}
+        orientation={orientation}
+        onBack={() => setOpen(null)}
+        onAnalyze={onAnalyze}
+      />
+    );
+  }
 
   const saveToken = () => {
     const t = draft.trim();
@@ -103,12 +174,14 @@ export function MastersGames({ uci, orientation }: { uci: string[]; orientation:
   );
 }
 
-function GameViewer({ game, startPly, orientation, onBack }: {
+function GameViewer({ game, startPly, orientation, onBack, onAnalyze }: {
   game: MasterGame; startPly: number; orientation: 'white' | 'black'; onBack: () => void;
+  onAnalyze?: (game: AnalyzeGamePayload) => void;
 }) {
   const [parsed, setParsed] = useState<ParsedGame | null>(null);
   const [err, setErr] = useState<string | null>(null);
   const [i, setI] = useState(startPly);
+  const [analyzeMsg, setAnalyzeMsg] = useState<string | null>(null);
 
   useEffect(() => {
     let dead = false;
@@ -130,11 +203,50 @@ function GameViewer({ game, startPly, orientation, onBack }: {
     return () => window.removeEventListener('keydown', onKey);
   }, [total]);
 
+  function handleAnalyze() {
+    if (!parsed) return;
+    setAnalyzeMsg(null);
+    let pgn: string;
+    try {
+      pgn = buildMasterPgn(game, parsed);
+    } catch (e) {
+      console.error('Failed to build PGN for analysis', e);
+      const chess = new Chess();
+      for (const san of parsed.sans) {
+        try { chess.move(san); } catch { break; }
+      }
+      pgn = chess.pgn();
+    }
+    const payload: AnalyzeGamePayload = {
+      pgn,
+      white: game.white,
+      black: game.black,
+      result: resultText(game.winner).replace('½-½', '1/2-1/2'),
+    };
+    // Prefer prop (same path as Play vs Computer → analyze page)
+    if (onAnalyze) {
+      onAnalyze(payload);
+      setAnalyzeMsg('Opening analysis…');
+      return;
+    }
+    // Global handler + chess-analyze event (App registers once)
+    const handled = requestAnalyze(payload);
+    setAnalyzeMsg(handled ? 'Opening analysis…' : 'Connect analysis: pass onAnalyze to OpeningsTrainer (same function as PlayVsComputer).');
+  }
+
   const header = (
-    <div className="card p-4">
-      <button onClick={onBack} className="text-xs text-ink-400 hover:text-ink-200 mb-1 flex items-center gap-1">← All master games</button>
-      <h3 className="text-lg font-bold leading-tight">{game.white} vs {game.black}</h3>
-      <p className="text-xs text-ink-500 mt-0.5">{resultText(game.winner)}{game.year ? ` · ${game.year}` : ''} · opening ends at move {Math.ceil(startPly / 2)}</p>
+    <div className="card p-4 space-y-3">
+      <div>
+        <button onClick={onBack} className="text-xs text-ink-400 hover:text-ink-200 mb-1 flex items-center gap-1">← All master games</button>
+        <h3 className="text-lg font-bold leading-tight">{game.white} vs {game.black}</h3>
+        <p className="text-xs text-ink-500 mt-0.5">{resultText(game.winner)}{game.year ? ` · ${game.year}` : ''} · opening ends at move {Math.ceil(startPly / 2)}</p>
+      </div>
+      {parsed && (
+        <button onClick={handleAnalyze} className="btn-primary w-full justify-center py-2.5 font-bold">
+          <BarChart3 size={16} /> Analyze game
+        </button>
+      )}
+      {analyzeMsg && <p className="text-xs text-brand-300 text-center">{analyzeMsg}</p>}
     </div>
   );
 
@@ -155,12 +267,22 @@ function GameViewer({ game, startPly, orientation, onBack }: {
       </button>
     );
 
+  const fen = parsed.fens[i];
+  const topColor: 'white' | 'black' = orientation === 'white' ? 'black' : 'white';
+  const bottomColor: 'white' | 'black' = orientation === 'white' ? 'white' : 'black';
+  const topName = topColor === 'white' ? game.white : game.black;
+  const bottomName = bottomColor === 'white' ? game.white : game.black;
+  const topRating = topColor === 'white' ? game.whiteRating : game.blackRating;
+  const bottomRating = bottomColor === 'white' ? game.whiteRating : game.blackRating;
+
   return (
     <div className="grid grid-cols-1 lg:grid-cols-[minmax(0,560px)_1fr] gap-4 sm:gap-6">
       <div className="flex flex-col gap-3 min-w-0">
-        <div className="-mx-4 w-[calc(100%+2rem)] sm:mx-auto sm:w-full sm:max-w-[560px]">
-          <ChessBoard fen={parsed.fens[i]} orientation={orientation} lastMove={i > 0 ? parsed.moves[i - 1] : null}
+        <div className="-mx-4 w-[calc(100%+2rem)] sm:mx-auto sm:w-full sm:max-w-[560px] space-y-1.5">
+          <PlayerBar name={topName} color={topColor} rating={topRating} fen={fen} />
+          <ChessBoard fen={fen} orientation={orientation} lastMove={i > 0 ? parsed.moves[i - 1] : null}
             bestMoveUci={null} interactive={false} onUserMove={() => {}} size={560} />
+          <PlayerBar name={bottomName} color={bottomColor} rating={bottomRating} fen={fen} />
         </div>
         <div className="flex items-center justify-center gap-2">
           <button className="btn-secondary px-2.5" onClick={() => go(0)} disabled={i === 0}><ChevronsLeft size={16} /></button>
@@ -185,6 +307,36 @@ function GameViewer({ game, startPly, orientation, onBack }: {
             ))}
           </div>
         </div>
+      </div>
+    </div>
+  );
+}
+
+/** Color chip + name + rating + captured pieces (material taken by this side). */
+function PlayerBar({
+  name, color, rating, fen,
+}: {
+  name: string;
+  color: 'white' | 'black';
+  rating?: number | null;
+  fen: string;
+}) {
+  return (
+    <div className="flex items-center gap-2 px-3 sm:px-0.5 min-w-0">
+      <span
+        className="w-2.5 h-2.5 rounded-full border border-ink-600 shrink-0"
+        style={{ backgroundColor: color === 'white' ? '#ebecd0' : '#2a2e39' }}
+        title={color === 'white' ? 'White' : 'Black'}
+      />
+      <span className="text-sm font-medium text-ink-200 truncate">
+        {name}
+        <span className="text-ink-500 font-normal"> · {color === 'white' ? 'White' : 'Black'}</span>
+      </span>
+      {rating != null && rating > 0 && (
+        <span className="text-xs font-mono text-ink-500 shrink-0">{rating}</span>
+      )}
+      <div className="ml-auto min-w-0">
+        <CapturedPieces fen={fen} color={color} />
       </div>
     </div>
   );

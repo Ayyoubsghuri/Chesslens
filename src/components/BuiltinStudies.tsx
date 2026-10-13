@@ -2,12 +2,13 @@
 // Search matches variations too (Traxler, Evans Gambit…), and there is a Gambits filter.
 // Place in src/components/BuiltinStudies.tsx
 import { useMemo, useState } from 'react';
-import { BookOpen, Loader2, Search, Sparkles, X } from 'lucide-react';
+import { BookOpen, Crown, Loader2, Search, Sparkles, X } from 'lucide-react';
 import { buildBuiltinChapters, listBuiltinStudies } from '@/lib/study';
 import { normalizeName, searchCatalog, type OpeningLine } from '@/lib/openings-catalog';
 import { StudyViewer, loadUserFeatured, type UserFeaturedStudy } from './StudiesTrainer';
 import { parseStudyPgn } from '@/lib/study';
 import { FEATURED_STUDIES, loadFeaturedPgn, type FeaturedStudy } from '@/lib/featured-studies';
+import { ENDGAME_STUDIES, ENDGAME_LICHESS_STUDIES, type EndgameStudy } from '@/lib/endgames';
 
 const VOLUMES: { id: string; label: string }[] = [
   { id: 'all', label: 'All' },
@@ -18,7 +19,132 @@ const VOLUMES: { id: string; label: string }[] = [
   { id: 'E', label: 'E · Indian' },
 ];
 
-const QUICK = ['Traxler', 'Evans Gambit', "King's Gambit", 'Danish Gambit', 'Smith-Morra', 'Budapest', 'Englund', 'Blackmar-Diemer'];
+// Extra Lichess studies shown under Featured studies (loaded from Lichess when opened).
+const EXTRA_FEATURED = [
+  {
+    id: 'lichess-opening-traps',
+    studyId: 'aCyAboTF',
+    title: 'Opening Traps!',
+    blurb: 'Classic opening traps to spring on your opponents, and to avoid falling into yourself.',
+    tags: 'opening traps trap lichess gambit tricks',
+  },
+  {
+    id: "lichess-Of3mcPk8",
+    studyId: "Of3mcPk8",
+    title: "Opening Traps (most popular)",
+    blurb: "One of the most-liked opening-trap studies on Lichess.",
+    tags: "opening traps trap",
+  },
+  {
+    id: "lichess-jtlLwUvh",
+    studyId: "jtlLwUvh",
+    title: "Caro-Kann Defense",
+    blurb: "The most popular Caro-Kann study on Lichess.",
+    tags: "caro-kann caro kann defense opening",
+  },
+  {
+    id: "lichess-8c8bmUfy",
+    studyId: "8c8bmUfy",
+    title: "All about the Sicilian Defense",
+    blurb: "Ideas and lines for the Sicilian.",
+    tags: "sicilian defense najdorf dragon opening",
+  },
+  {
+    id: "lichess-vIEKP8t3",
+    studyId: "vIEKP8t3",
+    title: "The London System",
+    blurb: "A popular, easy-to-learn White system.",
+    tags: "london system opening d4",
+  },
+  {
+    id: "lichess-UzKIIAtz",
+    studyId: "UzKIIAtz",
+    title: "French Defense",
+    blurb: "Main lines and plans in the French.",
+    tags: "french defense opening",
+  },
+  {
+    id: "lichess-vJsZScnC",
+    studyId: "vJsZScnC",
+    title: "Italian Opening",
+    blurb: "Giuoco Piano and friends.",
+    tags: "italian opening giuoco piano e4 e5",
+  },
+  {
+    id: "lichess-4JQtS6iu",
+    studyId: "4JQtS6iu",
+    title: "Repertoire for 1.e4 players",
+    blurb: "A full repertoire for White with 1.e4.",
+    tags: "repertoire 1.e4 white",
+  },
+  {
+    id: "lichess-ZkCxh0nB",
+    studyId: "ZkCxh0nB",
+    title: "Ruy Lopez",
+    blurb: "The Spanish game, step by step.",
+    tags: "ruy lopez spanish opening e4 e5",
+  },
+  {
+    id: "lichess-9XAhbaE7",
+    studyId: "9XAhbaE7",
+    title: "King's Indian: Fantastic Opening",
+    blurb: "Attacking ideas in the King's Indian.",
+    tags: "kings indian opening",
+  },
+  {
+    id: "lichess-whCVdUeM",
+    studyId: "whCVdUeM",
+    title: "Stafford Gambit Traps",
+    blurb: "Tricky traps in the Stafford Gambit.",
+    tags: "stafford gambit traps petrov",
+  },
+  {
+    id: "lichess-rMrAjlAG",
+    studyId: "rMrAjlAG",
+    title: "The Queen's Gambit",
+    blurb: "Main ideas in the Queen's Gambit.",
+    tags: "queens gambit opening d4 d5",
+  },
+  {
+    id: "lichess-bZOUIzL2",
+    studyId: "bZOUIzL2",
+    title: "1.e4 e5 Repertoire for Black 2.0",
+    blurb: "A solid repertoire for Black against 1.e4.",
+    tags: "repertoire black e5 1.e4 e5",
+  },
+  {
+    id: "lichess-A3gjlZCl",
+    studyId: "A3gjlZCl",
+    title: "Complete Repertoire for 1.d4 Players",
+    blurb: "A full 1.d4 repertoire for White.",
+    tags: "repertoire 1.d4 white queen pawn",
+  },
+  {
+    id: "lichess-sScZfLgM",
+    studyId: "sScZfLgM",
+    title: "Checkmate Patterns",
+    blurb: "The classic mating patterns, with examples.",
+    tags: "checkmate patterns mate tactics",
+  },
+  {
+    id: "lichess-viiWlKjv",
+    studyId: "viiWlKjv",
+    title: "Puzzle Themes",
+    blurb: "Every tactical theme with examples.",
+    tags: "tactics puzzle themes fork pin skewer",
+  },
+  {
+    id: "lichess-YtBYXc3m",
+    studyId: "YtBYXc3m",
+    title: "Beautiful Checkmates",
+    blurb: "Famous and elegant checkmates.",
+    tags: "checkmate beautiful mates tactics",
+  },
+] as unknown as FeaturedStudy[];
+
+const ENDGAME_REMOTE = ENDGAME_LICHESS_STUDIES as unknown as FeaturedStudy[];
+
+const QUICK = ['Endgame', 'Traxler', 'Evans Gambit', "King's Gambit", 'Danish Gambit', 'Smith-Morra', 'Budapest', 'Englund', 'Blackmar-Diemer'];
 const MAX_LINES = 60;
 
 export function BuiltinStudies({ onOpenLine }: { onOpenLine: (l: OpeningLine) => void }) {
@@ -76,7 +202,13 @@ export function BuiltinStudies({ onOpenLine }: { onOpenLine: (l: OpeningLine) =>
   // Individual lines/variations (Traxler Counterattack, Evans Gambit, …)
   const lines = filtering ? searchCatalog(q, { volume, gambitsOnly: gambits }) : [];
 
-  const builtInFeatured = FEATURED_STUDIES.filter(
+  const builtInFeatured = [...FEATURED_STUDIES, ...EXTRA_FEATURED.filter((e) => !FEATURED_STUDIES.some((f) => f.studyId === e.studyId))].filter(
+    (f) => !gambits && (!q || normalizeName(`${f.title} ${f.tags}`).includes(q)),
+  );
+  const endgameList = ENDGAME_STUDIES.filter(
+    (f) => !gambits && (!q || normalizeName(`${f.title} ${f.tags}`).includes(q)),
+  );
+  const endgameRemote = ENDGAME_REMOTE.filter(
     (f) => !gambits && (!q || normalizeName(`${f.title} ${f.tags}`).includes(q)),
   );
   const userFeaturedList = userFeatured.filter(
@@ -160,6 +292,34 @@ export function BuiltinStudies({ onOpenLine }: { onOpenLine: (l: OpeningLine) =>
         </div>
       )}
 
+      {(endgameList.length > 0 || endgameRemote.length > 0) && (
+        <div className="space-y-1.5">
+          <h3 className="text-sm font-semibold text-ink-300 flex items-center gap-1.5">
+            <Crown size={14} className="text-brand-400" /> Endgames
+          </h3>
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+            {endgameList.map((f: EndgameStudy) => (
+              <button key={f.id} onClick={() => setFeatured({ title: f.title, pgn: f.pgn })}
+                className="card p-3 text-left hover:border-brand-400/40 transition-colors">
+                <span className="block text-sm font-medium text-ink-100 truncate">{f.title}</span>
+                <span className="block text-xs text-ink-400 mt-1 leading-snug">{f.blurb}</span>
+              </button>
+            ))}
+            {endgameRemote.map((f) => (
+              <button key={f.id} onClick={() => openFeatured(f)} disabled={loadingId !== null}
+                className="card p-3 text-left hover:border-brand-400/40 transition-colors disabled:opacity-60">
+                <span className="flex items-center gap-2 text-sm font-medium text-ink-100">
+                  <span className="flex-1 min-w-0 truncate">{f.title}</span>
+                  {loadingId === f.id && <Loader2 size={14} className="animate-spin text-brand-300 shrink-0" />}
+                </span>
+                <span className="block text-xs text-ink-400 mt-1 leading-snug">{f.blurb}</span>
+              </button>
+            ))}
+          </div>
+          {featErr && <p className="text-sm text-red-300">{featErr}</p>}
+        </div>
+      )}
+
       {!filtering && (
         <div className="flex flex-wrap items-center gap-1.5">
           <span className="text-xs text-ink-500">Popular:</span>
@@ -192,7 +352,7 @@ export function BuiltinStudies({ onOpenLine }: { onOpenLine: (l: OpeningLine) =>
 
       {filtering && list.length > 0 && <h3 className="text-sm font-semibold text-ink-300">Full opening studies</h3>}
 
-      {filtering && lines.length === 0 && list.length === 0 && featuredList.length === 0 ? (
+      {filtering && lines.length === 0 && list.length === 0 && featuredList.length === 0 && endgameList.length === 0 && endgameRemote.length === 0 ? (
         <p className="text-sm text-ink-500">No openings match.</p>
       ) : (
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">

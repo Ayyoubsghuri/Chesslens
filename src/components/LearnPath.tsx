@@ -1,11 +1,6 @@
 import { useState, useEffect, useCallback } from 'react';
-import {
-  LEVELS,
-  type Level,
-  type Skill,
-  type LearnProgress,
-  type PracticeTarget,
-} from '@/lib/learnTypes';
+import type { LearnProgress, PracticeTarget } from '@/lib/learnTypes';
+import { LEVELS, type RichLevel as Level, type RichSkill as Skill, type Lesson } from '@/lib/learnCurriculum';
 import {
   loadLearnProgress,
   saveLearnProgress,
@@ -173,6 +168,7 @@ export function LearnPath({ onNavigate }: LearnPathProps) {
   }, []);
 
   const overall = getOverallProgress(progress);
+  const currentLevel = LEVELS.find((l) => getLevelProgress(l.id, progress).percent < 100) ?? null;
 
   const handleDrill = useCallback((skill: Skill, count = 1) => {
     setProgress((prev) => markSkillProgress(prev, skill.id, count, skill.targetCount));
@@ -184,6 +180,24 @@ export function LearnPath({ onNavigate }: LearnPathProps) {
       const remaining = Math.max(0, skill.targetCount - (status.completedCount || 0));
       return markSkillProgress(prev, skill.id, remaining || skill.targetCount, skill.targetCount);
     });
+  }, []);
+
+  // "I'm already past this": complete every skill in the earlier levels (without awarding XP for them)
+  const handlePlacement = useCallback((levelIdx: number) => {
+    const target = LEVELS[levelIdx];
+    if (!target) return;
+    if (!window.confirm(`Start at Level ${target.number} (${target.elo})? Everything in the earlier levels will be marked complete.`)) return;
+    setProgress((prev) => {
+      let next = prev;
+      for (const lv of LEVELS.slice(0, levelIdx)) {
+        for (const sk of lv.skills) {
+          if (getSkillStatus(sk.id, next).status === 'completed') continue;
+          next = markSkillProgress(next, sk.id, sk.targetCount, sk.targetCount);
+        }
+      }
+      return { ...next, xp: prev.xp };
+    });
+    setExpandedLevel(target.id);
   }, []);
 
   const handleDaily = useCallback((key: 'puzzles' | 'lesson' | 'games' | 'review') => {
@@ -313,11 +327,11 @@ export function LearnPath({ onNavigate }: LearnPathProps) {
           <div>
             <h2 className="text-2xl font-bold flex items-center gap-2">
               <GraduationCap className="text-brand-400" size={28} />
-              Zero-to-Pro Path
+              Zero-to-1600 Path
             </h2>
             <p className="text-ink-400 text-sm mt-1 max-w-lg">
-              A skill tree from beginner to a solid 1600+ foundation. Skills fill up automatically as you solve
-              puzzles, finish opening lines and play games on ChessLens.
+              A step-by-step course from 100 to 1600 Elo: rules and mates first, then tactics, calculation,
+              endgames and strategy. Skills fill up automatically as you solve puzzles, study openings and play games.
             </p>
           </div>
           <button
@@ -355,6 +369,34 @@ export function LearnPath({ onNavigate }: LearnPathProps) {
           />
         </div>
         <p className="text-xs text-ink-500 mt-1">{overall.percent}% of the path complete</p>
+
+        {currentLevel && (
+          <p className="text-sm text-ink-300 mt-3">
+            You are working on <b className="text-ink-100">Level {currentLevel.number}: {currentLevel.title}</b>{' '}
+            <span className="text-ink-500">(about {currentLevel.elo} Elo)</span>
+          </p>
+        )}
+        <details className="mt-2 group">
+          <summary className="text-xs text-ink-400 hover:text-ink-200 cursor-pointer select-none">
+            Already experienced? Choose where to start
+          </summary>
+          <div className="mt-2 flex flex-wrap gap-2">
+            {LEVELS.map((lv, i) => (
+              <button
+                key={lv.id}
+                onClick={() => handlePlacement(i)}
+                disabled={i === 0}
+                className="chip bg-ink-800 text-ink-300 hover:bg-ink-700 disabled:opacity-40 disabled:cursor-default"
+                title={lv.goal}
+              >
+                {lv.elo} · {lv.title}
+              </button>
+            ))}
+          </div>
+          <p className="text-[11px] text-ink-500 mt-1.5">
+            Elo bands are approximate (online rapid ratings). If puzzles in your level feel easy, start one level higher.
+          </p>
+        </details>
       </div>
 
       {credits.length > 0 && (
@@ -727,6 +769,7 @@ function LevelCard({
             <span className="font-semibold">
               Level {level.number}: {level.title}
             </span>
+            <span className="text-xs px-2 py-0.5 rounded-full bg-ink-800 text-ink-300 font-mono">{level.elo}</span>
             {allDone && (
               <span className={`text-xs px-2 py-0.5 rounded-full ${colors.bg} ${colors.text}`}>
                 Complete
@@ -750,6 +793,18 @@ function LevelCard({
 
       {expanded && !locked && (
         <div className="border-t border-ink-800 bg-ink-950/40 p-4 space-y-3">
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+            <div className="rounded-xl border border-ink-700 bg-ink-900/50 p-3">
+              <div className="text-xs font-semibold uppercase tracking-wide text-ink-400 mb-1">This stage</div>
+              <p className="text-sm text-ink-300">{level.summary}</p>
+            </div>
+            <div className="rounded-xl border border-ink-700 bg-ink-900/50 p-3">
+              <div className="text-xs font-semibold uppercase tracking-wide text-ink-400 mb-1">Weekly routine</div>
+              <ul className="text-sm text-ink-300 space-y-0.5 list-disc pl-4">
+                {level.routine.map((r) => <li key={r}>{r}</li>)}
+              </ul>
+            </div>
+          </div>
           {level.skills.map((skill) => {
             const status = getSkillStatus(skill.id, progress);
             const isSelected = selectedSkillId === skill.id;
@@ -776,6 +831,19 @@ function LevelCard({
             {level.levelPractice && (
               <PracticeButtons targets={level.levelPractice} onLaunch={onLaunch} />
             )}
+          </div>
+
+          <div className="rounded-xl border border-ink-700 bg-ink-900/50 p-3">
+            <div className="text-xs font-semibold uppercase tracking-wide text-ink-400 mb-1">
+              You are ready for the next level when…
+            </div>
+            <ul className="text-sm text-ink-300 space-y-1">
+              {level.readyWhen.map((r) => (
+                <li key={r} className="flex items-start gap-2">
+                  <CheckCircle2 size={14} className={`mt-0.5 shrink-0 ${colors.text}`} /> {r}
+                </li>
+              ))}
+            </ul>
           </div>
         </div>
       )}
@@ -879,6 +947,47 @@ function SkillRow({
   );
 }
 
+function LessonBlock({ lesson, colors }: { lesson: Lesson; colors: (typeof COLOR_MAP)[string] }) {
+  const miniName = { coords: 'Coordinate Sprint', knight: 'Knight Hop', value: 'Material Count' } as const;
+  return (
+    <div className="space-y-3 mb-5">
+      <div>
+        <div className={`text-xs font-semibold uppercase tracking-wide mb-1 ${colors.text}`}>Why it matters</div>
+        <p className="text-sm text-ink-200">{lesson.why}</p>
+      </div>
+      <div>
+        <div className={`text-xs font-semibold uppercase tracking-wide mb-1 ${colors.text}`}>What to learn</div>
+        <ul className="text-sm text-ink-200 space-y-1 list-disc pl-4">
+          {lesson.ideas.map((i) => <li key={i}>{i}</li>)}
+        </ul>
+      </div>
+      {lesson.mistakes && lesson.mistakes.length > 0 && (
+        <div>
+          <div className="text-xs font-semibold uppercase tracking-wide mb-1 text-red-300">Common mistakes</div>
+          <ul className="text-sm text-ink-300 space-y-1 list-disc pl-4">
+            {lesson.mistakes.map((m) => <li key={m}>{m}</li>)}
+          </ul>
+        </div>
+      )}
+      {lesson.selfCheck && (
+        <div className={`p-3 rounded-xl ${colors.soft} border ${colors.border}`}>
+          <div className={`text-xs font-semibold mb-0.5 ${colors.text}`}>Check yourself</div>
+          <p className="text-sm text-ink-200">{lesson.selfCheck}</p>
+        </div>
+      )}
+      {lesson.miniGame && (
+        <p className="text-xs text-ink-400">
+          <Gamepad2 size={12} className="inline mr-1 text-violet-300" />
+          Train this with the <b>{miniName[lesson.miniGame]}</b> mini game on the Learn Path page.
+        </p>
+      )}
+      {lesson.study && lesson.study.length > 0 && (
+        <p className="text-xs text-ink-500">Further study: {lesson.study.join(' · ')}</p>
+      )}
+    </div>
+  );
+}
+
 function SkillDetail({
   skill,
   progress,
@@ -929,6 +1038,8 @@ function SkillDetail({
             <p className="text-sm text-ink-200">{skill.tip}</p>
           </div>
         )}
+
+        {skill.lesson && <LessonBlock lesson={skill.lesson} colors={colors} />}
 
         <div className="mb-4">
           <div className="flex justify-between text-xs text-ink-500 mb-1">

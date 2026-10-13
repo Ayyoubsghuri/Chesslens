@@ -3,6 +3,7 @@ import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import type { Square } from 'chess.js';
 import { ChessBoard } from './ChessBoard';
 import { FeedbackBanner } from './PracticeBits';
+import { MastersGames } from './MastersGames';
 import { gameOverText, pickComputerMove, sleep } from '@/lib/practice';
 import {
   extractStudyId, loadStudies, parseStudyPgn, saveStudies,
@@ -11,7 +12,7 @@ import {
 import { logEvent } from '@/lib/activity';
 import {
   BookOpen, ChevronLeft, ChevronRight, ChevronsLeft, ChevronsRight, Download, FileUp, Trash2,
-  Loader2, RotateCcw, Lightbulb, Swords, GraduationCap, FlipVertical2, Sparkles,
+  Loader2, RotateCcw, Lightbulb, Swords, GraduationCap, FlipVertical2, Sparkles, Trophy,
 } from 'lucide-react';
 
 // ───────────────────────────── User Featured studies (localStorage) ─────────────────────────────
@@ -284,10 +285,32 @@ export function StudyViewer({ name, getChapters, onBack, startAt }: { name: stri
 
 // ───────────────────────────── One chapter: board, tree, practice ─────────────────────────────
 
+/** Main-line UCI from chapter root (children[0] path). Used for GM games search. */
+function chapterMainLineUci(chapter: StudyChapter): string[] {
+  const uci: string[] = [];
+  let n: StudyNode | undefined = chapter.root.children[0];
+  while (n) {
+    if (n.uci) uci.push(n.uci);
+    n = n.children[0];
+  }
+  return uci;
+}
+
+/** UCI path from root to the current node (position-aware GM games). */
+function pathToUci(chapter: StudyChapter, curId: number): string[] {
+  const stack: string[] = [];
+  let cur = chapter.index.get(curId);
+  while (cur && cur.node.id !== 0) {
+    if (cur.node.uci) stack.push(cur.node.uci);
+    cur = cur.parent ? chapter.index.get(cur.parent.id) : undefined;
+  }
+  return stack.reverse();
+}
+
 function ChapterView({ chapter, hasNext, onNext }: { chapter: StudyChapter; hasNext: boolean; onNext: () => void }) {
   const [curId, setCurId] = useState(0);
   const [flip, setFlip] = useState(false);
-  const [mode, setMode] = useState<'view' | 'practice'>('view');
+  const [mode, setMode] = useState<'view' | 'practice' | 'games'>('view');
   const [side, setSide] = useState<'w' | 'b'>(chapter.orientation === 'white' ? 'w' : 'b');
   const [tempFen, setTempFen] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -312,6 +335,12 @@ function ChapterView({ chapter, hasNext, onNext }: { chapter: StudyChapter; hasN
       ? side === 'w' ? 'white' : 'black'
       : flip ? (baseOrientation === 'white' ? 'black' : 'white') : baseOrientation;
 
+  // Path to current node when stepped in; otherwise full main line (works with variants)
+  const gamesUci = useMemo(() => {
+    const pathUci = pathToUci(chapter, curId);
+    return pathUci.length > 0 ? pathUci : chapterMainLineUci(chapter);
+  }, [chapter, curId]);
+
   const nodeLast = node.from && node.to ? { from: node.from, to: node.to } : null;
   const fen = free?.fen ?? tempFen ?? node.fen;
   const lastMove = free ? free.last : nodeLast;
@@ -331,8 +360,16 @@ function ChapterView({ chapter, hasNext, onNext }: { chapter: StudyChapter; hasN
   }, [mode, curId, chapter]);
 
   // keep the active move visible in the tree
+  // (scroll only the move list itself: scrollIntoView would also scroll the whole page,
+  // which made the page jump on mobile every time you pressed Next)
   useEffect(() => {
-    treeRef.current?.querySelector('[data-active]')?.scrollIntoView({ block: 'nearest' });
+    const box = treeRef.current;
+    const el = box?.querySelector('[data-active]') as HTMLElement | null;
+    if (!box || !el || box.scrollHeight <= box.clientHeight) return;
+    const b = box.getBoundingClientRect();
+    const r = el.getBoundingClientRect();
+    if (r.top < b.top) box.scrollTop -= b.top - r.top;
+    else if (r.bottom > b.bottom) box.scrollTop += r.bottom - b.bottom;
   }, [curId, mode]);
 
   // practice: computer plays its side of the study
@@ -501,6 +538,49 @@ function ChapterView({ chapter, hasNext, onNext }: { chapter: StudyChapter; hasN
   const hint = () => { if (!done && turn === side && !free) setArrow(node.children[0].uci); };
   const currentComment = node.comment;
 
+  const tabBar = (
+    <div className="flex gap-1 border-b border-ink-800 mb-3">
+      <button onClick={startView}
+        className={`flex items-center gap-2 px-4 py-2 text-sm font-medium border-b-2 ${mode === 'view' ? 'border-brand-400 text-brand-300' : 'border-transparent text-ink-400 hover:text-ink-200'}`}>
+        <GraduationCap size={15} /> Study
+      </button>
+      <button onClick={() => startPractice()}
+        className={`flex items-center gap-2 px-4 py-2 text-sm font-medium border-b-2 ${mode === 'practice' ? 'border-brand-400 text-brand-300' : 'border-transparent text-ink-400 hover:text-ink-200'}`}>
+        <Swords size={15} /> Practice
+      </button>
+      <button
+        onClick={() => { run.current++; setThinking(false); setFeedback(null); setFree(null); setTempFen(null); setMode('games'); }}
+        className={`flex items-center gap-2 px-4 py-2 text-sm font-medium border-b-2 ${mode === 'games' ? 'border-brand-400 text-brand-300' : 'border-transparent text-ink-400 hover:text-ink-200'}`}
+      >
+        <Trophy size={15} /> GM games
+      </button>
+    </div>
+  );
+
+  // GM games: same masters explorer as opening lines, using path / main line (incl. variants)
+  if (mode === 'games') {
+    return (
+      <div className="space-y-4 min-w-0">
+        <div className="card p-4">
+          {tabBar}
+          <p className="text-sm text-ink-400">
+            Master games that reached this line
+            {gamesUci.length > 0 ? (
+              <> (through move {Math.ceil(gamesUci.length / 2)})</>
+            ) : null}
+            . Step through the study first to search from a deeper position.
+          </p>
+        </div>
+        <MastersGames uci={gamesUci} orientation={orientation} />
+        {hasNext && (
+          <button onClick={onNext} className="btn-secondary w-full justify-center">
+            <ChevronRight size={16} /> Next chapter
+          </button>
+        )}
+      </div>
+    );
+  }
+
   return (
     <div className="grid grid-cols-1 xl:grid-cols-[minmax(0,560px)_1fr] gap-4 sm:gap-6 min-w-0">
       <div className="flex flex-col gap-3 min-w-0">
@@ -536,16 +616,7 @@ function ChapterView({ chapter, hasNext, onNext }: { chapter: StudyChapter; hasN
 
       <div className="flex flex-col gap-4 min-w-0">
         <div className="card p-4">
-          <div className="flex gap-1 border-b border-ink-800 mb-3">
-            <button onClick={startView}
-              className={`flex items-center gap-2 px-4 py-2 text-sm font-medium border-b-2 ${mode === 'view' ? 'border-brand-400 text-brand-300' : 'border-transparent text-ink-400 hover:text-ink-200'}`}>
-              <GraduationCap size={15} /> Study
-            </button>
-            <button onClick={() => startPractice()}
-              className={`flex items-center gap-2 px-4 py-2 text-sm font-medium border-b-2 ${mode === 'practice' ? 'border-brand-400 text-brand-300' : 'border-transparent text-ink-400 hover:text-ink-200'}`}>
-              <Swords size={15} /> Practice
-            </button>
-          </div>
+          {tabBar}
 
           {chapter.error && <p className="text-xs text-amber-300 mb-2">{chapter.error}</p>}
 

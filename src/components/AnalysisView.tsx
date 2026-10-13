@@ -1295,7 +1295,7 @@ export function AnalysisView({ analysis, currentIndex, onIndexChange, onCoachExp
           className={
             isWide
               ? 'min-h-full flex items-center justify-center gap-6 p-4'
-              : 'flex flex-col items-center gap-4 p-4'
+              : 'min-h-full flex flex-col items-center justify-center gap-4 p-4'
           }
         >
           {/* Players — aligned with the board's top and bottom edges */}

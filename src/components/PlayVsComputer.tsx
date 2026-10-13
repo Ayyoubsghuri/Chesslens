@@ -2,13 +2,15 @@ import { useEffect, useRef, useState } from 'react';
 import { Chess, type Square } from 'chess.js';
 import { ChessBoard } from './ChessBoard';
 import { GameEndBoard } from './GameEndBoard';
+import { CapturedPieces } from './CapturedPieces';
 import { FeedbackBanner } from './PracticeBits';
+import { registerAnalyzeHandler } from './MastersGames';
 import { analyzePosition } from '@/lib/engine';
 import {
   ACCEPTABLE, QUALITY_LABEL, applyUci, gameOverText, judgeMove, pickComputerMove, sleep,
 } from '@/lib/practice';
 import type { EngineEval, MoveQuality, Settings } from '@/lib/types';
-import { Loader2, Lightbulb, Eye, RotateCcw, Undo2, Swords, Maximize2, X, BarChart3 } from 'lucide-react';
+import { Loader2, Lightbulb, Eye, RotateCcw, Undo2, Swords, Maximize2, X, BarChart3, ChevronLeft, ChevronRight, ChevronsLeft, ChevronsRight } from 'lucide-react';
 
 export interface PlayedGame {
   pgn: string;
@@ -32,6 +34,13 @@ export function PlayVsComputer({ settings, onAnalyze }: { settings: Settings; on
   // The coach check, hints and prefetch don't need the full analysis depth. Capping it keeps the game snappy.
   const depth = Math.min(settings.analysisDepth, FAST_DEPTH);
 
+  // Share the same analyze callback with MastersGames (GM games → Analyze page).
+  // Do not clear on unmount — otherwise Analyze from Openings breaks when leaving Play.
+  useEffect(() => {
+    if (!onAnalyze) return;
+    registerAnalyzeHandler((g) => onAnalyze({ pgn: g.pgn, white: g.white, black: g.black, result: g.result }));
+  }, [onAnalyze]);
+
   // setup
   const [elo, setElo] = useState(1200);
   const [colorChoice, setColorChoice] = useState<'white' | 'black' | 'random'>('white');
@@ -50,6 +59,29 @@ export function PlayVsComputer({ settings, onAnalyze }: { settings: Settings; on
   const [hintSquare, setHintSquare] = useState<Square | null>(null);
   const [arrow, setArrow] = useState<string | null>(null);
   const [hintSan, setHintSan] = useState<string | null>(null);
+
+  // move navigation: null = live position, otherwise index into history of the move being viewed (-1 = start)
+  const [viewIdx, setViewIdx] = useState<number | null>(null);
+  const histLen = history.length;
+
+  // Any new move (or take back / new game) returns the board to the live position
+  useEffect(() => { setViewIdx(null); }, [histLen, started]);
+
+  // Arrow keys / Home / End step through the game
+  useEffect(() => {
+    if (!started) return;
+    const onKey = (e: KeyboardEvent) => {
+      const t = e.target as HTMLElement | null;
+      if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable)) return;
+      const clamp = (n: number) => (n >= histLen - 1 ? null : Math.max(-1, n));
+      if (e.key === 'ArrowLeft') { e.preventDefault(); setViewIdx((v) => clamp((v ?? histLen - 1) - 1)); }
+      else if (e.key === 'ArrowRight') { e.preventDefault(); setViewIdx((v) => clamp((v ?? histLen - 1) + 1)); }
+      else if (e.key === 'Home') { e.preventDefault(); setViewIdx(histLen > 0 ? -1 : null); }
+      else if (e.key === 'End') { e.preventDefault(); setViewIdx(null); }
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [started, histLen]);
 
   // theater mode (full-window board)
   const [theater, setTheater] = useState(false);
@@ -281,13 +313,20 @@ export function PlayVsComputer({ settings, onAnalyze }: { settings: Settings; on
     );
   }
 
-  const pairs: { n: number; w?: Entry; b?: Entry }[] = [];
+  const pairs: { n: number; w?: Entry; b?: Entry; wi?: number; bi?: number }[] = [];
   history.forEach((e, i) => {
     const n = Math.floor(i / 2);
-    // history may start with black if the player is Black? No: white always moves first.
     if (!pairs[n]) pairs[n] = { n: n + 1 };
-    if (e.color === 'w') pairs[n].w = e; else pairs[n].b = e;
+    if (e.color === 'w') { pairs[n].w = e; pairs[n].wi = i; } else { pairs[n].b = e; pairs[n].bi = i; }
   });
+
+  // What the board shows: live position, or a past position while navigating
+  const curIdx = viewIdx ?? history.length - 1;
+  const viewing = viewIdx !== null && viewIdx < history.length - 1;
+  const shownEntry = curIdx >= 0 ? history[curIdx] : null;
+  const displayFen = viewing ? (shownEntry ? shownEntry.fenAfter : START) : fen;
+  const displayLast = viewing ? (shownEntry ? { from: shownEntry.from, to: shownEntry.to } : null) : lastMove;
+  const goTo = (n: number) => setViewIdx(n >= history.length - 1 ? null : Math.max(-1, n));
 
   function buildPlayedGame(): PlayedGame {
     const chess = new Chess();
@@ -309,11 +348,11 @@ export function PlayVsComputer({ settings, onAnalyze }: { settings: Settings; on
 
   const renderBoard = (px: number) => (
     <GameEndBoard
-      fen={fen}
+      fen={displayFen}
       orientation={orientation}
       size={px}
       end={null}
-      atFinalPosition={turn === 'over'}
+      atFinalPosition={turn === 'over' && !viewing}
       whiteName={playerColor === 'w' ? 'You' : 'Computer'}
       blackName={playerColor === 'b' ? 'You' : 'Computer'}
     >
@@ -321,11 +360,11 @@ export function PlayVsComputer({ settings, onAnalyze }: { settings: Settings; on
         <ChessBoard
           fen={boardFen}
           orientation={orientation}
-          lastMove={lastMove}
-          highlightSquare={hintSquare}
-          bestMoveUci={arrow}
-          moveQuality={badge}
-          interactive={turn === 'player' && !effectPlaying}
+          lastMove={displayLast}
+          highlightSquare={viewing ? null : hintSquare}
+          bestMoveUci={viewing ? null : arrow}
+          moveQuality={viewing ? null : badge}
+          interactive={turn === 'player' && !effectPlaying && !viewing}
           onUserMove={handleUserMove}
           size={px}
           edgeToEdge
@@ -341,8 +380,20 @@ export function PlayVsComputer({ settings, onAnalyze }: { settings: Settings; on
     </>
   );
 
+  const navBar = (
+    <div className="flex items-center justify-center gap-2">
+      <button className="btn-secondary px-2.5 disabled:opacity-40" onClick={() => setViewIdx(-1)} disabled={history.length === 0 || curIdx < 0} title="First position (Home)"><ChevronsLeft size={16} /></button>
+      <button className="btn-secondary px-2.5 disabled:opacity-40" onClick={() => goTo(curIdx - 1)} disabled={history.length === 0 || curIdx < 0} title="Previous move (←)"><ChevronLeft size={16} /></button>
+      <span className="px-3 font-mono text-sm text-ink-400 min-w-[4.5rem] text-center">{curIdx + 1} / {history.length}</span>
+      <button className="btn-secondary px-2.5 disabled:opacity-40" onClick={() => goTo(curIdx + 1)} disabled={!viewing} title="Next move (→)"><ChevronRight size={16} /></button>
+      <button className="btn-secondary px-2.5 disabled:opacity-40" onClick={() => setViewIdx(null)} disabled={!viewing} title="Back to current position (End)"><ChevronsRight size={16} /></button>
+    </div>
+  );
+
   const banners = (
     <>
+      {history.length > 0 && navBar}
+      {viewing && <p className="text-xs text-ink-500 text-center">Reviewing earlier moves — go to the last move to keep playing.</p>}
       {feedback && <FeedbackBanner tone={feedback.tone}>{feedback.text}</FeedbackBanner>}
       {hintSan && <FeedbackBanner tone="info">Best move: <span className="font-mono font-semibold">{hintSan}</span></FeedbackBanner>}
       {turn === 'over' && onAnalyze && (
@@ -363,6 +414,14 @@ export function PlayVsComputer({ settings, onAnalyze }: { settings: Settings; on
     </div>
   );
 
+  const moveCell = (e?: Entry, idx?: number) =>
+    !e || idx === undefined ? <span /> : (
+      <button onClick={() => goTo(idx)}
+        className={`text-left rounded px-1 hover:bg-ink-700/60 ${idx === curIdx ? 'bg-brand-500/25 text-brand-200' : 'text-ink-100'}`}>
+        {e.san}{e.quality && <Q q={e.quality} />}
+      </button>
+    );
+
   const movesList = pairs.length === 0 ? (
     <p className="text-sm text-ink-500">No moves yet.</p>
   ) : (
@@ -370,43 +429,93 @@ export function PlayVsComputer({ settings, onAnalyze }: { settings: Settings; on
       {pairs.map((p) => (
         <div key={p.n} className="contents">
           <span className="text-ink-500">{p.n}.</span>
-          <span className="text-ink-100">{p.w?.san}{p.w?.quality && <Q q={p.w.quality} />}</span>
-          <span className="text-ink-100">{p.b?.san}{p.b?.quality && <Q q={p.b.quality} />}</span>
+          {moveCell(p.w, p.wi)}
+          {moveCell(p.b, p.bi)}
         </div>
       ))}
     </div>
   );
 
-  // Theater mode: board fills the window, panel beside (desktop) or below (mobile)
+  // Theater mode: full-window layout — board | panel (matches AnalysisView)
   if (theater) {
+    const PANEL_W = 380;
+    const GAP = 24;
+    const PAD = 32;
     const isWide = viewport.w >= 1024;
-    const PANEL_W = 360;
     const boardPx = Math.max(
-      260,
-      Math.floor(isWide ? Math.min(viewport.h - 32, viewport.w - PANEL_W - 24 - 32) : viewport.w),
+      isWide ? 320 : 260,
+      Math.floor(
+        isWide
+          ? Math.min(viewport.h - PAD, viewport.w - PANEL_W - GAP - PAD)
+          : viewport.w - PAD
+      )
     );
+
+    // Labels follow board orientation (same as AnalysisView)
+    const youLabel = `You · ${playerColor === 'w' ? 'White' : 'Black'}`;
+    const cpuLabel = `Computer · ${elo}`;
+    const topLabel = orientation === 'white'
+      ? (playerColor === 'w' ? cpuLabel : youLabel)
+      : (playerColor === 'w' ? youLabel : cpuLabel);
+    const bottomLabel = orientation === 'white'
+      ? (playerColor === 'w' ? youLabel : cpuLabel)
+      : (playerColor === 'w' ? cpuLabel : youLabel);
+    const topColor: 'white' | 'black' = orientation === 'white' ? 'black' : 'white';
+    const bottomColor: 'white' | 'black' = orientation === 'white' ? 'white' : 'black';
+
     return (
       <div className="fixed inset-0 z-50 bg-ink-900 overflow-y-auto">
-        <div className={isWide ? 'min-h-full flex items-center justify-center gap-6 p-4' : 'flex flex-col items-center gap-3 pb-6'}>
-          <div className="shrink-0" style={{ width: boardPx }}>
-            <div className="flex items-center justify-between text-sm text-ink-200 px-3 lg:px-0.5 pb-1.5">
-              <span className="font-medium">Computer · {elo}</span>
-              {thinkingLabel}
+        <div
+          className={
+            isWide
+              ? 'min-h-full flex items-center justify-center gap-6 p-4'
+              : 'min-h-full flex flex-col items-center justify-center gap-4 p-4'
+          }
+        >
+          {/* Board */}
+          <div className="flex flex-col gap-2 shrink-0" style={{ width: boardPx }}>
+            <div className="flex items-center gap-2 text-sm text-ink-200 px-0.5 min-w-0">
+              <span
+                className="w-2.5 h-2.5 rounded-full border border-ink-600 shrink-0"
+                style={{ backgroundColor: topColor === 'white' ? '#ebecd0' : '#2a2e39' }}
+              />
+              <span className="font-medium truncate">{topLabel}</span>
+              <CapturedPieces fen={displayFen} color={topColor} />
+              <span className="ml-auto shrink-0">{thinkingLabel}</span>
             </div>
             {renderBoard(boardPx)}
-            <div className="text-sm font-medium text-ink-200 px-3 lg:px-0.5 pt-1.5">You · {playerColor === 'w' ? 'White' : 'Black'}</div>
-          </div>
-          <div
-            className="flex flex-col gap-3 rounded-xl border border-ink-700/60 bg-ink-800/50 p-3 shrink-0 w-full max-w-[560px]"
-            style={isWide ? { width: PANEL_W, height: boardPx } : undefined}
-          >
-            <div className="flex items-center justify-between">
-              <h3 className="text-sm font-semibold text-ink-200">Moves</h3>
-              <button onClick={() => setTheater(false)} className="btn-ghost p-2" title="Exit theater mode (Esc)"><X size={18} /></button>
+            <div className="flex items-center gap-2 text-sm text-ink-200 px-0.5 min-w-0">
+              <span
+                className="w-2.5 h-2.5 rounded-full border border-ink-600 shrink-0"
+                style={{ backgroundColor: bottomColor === 'white' ? '#ebecd0' : '#2a2e39' }}
+              />
+              <span className="font-medium truncate">{bottomLabel}</span>
+              <CapturedPieces fen={displayFen} color={bottomColor} />
             </div>
-            <div className="flex-1 min-h-0 overflow-y-auto max-h-[30vh] lg:max-h-none">{movesList}</div>
-            {banners}
-            {controls}
+          </div>
+
+          {/* Side panel */}
+          <div
+            className="flex flex-col rounded-xl border border-ink-700/60 bg-ink-800/50 overflow-hidden shrink-0"
+            style={isWide ? { width: PANEL_W, height: boardPx } : { width: '100%', maxWidth: 560 }}
+          >
+            <div className="flex items-center border-b border-ink-700/60 shrink-0">
+              <h3 className="flex-1 px-4 py-3 text-sm font-semibold text-ink-200">Moves</h3>
+              <button
+                onClick={() => setTheater(false)}
+                className="btn-ghost p-2 mx-1 shrink-0"
+                title="Exit theater mode (Esc)"
+              >
+                <X size={18} />
+              </button>
+            </div>
+            <div className={`flex-1 min-h-0 overflow-y-auto p-3 ${isWide ? '' : 'max-h-[40vh]'}`}>
+              {movesList}
+            </div>
+            <div className="shrink-0 border-t border-ink-700/60 bg-ink-900/40 p-3 space-y-3">
+              {banners}
+              {controls}
+            </div>
           </div>
         </div>
       </div>
@@ -416,17 +525,44 @@ export function PlayVsComputer({ settings, onAnalyze }: { settings: Settings; on
   return (
     <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 sm:gap-6">
       <div className="flex flex-col gap-3 min-w-0">
-        <div className="flex items-center justify-between text-sm text-ink-200 px-0.5">
-          <span className="font-medium">Computer · {elo}</span>
-          {thinkingLabel}
+        {/* Top = opponent side relative to board orientation */}
+        <div className="flex items-center gap-2 text-sm text-ink-200 px-0.5 min-w-0">
+          <span
+            className="w-2.5 h-2.5 rounded-full border border-ink-600 shrink-0"
+            style={{ backgroundColor: (orientation === 'white' ? 'black' : 'white') === 'white' ? '#ebecd0' : '#2a2e39' }}
+            title={orientation === 'white' ? 'Black' : 'White'}
+          />
+          <span className="font-medium truncate">
+            {orientation === 'white'
+              ? (playerColor === 'w' ? `Computer · ${elo}` : `You · Black`)
+              : (playerColor === 'w' ? `You · White` : `Computer · ${elo}`)}
+            <span className="text-ink-500 font-normal">
+              {' · '}{orientation === 'white' ? 'Black' : 'White'}
+            </span>
+          </span>
+          <CapturedPieces fen={displayFen} color={orientation === 'white' ? 'black' : 'white'} />
+          <span className="ml-auto shrink-0">{thinkingLabel}</span>
         </div>
         {/* Mobile: edge to edge (cancels the page's px-4). Desktop: capped. */}
         <div className="-mx-4 w-[calc(100%+2rem)] sm:mx-auto sm:w-full sm:max-w-[560px]">
           {renderBoard(560)}
         </div>
-        <div className="flex items-center justify-between px-0.5">
-          <span className="text-sm font-medium text-ink-200">You · {playerColor === 'w' ? 'White' : 'Black'}</span>
-          <button onClick={() => setTheater(true)} className="btn-secondary px-2.5 py-1.5" title="Theater mode — full-window board">
+        <div className="flex items-center gap-2 px-0.5 min-w-0">
+          <span
+            className="w-2.5 h-2.5 rounded-full border border-ink-600 shrink-0"
+            style={{ backgroundColor: orientation === 'white' ? '#ebecd0' : '#2a2e39' }}
+            title={orientation === 'white' ? 'White' : 'Black'}
+          />
+          <span className="text-sm font-medium text-ink-200 truncate">
+            {orientation === 'white'
+              ? (playerColor === 'w' ? 'You · White' : `Computer · ${elo}`)
+              : (playerColor === 'w' ? `Computer · ${elo}` : 'You · Black')}
+            <span className="text-ink-500 font-normal">
+              {' · '}{orientation === 'white' ? 'White' : 'Black'}
+            </span>
+          </span>
+          <CapturedPieces fen={displayFen} color={orientation === 'white' ? 'white' : 'black'} />
+          <button onClick={() => setTheater(true)} className="btn-secondary px-2.5 py-1.5 ml-auto shrink-0" title="Theater mode — full-window board">
             <Maximize2 size={14} />
           </button>
         </div>

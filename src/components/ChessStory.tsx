@@ -1,8 +1,10 @@
-import { useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { toPng } from 'html-to-image';
+import { Chess } from 'chess.js';
 import type { ImportedGame } from '@/lib/types';
 import {
   Crown as ChessIcon, Download, Swords, Flame, Skull, BookOpen, Trophy, Loader2, Clock, Zap, Search, Sparkles,
+  X, ChevronLeft, ChevronRight, Play, Target,
 } from 'lucide-react';
 
 /* ------------------------------------------------------------------ */
@@ -22,9 +24,143 @@ interface Game {
   opening: string | null;
   speed: string; // bullet / blitz / rapid / classical / daily
   how: 'mate' | 'resign' | 'time' | 'other'; // how the game ended (for wins and losses)
+  /** Checkmate pattern, only set for games I lost by checkmate. */
+  mate?: string | null;
 }
 
 const MAX_GAMES = 1000;
+
+/* ------------------------------------------------------------------ */
+/* Checkmate pattern recognition (best-effort heuristics)              */
+/* ------------------------------------------------------------------ */
+
+type Cell = { type: string; color: 'w' | 'b' } | null;
+type PieceAt = { type: string; color: 'w' | 'b'; f: number; r: number };
+
+/** Pull SAN moves out of a PGN movetext (clocks, comments, numbers removed). */
+function sansFromPgn(pgn: string): string[] {
+  const body = pgn
+    .split('\n')
+    .filter((l) => !l.startsWith('['))
+    .join(' ')
+    .replace(/\{[^}]*\}/g, ' ')
+    .replace(/\([^)]*\)/g, ' ')
+    .replace(/\d+\.(\.\.)?/g, ' ')
+    .replace(/1-0|0-1|1\/2-1\/2|\*/g, ' ');
+  return body.split(/\s+/).filter(Boolean);
+}
+
+function clearBetween(grid: Cell[][], f1: number, r1: number, f2: number, r2: number): boolean {
+  const sf = Math.sign(f2 - f1), sr = Math.sign(r2 - r1);
+  let f = f1 + sf, r = r1 + sr;
+  while (f !== f2 || r !== r2) {
+    if (grid[f][r]) return false;
+    f += sf; r += sr;
+  }
+  return true;
+}
+
+function attacksSq(p: PieceAt, tf: number, tr: number, grid: Cell[][]): boolean {
+  const dx = tf - p.f, dy = tr - p.r;
+  const ax = Math.abs(dx), ay = Math.abs(dy);
+  if (!ax && !ay) return false;
+  switch (p.type) {
+    case 'p': return ax === 1 && dy === (p.color === 'w' ? 1 : -1);
+    case 'n': return (ax === 1 && ay === 2) || (ax === 2 && ay === 1);
+    case 'k': return Math.max(ax, ay) === 1;
+    case 'b': return ax === ay && clearBetween(grid, p.f, p.r, tf, tr);
+    case 'r': return (ax === 0 || ay === 0) && clearBetween(grid, p.f, p.r, tf, tr);
+    case 'q': return (ax === ay || ax === 0 || ay === 0) && clearBetween(grid, p.f, p.r, tf, tr);
+    default: return false;
+  }
+}
+
+/** Name the mating pattern of a position where the side to move is checkmated. */
+function classifyMate(chess: Chess, plies: number): string {
+  const loser = chess.turn();
+  const mater = loser === 'w' ? 'b' : 'w';
+  const grid: Cell[][] = Array.from({ length: 8 }, () => Array<Cell>(8).fill(null));
+  const pieces: PieceAt[] = [];
+  chess.board().forEach((row, i) => row.forEach((c, j) => {
+    if (!c) return;
+    const p = { type: c.type, color: c.color as 'w' | 'b', f: j, r: 7 - i };
+    grid[j][7 - i] = { type: c.type, color: p.color };
+    pieces.push(p);
+  }));
+  const king = pieces.find((p) => p.type === 'k' && p.color === loser);
+  if (!king) return 'Other mates';
+  const mine = pieces.filter((p) => p.color === mater);
+  const checkers = mine.filter((p) => attacksSq(p, king.f, king.r, grid));
+  const has = (t: string) => mine.some((p) => p.type === t);
+  const count = (t: string) => mine.filter((p) => p.type === t).length;
+  const dist = (p: PieceAt) => Math.max(Math.abs(p.f - king.f), Math.abs(p.r - king.r));
+  const adjacent = (p: PieceAt) => dist(p) === 1;
+  const orth = (p: PieceAt) => p.f === king.f || p.r === king.r;
+  const supported = (p: PieceAt, by?: string) =>
+    mine.some((q) => q !== p && (!by || q.type === by) && attacksSq(q, p.f, p.r, grid));
+  const nbrs: { f: number; r: number; cell: Cell }[] = [];
+  for (let df = -1; df <= 1; df++) for (let dr = -1; dr <= 1; dr++) {
+    if (!df && !dr) continue;
+    const f = king.f + df, r = king.r + dr;
+    if (f < 0 || f > 7 || r < 0 || r > 7) continue;
+    nbrs.push({ f, r, cell: grid[f][r] });
+  }
+  const ownAt = (f: number, r: number) => !!grid[f]?.[r] && grid[f][r]!.color === loser;
+  const backRank = loser === 'w' ? 0 : 7;
+  const fwd = loser === 'w' ? 1 : -1;
+  const corner = (king.f === 0 || king.f === 7) && (king.r === 0 || king.r === 7);
+  const onEdgeFile = king.f === 0 || king.f === 7;
+  const lastIsQueen = checkers.length === 1 && checkers[0].type === 'q';
+  const ck = checkers[0];
+
+  if (plies === 4 && loser === 'w') return "Fool's mate";
+  if ((plies === 7 || plies === 8) && lastIsQueen && ck.f === 5 && (ck.r === 6 || ck.r === 1) && adjacent(ck)) return "Scholar's mate";
+  if (checkers.length === 1 && ck.type === 'n' && nbrs.every((n) => n.cell && n.cell.color === loser)) return 'Smothered mate';
+  const rookAdj = checkers.length === 1 && ck.type === 'r' && adjacent(ck) && orth(ck) ? ck : null;
+  if (corner && rookAdj && mine.some((p) => p.type === 'n' && attacksSq(p, rookAdj.f, rookAdj.r, grid))) return 'Arabian mate';
+  if (rookAdj && mine.some((p) => p.type === 'n' && attacksSq(p, rookAdj.f, rookAdj.r, grid))
+    && mine.some((p) => p.type === 'p' && mine.some((n) => n.type === 'n' && attacksSq(p, n.f, n.r, grid)))) return 'Hook mate';
+  if (onEdgeFile && checkers.length === 1 && (ck.type === 'r' || ck.type === 'q') && ck.f === king.f && dist(ck) > 1
+    && ownAt(king.f === 0 ? 1 : 6, king.r) && has('n')
+    && mine.some((p) => p.type === 'n' && nbrs.some((n) => !n.cell && attacksSq(p, n.f, n.r, grid)))) return "Anastasia's mate";
+  if (corner && checkers.length === 1 && ck.type === 'r' && dist(ck) > 1 && mine.some((p) => p.type === 'b' && attacksSq(p, king.f === 0 ? 1 : 6, king.r === 0 ? 1 : 6, grid))) return "Pillsbury's mate";
+  if (checkers.length === 1 && ck.type === 'r' && king.r === backRank && adjacent(ck) && ck.r === king.r
+    && mine.some((p) => p.type === 'b' && attacksSq(p, ck.f, ck.r, grid))) return 'Opera mate';
+  if (checkers.length === 1 && ck.type === 'b' && count('b') >= 2 && king.r === backRank && nbrs.filter((n) => n.cell?.color === loser).length >= 2) return "Boden's mate";
+  if (lastIsQueen && adjacent(ck) && !orth(ck) && supported(ck, 'p')) return "Lolli's mate";
+  if (lastIsQueen && adjacent(ck) && orth(ck) && onEdgeFile && supported(ck, 'p')) return "Damiano's mate";
+  if (lastIsQueen && adjacent(ck) && ck.f === king.f
+    && [-1, 1].every((d) => ownAt(king.f + d, king.r) || king.f + d < 0 || king.f + d > 7)
+    && nbrs.some((n) => n.cell?.color === loser)) return 'Epaulette mate';
+  const ladderLine = (a: PieceAt, b: PieceAt) =>
+    (king.r === 0 || king.r === 7) ? a.r === king.r && b.r === king.r - Math.sign(king.r - 3.5)
+      : (king.f === 0 || king.f === 7) ? a.f === king.f && b.f === king.f - Math.sign(king.f - 3.5) : false;
+  const heavy = mine.filter((p) => p.type === 'r' || p.type === 'q');
+  if (heavy.length >= 2 && checkers.length >= 1 && heavy.some((a) => heavy.some((b) => a !== b && attacksSq(a, king.f, king.r, grid) && ladderLine(a, b)))
+    && !nbrs.some((n) => n.cell?.color === loser)) return 'Ladder mate';
+  if (king.r === backRank && checkers.length >= 1 && checkers.every((p) => (p.type === 'r' || p.type === 'q') && p.r === king.r)
+    && nbrs.some((n) => n.r === king.r + fwd && n.cell?.color === loser)) return 'Back-rank mate';
+  if (lastIsQueen && adjacent(ck) && supported(ck, 'k') && mine.every((p) => p.type === 'k' || p.type === 'q' || p.type === 'p')) return 'King + queen mate';
+  if (lastIsQueen && adjacent(ck) && !orth(ck) && supported(ck)) return 'Dovetail mate';
+  if ((lastIsQueen && supported(ck, 'b')) || (checkers.length === 1 && ck.type === 'b' && has('q'))) return 'Queen + bishop mate';
+  if ((lastIsQueen && supported(ck, 'r')) || (checkers.length === 1 && ck.type === 'r' && has('q'))) return 'Queen + rook mate';
+  return 'Other mates';
+}
+
+/** Replay a game from SAN moves and name the final checkmate. */
+function mateFromSans(sans: string[]): string | null {
+  try {
+    const chess = new Chess();
+    let n = 0;
+    for (const san of sans) {
+      chess.move(san);
+      n++;
+    }
+    return chess.isCheckmate() ? classifyMate(chess, n) : null;
+  } catch {
+    return null;
+  }
+}
 
 /** Group variations into a family: "Sicilian Defense: Najdorf" -> "Sicilian Defense". */
 const FAMILIES = [
@@ -95,6 +231,7 @@ async function fetchChessCom(user: string): Promise<{ games: Game[]; display: st
         opening: slug ? family(slug) : null,
         speed: g.time_class ?? 'rapid',
         how,
+        mate: outcome === 'l' && how === 'mate' && g.pgn ? mateFromSans(sansFromPgn(g.pgn)) : null,
       });
     }
   }
@@ -104,7 +241,7 @@ async function fetchChessCom(user: string): Promise<{ games: Game[]; display: st
 async function fetchLichess(user: string): Promise<{ games: Game[]; display: string }> {
   const u = user.toLowerCase();
   const res = await fetch(
-    `https://lichess.org/api/games/user/${encodeURIComponent(u)}?max=${MAX_GAMES}&opening=true&moves=false&tags=false`,
+    `https://lichess.org/api/games/user/${encodeURIComponent(u)}?max=${MAX_GAMES}&opening=true&moves=true&tags=false`,
     { headers: { Accept: 'application/x-ndjson' } },
   );
   if (res.status === 404) throw new Error(`No Lichess player called "${user}".`);
@@ -142,6 +279,7 @@ async function fetchLichess(user: string): Promise<{ games: Game[]; display: str
       opening: g.opening?.name ? family(g.opening.name) : null,
       speed: g.speed ?? 'rapid',
       how,
+      mate: outcome === 'l' && how === 'mate' && typeof g.moves === 'string' ? mateFromSans(g.moves.split(' ').filter(Boolean)) : null,
     });
   }
   return { games, display };
@@ -189,15 +327,45 @@ interface Story {
   losses: { label: string; n: number }[];
   lossTotal: number;
   bestVictim: { name: string; games: number; w: number; d: number; l: number } | null;
-  underdogWins: number;
   favoriteColor: 'w' | 'b' | null;
-  worstTime: Bucket | null;
-  recentForm: { score: number; n: number } | null;
-  peakRating: number | null;
-  ratingSwing: number | null;
-  mateRate: number;
-  resignRate: number;
+  /** What opponents opened with when they had White (I was Black). */
+  oppWhite: OppOpening[];
+  /** What opponents defended with when they had Black (I was White). */
+  oppBlack: OppOpening[];
+  oppWhiteGames: number;
+  oppBlackGames: number;
+  /** Checkmate patterns that beat me. */
+  mates: { label: string; n: number }[];
+  mateTotal: number;
+  /** Opponent-weakness cards by rating band. */
+  bands: BandStat[];
 }
+
+interface OppOpening { name: string; n: number; share: number; myScore: number }
+interface BandStat {
+  label: string;
+  lo: number;
+  hi: number;
+  isYours: boolean;
+  weaknesses: string[];
+  exploit: string;
+  n: number;
+  score: number;
+  /** How you beat players in this band (share of your wins). */
+  winWays: { label: string; pct: number }[];
+}
+
+/** Rating bands for the opponent-weakness cards. Edit this list to change the scheme. */
+const BANDS: { lo: number; hi: number; weaknesses: string[]; exploit: string }[] = [
+  { lo: 100, hi: 300, weaknesses: ['Leave pieces hanging for free', 'Miss one-move threats and checks', 'Move the same piece again and again'], exploit: 'Stay solid, grab free material and look for quick mates.' },
+  { lo: 300, hi: 600, weaknesses: ['Fall for Scholar\'s mate and early queen raids', 'Forget to protect pieces', 'Skip castling and leave the king open'], exploit: 'Develop fast, castle, and punish loose pieces with forks.' },
+  { lo: 600, hi: 900, weaknesses: ['Miss two-move tactics: forks, pins, skewers', 'Weak back rank', 'Trade pieces when they are already behind'], exploit: 'Set up tactical shots and aim at their back rank.' },
+  { lo: 900, hi: 1200, weaknesses: ['Passive pieces and slow development', 'Shaky endgame technique', 'Collapse in time trouble'], exploit: 'Build positional pressure and trade into endgames.' },
+  { lo: 1200, hi: 1500, weaknesses: ['Rook endgames and the opposition', 'Overextended pawns', 'Repeat the same opening mistakes'], exploit: 'Prepare your opening lines and convert endgames patiently.' },
+  { lo: 1500, hi: 1800, weaknesses: ['Calculation slips under the clock', 'Pawn-structure decisions', 'Converting an advantage cleanly'], exploit: 'Keep the position complex and let the clock work for you.' },
+  { lo: 1800, hi: 2100, weaknesses: ['Holes outside main-line theory', 'Technical endgames', 'Pressing too hard in equal positions'], exploit: 'Pick offbeat lines and play for a long game.' },
+  { lo: 2100, hi: 4000, weaknesses: ['Rare blunders, mostly in bullet and time trouble', 'Unfamiliar sidelines', 'Overconfidence in drawn endings'], exploit: 'Stay accurate, keep the clock healthy and test them in sidelines.' },
+];
 
 const pct = (a: number, b: number) => (b > 0 ? Math.round((a / b) * 100) : 0);
 const cap = (s: string) => s.charAt(0).toUpperCase() + s.slice(1);
@@ -375,24 +543,30 @@ function buildStory(name: string, platform: Platform, all: Game[]): Story {
   const vict = [...vs.entries()].filter(([, s]) => s.w >= 2).sort((a, b) => b[1].w - a[1].w || b[1].games - a[1].games)[0];
   const bestVictim = vict ? { name: vict[0], ...vict[1] } : null;
 
-  // Underdog wins (beat higher rated)
-  const underdogWins = games.filter((g) => g.outcome === 'w' && g.oppRating != null && g.myRating != null && g.oppRating > g.myRating).length;
+  // What opponents play against me: their opening as White (I'm Black) and their defense as Black (I'm White)
+  const oppStats = (myColor: 'w' | 'b'): { list: OppOpening[]; total: number } => {
+    const sub = games.filter((g) => g.color === myColor && g.opening);
+    const m = new Map<string, { n: number; points: number }>();
+    sub.forEach((g) => {
+      const e = m.get(g.opening!) ?? { n: 0, points: 0 };
+      e.n++;
+      e.points += points(g.outcome);
+      m.set(g.opening!, e);
+    });
+    const list = [...m.entries()]
+      .sort((a, b) => b[1].n - a[1].n)
+      .slice(0, 4)
+      .map(([name, e]) => ({ name, n: e.n, share: pct(e.n, sub.length), myScore: pct(e.points, e.n) }));
+    return { list, total: sub.length };
+  };
+  const oppW = oppStats('b');
+  const oppB = oppStats('w');
 
-  // Worst time of day
-  const worstTime = [...times].filter((t) => t.n >= 5).sort((a, b) => a.score - b.score)[0] ?? null;
-
-  // Recent form (last 30 games or 20%)
-  const recentN = Math.min(30, Math.max(10, Math.floor(games.length * 0.2)));
-  const recent = games.slice(-recentN);
-  const recentForm = recent.length >= 10
-    ? { score: pct(recent.reduce((a, g) => a + points(g.outcome), 0), recent.length), n: recent.length }
-    : null;
-
-  const peakRating = rated.length ? Math.max(...rated) : null;
-  const ratingSwing = rated.length >= 2 ? Math.max(...rated) - Math.min(...rated) : null;
-
-  const mateRate = winGames.length ? pct(winGames.filter((g) => g.how === 'mate').length, winGames.length) : 0;
-  const resignRate = lossGames.length ? pct(lossGames.filter((g) => g.how === 'resign').length, lossGames.length) : 0;
+  // Checkmate patterns that beat me
+  const mateMap = new Map<string, number>();
+  lossGames.forEach((g) => { if (g.how === 'mate' && g.mate) mateMap.set(g.mate, (mateMap.get(g.mate) ?? 0) + 1); });
+  const mates = [...mateMap.entries()].map(([label, n]) => ({ label, n })).sort((a, b) => b.n - a.n).slice(0, 5);
+  const mateTotal = [...mateMap.values()].reduce((a, b) => a + b, 0);
 
   // Poster rows (summary)
   const rows: Row[] = [{ icon: Swords, title: 'Record', value: `${record.w}W · ${record.d}D · ${record.l}L` }];
@@ -432,11 +606,39 @@ function buildStory(name: string, platform: Platform, all: Game[]): Story {
     }
   }
 
+  // Opponent weakness cards: the band you sit in, plus neighbours (5 consecutive bands)
+  const refRating = rating ?? (() => {
+    const opps = games.filter((g) => g.oppRating != null).map((g) => g.oppRating as number);
+    return opps.length ? Math.round(opps.reduce((a, b) => a + b, 0) / opps.length) : 800;
+  })();
+  let yourIdx = BANDS.findIndex((b) => refRating >= b.lo && refRating < b.hi);
+  if (yourIdx < 0) yourIdx = refRating < BANDS[0].lo ? 0 : BANDS.length - 1;
+  const startIdx = Math.max(0, Math.min(BANDS.length - 5, yourIdx - 2));
+  const bands: BandStat[] = BANDS.slice(startIdx, startIdx + 5).map((b, i) => {
+    const vsBand = games.filter((g) => g.oppRating != null && g.oppRating >= b.lo && g.oppRating < b.hi);
+    const bandWins = vsBand.filter((g) => g.outcome === 'w');
+    const ways = [
+      { label: 'Checkmate', n: bandWins.filter((g) => g.how === 'mate').length },
+      { label: 'Resignation', n: bandWins.filter((g) => g.how === 'resign').length },
+      { label: 'On time', n: bandWins.filter((g) => g.how === 'time').length },
+    ].filter((w) => w.n > 0).sort((a, c) => c.n - a.n);
+    return {
+      label: b.hi >= 4000 ? `${b.lo}+` : `${b.lo}–${b.hi}`,
+      lo: b.lo, hi: b.hi, isYours: startIdx + i === yourIdx,
+      weaknesses: b.weaknesses, exploit: b.exploit,
+      n: vsBand.length,
+      score: pct(vsBand.reduce((a, g) => a + points(g.outcome), 0), vsBand.length),
+      winWays: ways.map((w) => ({ label: w.label, pct: pct(w.n, bandWins.length) })),
+    };
+  });
+
   return {
     name, platform, count: games.length, rating, ratingSpeed,
     winRate: pct(record.w + record.d / 2, games.length), record, rows,
     white, black, weapon, identity, giant, nemesis, streak, times, wins, winTotal: winGames.length, formats, ratings,
-    avoid, learn, colorPerf, losses, lossTotal, bestVictim, underdogWins, favoriteColor, worstTime, recentForm, peakRating, ratingSwing, mateRate, resignRate,
+    avoid, learn, colorPerf, losses, lossTotal, bestVictim, favoriteColor,
+    oppWhite: oppW.list, oppBlack: oppB.list, oppWhiteGames: oppW.total, oppBlackGames: oppB.total,
+    mates, mateTotal, bands,
   };
 }
 
@@ -533,6 +735,156 @@ function guessPlayer(games: ImportedGame[]): string {
   return [...counts.entries()].sort((a, b) => b[1] - a[1])[0]?.[0] ?? '';
 }
 
+/* ------------------------------------------------------------------ */
+/* Instagram-style full-screen story viewer                            */
+/* ------------------------------------------------------------------ */
+
+const CARD_W = 340;
+const CARD_H = Math.round((CARD_W * 16) / 9); // 9:16 story format
+const STORY_MS = 7000;
+
+type StoryCard = { id: string; label: string; node: React.ReactNode };
+
+function StoryViewer({
+  cards, index, setIndex, onClose, onSave, saving,
+}: {
+  cards: StoryCard[];
+  index: number;
+  setIndex: (i: number) => void;
+  onClose: () => void;
+  onSave: (id: string) => void;
+  saving: string | null;
+}) {
+  const [progress, setProgress] = useState(0);
+  const [paused, setPaused] = useState(false);
+  const touch = useRef<{ x: number; y: number; t: number } | null>(null);
+  const swiped = useRef(false);
+  const [vp, setVp] = useState({ w: window.innerWidth, h: window.innerHeight });
+  const last = cards.length - 1;
+
+  const next = () => (index < last ? setIndex(index + 1) : onClose());
+  const prev = () => setIndex(Math.max(0, index - 1));
+
+  useEffect(() => {
+    const onResize = () => setVp({ w: window.innerWidth, h: window.innerHeight });
+    window.addEventListener('resize', onResize);
+    const prevOverflow = document.body.style.overflow;
+    document.body.style.overflow = 'hidden';
+    return () => {
+      window.removeEventListener('resize', onResize);
+      document.body.style.overflow = prevOverflow;
+    };
+  }, []);
+
+  useEffect(() => { setProgress(0); }, [index]);
+
+  // Auto-advance like Instagram; hold the screen to pause.
+  useEffect(() => {
+    if (paused) return;
+    const t = window.setInterval(() => setProgress((p) => Math.min(1, p + 50 / STORY_MS)), 50);
+    return () => window.clearInterval(t);
+  }, [paused, index]);
+
+  useEffect(() => {
+    if (progress >= 1 && index < last) setIndex(index + 1);
+  }, [progress, index, last, setIndex]);
+
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') onClose();
+      else if (e.key === 'ArrowRight' || e.key === ' ') { e.preventDefault(); next(); }
+      else if (e.key === 'ArrowLeft') prev();
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  });
+
+  const frameH = Math.min(vp.h, (vp.w * 16) / 9);
+  const frameW = (frameH * 9) / 16;
+  const scale = frameW / CARD_W;
+  const card = cards[index];
+
+  return (
+    <div className="fixed inset-0 z-50 bg-black flex items-center justify-center select-none" role="dialog" aria-modal="true" aria-label="Your chess story">
+      <button onClick={onClose} aria-label="Close story" className="hidden sm:flex absolute top-4 right-4 w-10 h-10 rounded-full bg-white/10 hover:bg-white/20 text-white items-center justify-center z-10">
+        <X size={20} />
+      </button>
+      <button onClick={prev} disabled={index === 0} aria-label="Previous card" className="hidden sm:flex absolute left-[max(1rem,calc(50%-var(--half)-4rem))] w-11 h-11 rounded-full bg-white/10 hover:bg-white/20 disabled:opacity-30 text-white items-center justify-center"
+        style={{ ['--half' as string]: `${frameW / 2}px` }}>
+        <ChevronLeft size={22} />
+      </button>
+      <button onClick={next} aria-label="Next card" className="hidden sm:flex absolute right-[max(1rem,calc(50%-var(--half)-4rem))] w-11 h-11 rounded-full bg-white/10 hover:bg-white/20 text-white items-center justify-center"
+        style={{ ['--half' as string]: `${frameW / 2}px` }}>
+        <ChevronRight size={22} />
+      </button>
+
+      <div className="relative overflow-hidden sm:rounded-2xl bg-black" style={{ width: frameW, height: frameH }}>
+        {/* the card, rendered at design size and scaled to fill the frame */}
+        <div style={{ width: CARD_W, height: CARD_H, transform: `scale(${scale})`, transformOrigin: 'top left' }}>
+          <div key={card.id} className="w-full h-full [&>div]:w-full [&>div]:h-full [&>div]:max-w-none [&>div]:rounded-none [&>div]:shadow-none">
+            {card.node}
+          </div>
+        </div>
+
+        {/* progress bars */}
+        <div className="absolute top-2 left-2 right-2 flex gap-1 pointer-events-none">
+          {cards.map((c, i) => (
+            <div key={c.id} className="h-[3px] flex-1 rounded-full bg-white/30 overflow-hidden">
+              <div className="h-full bg-white" style={{ width: `${i < index ? 100 : i === index ? progress * 100 : 0}%` }} />
+            </div>
+          ))}
+        </div>
+
+        {/* gestures: tap left = back, tap right = next, hold = pause, swipe left/right = next/back, swipe down = close */}
+        <div
+          className="absolute inset-x-0 top-6 bottom-14 flex"
+          style={{ touchAction: 'none' }}
+          onPointerDown={(e) => {
+            touch.current = { x: e.clientX, y: e.clientY, t: Date.now() };
+            swiped.current = false;
+            setPaused(true);
+          }}
+          onPointerUp={(e) => {
+            setPaused(false);
+            const st = touch.current;
+            touch.current = null;
+            if (!st) return;
+            const dx = e.clientX - st.x;
+            const dy = e.clientY - st.y;
+            if (Math.abs(dx) > 50 && Math.abs(dx) > Math.abs(dy) * 1.3) {
+              swiped.current = true;
+              if (dx < 0) next(); else prev();
+            } else if (dy > 90 && dy > Math.abs(dx) * 1.3) {
+              swiped.current = true;
+              onClose();
+            }
+          }}
+          onPointerLeave={() => setPaused(false)}
+          onPointerCancel={() => { touch.current = null; setPaused(false); }}
+        >
+          <button className="w-1/3 h-full cursor-w-resize" aria-label="Previous" onClick={() => { if (!swiped.current) prev(); swiped.current = false; }} />
+          <button className="w-2/3 h-full cursor-e-resize" aria-label="Next" onClick={() => { if (!swiped.current) next(); swiped.current = false; }} />
+        </div>
+
+        {/* controls */}
+        <div className="absolute bottom-3 right-3 flex gap-2">
+          <button
+            onClick={() => onSave(card.id)}
+            disabled={saving !== null}
+            aria-label={`Save ${card.label}`}
+            className="w-9 h-9 rounded-full bg-black/45 hover:bg-black/65 text-white flex items-center justify-center"
+          >
+            {saving === card.id ? <Loader2 size={16} className="animate-spin" /> : <Download size={16} />}
+          </button>
+          <button onClick={onClose} aria-label="Close story" className="sm:hidden w-9 h-9 rounded-full bg-black/45 hover:bg-black/65 text-white flex items-center justify-center">
+            <X size={16} />
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export function ChessStory({ games: imported }: { games: ImportedGame[] }) {
   const last = useMemo(loadLast, []);
   const [platform, setPlatform] = useState<Platform>(last?.platform ?? 'chesscom');
@@ -541,6 +893,7 @@ export function ChessStory({ games: imported }: { games: ImportedGame[] }) {
   const [error, setError] = useState('');
   const [story, setStory] = useState<Story | null>(null);
   const [saving, setSaving] = useState<string | null>(null);
+  const [openAt, setOpenAt] = useState<number | null>(null);
   const refs = useRef<Record<string, HTMLDivElement | null>>({});
 
   async function generate(e?: React.FormEvent) {
@@ -553,6 +906,7 @@ export function ChessStory({ games: imported }: { games: ImportedGame[] }) {
       const { games, display } = platform === 'chesscom' ? await fetchChessCom(name) : await fetchLichess(name);
       if (games.length === 0) throw new Error(`No standard games found for "${name}" yet.`);
       setStory(buildStory(display, platform, games));
+      setOpenAt(0);
       try { localStorage.setItem(STORE_KEY, JSON.stringify({ platform, user: name })); } catch { /* ignore */ }
     } catch (err) {
       setStory(null);
@@ -916,100 +1270,82 @@ export function ChessStory({ games: imported }: { games: ImportedGame[] }) {
       });
     }
 
-    // 14. Underdog / giant killer count
-    if (s.underdogWins >= 2) {
+    // 14. What opponents open with against you
+    if (s.oppWhite.length > 0 || s.oppBlack.length > 0) {
+      const topWhite = s.oppWhite[0];
+      const topBlack = s.oppBlack[0];
       list.push({
-        id: 'underdog', label: 'Underdog wins',
+        id: 'opp-openings', label: "Opponents' openings",
         node: (
-          <Shell grad={GRADS.amber} kicker="Underdog spirit" story={s}>
-            <p className="text-sm text-white/70">Wins against higher-rated opponents</p>
-            <p className="mt-2 text-6xl font-extrabold tracking-tight" style={{ color: GOLD }}>{s.underdogWins}</p>
-            <p className="mt-2 text-lg font-bold">upsets</p>
-            {s.giant && (
-              <p className="mt-4 text-sm text-white/70">
-                Biggest: beat <b className="text-white">{s.giant.oppName}</b> ({s.giant.oppRating})
-              </p>
+          <Shell grad={GRADS.blue} kicker="What they play against you" story={s} footer="Share of your games. The second number is your score against it.">
+            <h4 className="text-2xl font-extrabold leading-tight">{(topWhite ?? topBlack).name}</h4>
+            <p className="text-xs text-white/60">The opening your opponents pick most</p>
+            {s.oppWhite.length > 0 && <p className="mt-4 text-[11px] font-bold uppercase tracking-wider text-white/60">When they have White</p>}
+            {s.oppWhite.slice(0, 3).map((o) => (
+              <Bar key={`ow${o.name}`} label={o.name} value={`${o.share}% · you ${o.myScore}%`} sub={`${o.n} of ${s.oppWhiteGames} games`} fill={o.share} />
+            ))}
+            {s.oppBlack.length > 0 && <p className="mt-3 text-[11px] font-bold uppercase tracking-wider text-white/60">When they have Black</p>}
+            {s.oppBlack.slice(0, 3).map((o) => (
+              <Bar key={`ob${o.name}`} label={o.name} value={`${o.share}% · you ${o.myScore}%`} sub={`${o.n} of ${s.oppBlackGames} games`} fill={o.share} />
+            ))}
+          </Shell>
+        ),
+      });
+    }
+
+    // 15. What checkmated you
+    if (s.mateTotal >= 1 && s.mates.length > 0) {
+      const top = s.mates[0];
+      list.push({
+        id: 'mated-by', label: 'Checkmated by',
+        node: (
+          <Shell grad={GRADS.red} kicker="What checkmated you" story={s} footer="Pattern names are a best-effort match on the final position.">
+            <h4 className="text-3xl font-extrabold leading-tight">{top.label}</h4>
+            <p className="text-sm text-white/70 mt-1">{top.n} of your {s.mateTotal} checkmate losses</p>
+            <div className="mt-5">
+              {s.mates.map((m) => (
+                <Bar key={m.label} label={m.label} value={`${pct(m.n, s.mateTotal)}% · ${m.n}`} fill={pct(m.n, s.mateTotal)} />
+              ))}
+            </div>
+          </Shell>
+        ),
+      });
+    }
+
+    // 16-20. Opponent weaknesses by rating band
+    s.bands.forEach((b, i) => {
+      list.push({
+        id: `band-${b.lo}`, label: `${b.label} weaknesses`,
+        node: (
+          <Shell
+            grad={[GRADS.plum, GRADS.amber, GRADS.green, GRADS.blue, GRADS.red][i % 5]}
+            kicker={b.isYours ? 'Opponents · your level' : 'Opponents · by rating'}
+            story={s}
+            footer={b.n > 0 ? `Your record against ${b.label} rated opponents in this sample.` : 'No games against this rating range in this sample.'}
+          >
+            <h4 className="text-4xl font-extrabold leading-tight">{b.label}</h4>
+            <p className="text-sm text-white/70">{b.isYours ? 'Players at your own level' : 'Typical weak spots at this rating'}</p>
+            <p className="mt-4 text-[11px] font-bold uppercase tracking-wider text-white/60">Their weaknesses</p>
+            <ul className="mt-1 space-y-1.5">
+              {b.weaknesses.map((w) => (
+                <li key={w} className="flex gap-2 text-sm leading-snug"><span style={{ color: GOLD }}>•</span><span>{w}</span></li>
+              ))}
+            </ul>
+            <p className="mt-4 text-[11px] font-bold uppercase tracking-wider text-white/60">How to exploit it</p>
+            <p className="mt-1 text-sm font-semibold leading-snug" style={{ color: GOLD }}>{b.exploit}</p>
+            {b.n > 0 && (
+              <div className="mt-4 rounded-2xl bg-white/10 px-4 py-3">
+                <p className="text-[10px] font-bold uppercase tracking-wider text-white/60">Your results vs {b.label}</p>
+                <p className="text-2xl font-extrabold" style={{ color: GOLD }}>{b.score}% <span className="text-xs font-semibold text-white/60">score · {b.n} games</span></p>
+                {b.winWays.length > 0 && (
+                  <p className="text-[11px] text-white/60 mt-0.5">You win by {b.winWays.map((w) => `${w.label.toLowerCase()} ${w.pct}%`).join(' · ')}</p>
+                )}
+              </div>
             )}
           </Shell>
         ),
       });
-    }
-
-    // 15. Worst time of day
-    if (s.worstTime && s.times.length > 1) {
-      list.push({
-        id: 'worst-time', label: 'Avoid this time',
-        node: (
-          <Shell grad={GRADS.red} kicker="When to skip" story={s} footer="Score rate is lowest in this window (min 5 games).">
-            <h4 className="text-3xl font-extrabold leading-tight">{s.worstTime.label}</h4>
-            <p className="mt-2 text-6xl font-extrabold" style={{ color: GOLD }}>{s.worstTime.score}%</p>
-            <p className="text-sm text-white/70 mt-1">{s.worstTime.n} games · your weakest window</p>
-          </Shell>
-        ),
-      });
-    }
-
-    // 16. Recent form
-    if (s.recentForm) {
-      const hot = s.recentForm.score >= s.winRate + 5;
-      const cold = s.recentForm.score <= s.winRate - 5;
-      list.push({
-        id: 'form', label: 'Recent form',
-        node: (
-          <Shell grad={hot ? GRADS.green : cold ? GRADS.red : GRADS.blue} kicker="Recent form" story={s}>
-            <p className="text-sm text-white/70">Last {s.recentForm.n} games</p>
-            <p className="mt-2 text-6xl font-extrabold tracking-tight" style={{ color: GOLD }}>{s.recentForm.score}%</p>
-            <p className="mt-2 text-lg font-bold">
-              {hot ? 'On a hot streak' : cold ? 'Cooling off' : 'Steady as usual'}
-            </p>
-            <p className="mt-3 text-sm text-white/70">
-              Overall score rate: {s.winRate}%
-            </p>
-          </Shell>
-        ),
-      });
-    }
-
-    // 17. Peak & swing
-    if (s.peakRating != null && s.ratingSwing != null && s.ratingSwing >= 50) {
-      list.push({
-        id: 'peak', label: 'Peak rating',
-        node: (
-          <Shell grad={GRADS.plum} kicker="Rating highs" story={s}>
-            <p className="text-sm text-white/70">Peak in this sample</p>
-            <p className="mt-2 text-6xl font-extrabold tracking-tight" style={{ color: GOLD }}>{s.peakRating}</p>
-            <p className="mt-4 text-sm text-white/70">
-              Swing of <b className="text-white">{s.ratingSwing}</b> points from low to high
-            </p>
-          </Shell>
-        ),
-      });
-    }
-
-    // 18. Finishing style
-    if (s.winTotal >= 5) {
-      list.push({
-        id: 'finish', label: 'Finishing style',
-        node: (
-          <Shell grad={GRADS.green} kicker="How you finish" story={s}>
-            <p className="text-sm text-white/70">Your conversion style</p>
-            <div className="mt-4 grid grid-cols-2 gap-3">
-              <div className="rounded-2xl bg-white/10 p-3 text-center">
-                <p className="text-3xl font-extrabold" style={{ color: GOLD }}>{s.mateRate}%</p>
-                <p className="text-xs text-white/70 mt-1">wins by mate</p>
-              </div>
-              <div className="rounded-2xl bg-white/10 p-3 text-center">
-                <p className="text-3xl font-extrabold" style={{ color: GOLD }}>{s.resignRate}%</p>
-                <p className="text-xs text-white/70 mt-1">losses by resign</p>
-              </div>
-            </div>
-            <p className="mt-4 text-sm text-white/70">
-              {s.mateRate >= 40 ? 'You love delivering mate.' : s.resignRate >= 50 ? 'Opponents often resign to you — or you resign early.' : 'A mix of finishes.'}
-            </p>
-          </Shell>
-        ),
-      });
-    }
+    });
 
     return list;
   }, [story]);
@@ -1022,11 +1358,11 @@ export function ChessStory({ games: imported }: { games: ImportedGame[] }) {
   }
 
   return (
-    <section className="mt-12 w-full" aria-labelledby="story-heading">
+    <section className="mb-10 w-full" aria-labelledby="story-heading">
       <div className="mb-5">
         <h2 id="story-heading" className="text-xl font-bold">Your chess, as a story</h2>
         <p className="text-sm text-ink-400 mt-0.5">
-          Enter any Chess.com or Lichess username to get a set of cards from up to 1000 recent games: openings, what to avoid, what to learn, giant killer, nemesis and more.
+          Enter any Chess.com or Lichess username to get a full-screen story from up to 1000 recent games: openings, what checkmated you, what opponents play, their weaknesses by rating and more.
         </p>
       </div>
 
@@ -1068,49 +1404,48 @@ export function ChessStory({ games: imported }: { games: ImportedGame[] }) {
       {loading && <p className="text-sm text-ink-400 mb-2">Fetching recent games…</p>}
 
       {cards.length > 0 && (
-        <div className="relative -mx-4 sm:mx-0 mt-4">
-          {/* Horizontal story strip: full-bleed swipe on mobile, fixed-width cards on larger screens */}
-          <div
-            className="flex overflow-x-auto snap-x snap-mandatory gap-3 sm:gap-6 px-4 sm:px-2 pb-6 pt-2
-              scroll-smooth overscroll-x-contain
-              [-ms-overflow-style:none] [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
-            style={{ WebkitOverflowScrolling: 'touch' }}
-          >
-            {cards.map((c) => (
-              <div
-                key={c.id}
-                className="snap-center shrink-0 flex flex-col items-center gap-3
-                  w-[min(100vw-2rem,340px)] sm:w-[340px]"
-              >
-                <div
-                  className={`w-full ${
-                    c.tilt ? 'lg:-rotate-2 transition-transform hover:rotate-0 duration-300' : ''
-                  }`}
-                >
-                  {/* Mobile story mode: stretch card to fill most of the viewport height */}
-                  <div
-                    ref={(el) => { refs.current[c.id] = el; }}
-                    className="w-full [&>div]:w-full [&>div]:max-w-none
-                      max-sm:[&>div]:min-h-[min(78dvh,640px)] max-sm:[&>div]:h-[min(78dvh,640px)]"
-                  >
-                    {c.node}
-                  </div>
-                </div>
-                <button
-                  onClick={() => save(c.id)}
-                  disabled={saving !== null}
-                  className="btn-ghost text-xs shrink-0"
-                >
-                  {saving === c.id ? <Loader2 size={13} className="animate-spin" /> : <Download size={13} />} Save {c.label.toLowerCase()}
-                </button>
-              </div>
+        <div className="mt-4">
+          <div className="flex flex-wrap items-center gap-2 mb-3">
+            <button type="button" onClick={() => setOpenAt(0)} className="btn-primary text-sm">
+              <Play size={14} /> Play story
+            </button>
+            <span className="text-xs text-ink-400">{cards.length} cards · tap right/left or use the arrow keys · hold to pause</span>
+          </div>
+          <div className="flex flex-wrap gap-1.5">
+            {cards.map((c, i) => (
+              <button key={c.id} type="button" onClick={() => setOpenAt(i)}
+                className="chip bg-ink-800 text-ink-300 hover:text-ink-100 border border-ink-700">
+                {i + 1}. {c.label}
+              </button>
             ))}
           </div>
-          {/* Edge fades so users notice they can swipe on mobile */}
-          <div className="pointer-events-none absolute inset-y-0 left-0 w-6 bg-gradient-to-r from-ink-950/80 to-transparent sm:hidden" aria-hidden />
-          <div className="pointer-events-none absolute inset-y-0 right-0 w-6 bg-gradient-to-l from-ink-950/80 to-transparent sm:hidden" aria-hidden />
         </div>
       )}
+
+      {openAt !== null && cards.length > 0 && (
+        <StoryViewer
+          cards={cards}
+          index={Math.min(openAt, cards.length - 1)}
+          setIndex={setOpenAt}
+          onClose={() => setOpenAt(null)}
+          onSave={save}
+          saving={saving}
+        />
+      )}
+
+      {/* Off-screen copies at the exact story size, used only for PNG export */}
+      <div aria-hidden style={{ position: 'fixed', left: -10000, top: 0, pointerEvents: 'none' }}>
+        {cards.map((c) => (
+          <div
+            key={c.id}
+            ref={(el) => { refs.current[c.id] = el; }}
+            className="[&>div]:w-full [&>div]:h-full [&>div]:max-w-none"
+            style={{ width: CARD_W, height: CARD_H }}
+          >
+            {c.node}
+          </div>
+        ))}
+      </div>
     </section>
   );
 }

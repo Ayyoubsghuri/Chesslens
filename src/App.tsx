@@ -9,6 +9,7 @@ import { PuzzleTrainer } from '@/components/PuzzleTrainer';
 import { ChessStory } from '@/components/ChessStory';
 import { PlayVsComputer, type PlayedGame } from '@/components/PlayVsComputer';
 import { OpeningsTrainer } from '@/components/OpeningsTrainer';
+import { registerAnalyzeHandler } from '@/components/MastersGames';
 import { MissionBanner } from '@/components/MissionBanner';
 import type { Mission } from '@/lib/mission';
 import { LearnPath, type LearnNavigate } from '@/components/LearnPath';
@@ -124,6 +125,15 @@ function App() {
     setPendingAnalyzeId(id);
   }, [handleImport]);
 
+  // Register the analyze handler at App level so "Analyze game" in Openings → GM games
+  // works even when PlayVsComputer isn't mounted (same path as Play vs Computer).
+  useEffect(() => {
+    registerAnalyzeHandler((g) =>
+      handlePlayedGame({ pgn: g.pgn, white: g.white, black: g.black, result: g.result } as PlayedGame)
+    );
+    return () => registerAnalyzeHandler(null);
+  }, [handlePlayedGame]);
+
   useEffect(() => {
     if (pendingAnalyzeId && selectedGame && selectedGame.id === pendingAnalyzeId && !analyzing) {
       setPendingAnalyzeId(null);
@@ -236,6 +246,7 @@ function App() {
           <PuzzleTrainer initialCategory={puzzleTheme} />
         ) : !selectedGame ? (
           <>
+          <ChessStory games={games} />
           <div className={`flex flex-col items-center justify-center text-center ${games.length === 0 ? 'min-h-[50vh]' : 'min-h-[30vh]'}`}>
             {games.length === 0 ? (
               <>
@@ -254,7 +265,6 @@ function App() {
               <GameLibrary games={games} analyses={analyses} onSelect={handleSelectGame} onDelete={handleDeleteGame} onDeleteMany={handleDeleteMany} />
             )}
           </div>
-          <ChessStory games={games} />
           </>
         ) : (
           <>

@@ -8,7 +8,7 @@ import { getOpeningCatalog, loadCustomLines, saveCustomLines, parseLine, type Op
 import { gameOverText, pickComputerMove, sleep } from '@/lib/practice';
 import { ImportedStudies } from './StudiesTrainer';
 import { BuiltinStudies } from './BuiltinStudies';
-import { MastersGames } from './MastersGames';
+import { MastersGames, registerAnalyzeHandler, type AnalyzeGamePayload } from './MastersGames';
 import { logEvent } from '@/lib/activity';
 import {
   BookOpen, ChevronLeft, ChevronRight, ChevronsLeft, ChevronsRight, Search, X, Plus, Trash2,
@@ -47,27 +47,33 @@ function buildFrames(uci: string[]): Frames {
 // ───────────────────────────── Browser ─────────────────────────────
 
 /** Openings page: Lichess-style Studies + the opening library. */
-export function OpeningsTrainer() {
+export function OpeningsTrainer({ onAnalyze }: { onAnalyze?: (game: AnalyzeGamePayload) => void } = {}) {
   const [tab, setTab] = useState<'studies' | 'library' | 'import'>('studies');
   const [line, setLine] = useState<OpeningLine | null>(null);
+
+  // Same analyze pipeline as Play vs Computer → redirect to analyze page
+  useEffect(() => {
+    if (!onAnalyze) return;
+    registerAnalyzeHandler(onAnalyze);
+  }, [onAnalyze]);
   const tabCls = (t: string) =>
     `px-4 py-2.5 text-sm font-medium border-b-2 transition-colors ${tab === t ? 'border-brand-400 text-brand-300' : 'border-transparent text-ink-400 hover:text-ink-200'}`;
   return (
     <>
-    {line && <LineTrainer key={line.id} line={line} onBack={() => setLine(null)} />}
+    {line && <LineTrainer key={line.id} line={line} onBack={() => setLine(null)} onAnalyze={onAnalyze} />}
     <div className={`space-y-5 ${line ? 'hidden' : ''}`}>
       <div className="flex gap-1 border-b border-ink-800">
         <button onClick={() => setTab('studies')} className={tabCls('studies')}>Studies</button>
         <button onClick={() => setTab('library')} className={tabCls('library')}>Quick lines</button>
         <button onClick={() => setTab('import')} className={tabCls('import')}>Import</button>
       </div>
-      {tab === 'studies' ? <BuiltinStudies onOpenLine={setLine} /> : tab === 'library' ? <OpeningLibrary /> : <ImportedStudies />}
+      {tab === 'studies' ? <BuiltinStudies onOpenLine={setLine} /> : tab === 'library' ? <OpeningLibrary onAnalyze={onAnalyze} /> : <ImportedStudies />}
     </div>
     </>
   );
 }
 
-function OpeningLibrary() {
+function OpeningLibrary({ onAnalyze }: { onAnalyze?: (game: AnalyzeGamePayload) => void } = {}) {
   const catalog = useMemo(() => getOpeningCatalog(), []);
   const [custom, setCustom] = useState<OpeningLine[]>(() => loadCustomLines());
   const [selected, setSelected] = useState<OpeningLine | null>(null);
@@ -85,7 +91,7 @@ function OpeningLibrary() {
     return [...m.entries()];
   }, [catalog]);
 
-  if (selected) return <LineTrainer key={selected.id} line={selected} onBack={() => setSelected(null)} />;
+  if (selected) return <LineTrainer key={selected.id} line={selected} onBack={() => setSelected(null)} onAnalyze={onAnalyze} />;
 
   const q = query.trim().toLowerCase();
   const results = q
@@ -207,7 +213,7 @@ function AddLine({ onSave }: { onSave: (l: OpeningLine) => void }) {
 
 // ───────────────────────────── Trainer ─────────────────────────────
 
-function LineTrainer({ line, onBack }: { line: OpeningLine; onBack: () => void }) {
+function LineTrainer({ line, onBack, onAnalyze }: { line: OpeningLine; onBack: () => void; onAnalyze?: (game: AnalyzeGamePayload) => void }) {
   const frames = useMemo(() => buildFrames(line.uci), [line]);
   const total = line.uci.length;
 
@@ -387,7 +393,7 @@ function LineTrainer({ line, onBack }: { line: OpeningLine; onBack: () => void }
           <p className="text-xs text-ink-500 font-mono mt-0.5">{line.eco || 'Custom'} · {Math.ceil(total / 2)} moves</p>
           {tabBar}
         </div>
-        <MastersGames uci={line.uci} orientation={orientation} />
+        <MastersGames uci={line.uci} orientation={orientation} onAnalyze={onAnalyze} />
       </div>
     );
   }

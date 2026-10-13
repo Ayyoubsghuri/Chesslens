@@ -398,6 +398,34 @@ export function ChessBoard({
         color: interactive ? (turnColor as 'white' | 'black') : undefined,
         dests: interactive ? buildDests(fen) : new Map(),
         showDests: true,
+        events: {
+          after: (orig: Key, dest: Key) => {
+            if (!onUserMoveRef.current || !interactiveRef.current) return;
+            try {
+              const chess = new Chess(fenRef.current);
+              const candidates = chess.moves({ verbose: true }).filter(
+                (m) => m.from === orig && m.to === dest
+              );
+              if (!candidates.length) return;
+              const needsPromo = candidates.some((m) => m.promotion);
+              const result = chess.move({
+                from: orig,
+                to: dest,
+                promotion: needsPromo ? 'q' : undefined,
+              });
+              if (!result) return;
+              onUserMoveRef.current({
+                from: result.from as Square,
+                to: result.to as Square,
+                promotion: result.promotion,
+                san: result.san,
+                fen: chess.fen(),
+              });
+            } catch {
+              /* ignore */
+            }
+          },
+        },
       },
       turnColor: turnColor as 'white' | 'black',
     });
