@@ -3,6 +3,8 @@ import { Star, ThumbsUp, Check, BookOpen, X } from 'lucide-react';
 import type { MoveQuality } from '@/lib/types';
 import type { TbFrame } from '@/lib/tablebase';
 import { TablebaseNote } from './TablebaseNote';
+import { AdvancedCoach } from './AdvancedCoach';
+import type { ExplainInput, Scene } from '@/lib/coach-explain';
 
 /** How long each language stays on screen. Tweak freely. */
 const ENGLISH_MS = 800;
@@ -171,9 +173,24 @@ interface CoachBubbleProps {
   fen?: string;
   /** Plays the tablebase sequence on the board (frames, label). */
   onPlayTablebase?: (frames: TbFrame[], label: string) => void;
+  /** Settings → "Advanced coach mode". Adds the step-by-step explanation player under the bubble. */
+  advanced?: boolean;
+  /** Data the advanced coach needs (positions, engine evals, best move...). */
+  explainInput?: ExplainInput | null;
+  /** True while the board shows a coach/preview position. */
+  previewActive?: boolean;
+  /** Puts an advanced-coach scene on the board (null = back to the game). */
+  onScene?: (scene: Scene | null) => void;
+  /** Settings → "Speak explanations". */
+  voice?: boolean;
+  voiceName?: string;
+  /** Render only the speech-bubble row (no tablebase / advanced panel). Used for the pinned top bar. */
+  bubbleOnly?: boolean;
+  /** Render everything except the bubble row (a pinned bar elsewhere already shows it). */
+  hideBubble?: boolean;
 }
 
-export function CoachBubble({ san, quality, color, evalText, moveKey, compact, fork, fen, onPlayTablebase }: CoachBubbleProps) {
+export function CoachBubble({ san, quality, color, evalText, moveKey, compact, fork, fen, onPlayTablebase, advanced, explainInput, previewActive, onScene, voice, voiceName, bubbleOnly, hideBubble }: CoachBubbleProps) {
   const [lang, setLang] = useState<'en' | 'ar'>('en');
 
   // English -> (2s of Darija) -> English -> ..., restarting on every new move.
@@ -197,8 +214,7 @@ export function CoachBubble({ san, quality, color, evalText, moveKey, compact, f
   const avatar = compact ? 56 : 88;
   const dot = compact ? 24 : 34;
 
-  return (
-    <div>
+  const bubbleRow = (
     <div className="flex items-end gap-1 rounded-xl bg-ink-900 px-3 pt-3" style={{ minHeight: avatar + 12 }}>
       <CoachAvatar size={avatar} angry={angry} />
 
@@ -247,7 +263,26 @@ export function CoachBubble({ san, quality, color, evalText, moveKey, compact, f
         @media (prefers-reduced-motion: reduce) { .coach-swap, .coach-angry, .coach-anger-mark { animation: none; } }
       `}</style>
     </div>
+  );
+
+  // Pinned top bar: just the bubble.
+  if (bubbleOnly) return bubbleRow;
+
+  return (
+    <div>
+    {!hideBubble && bubbleRow}
     {fen && <TablebaseNote fen={fen} compact={compact} onPlayLine={onPlayTablebase} />}
+    {advanced && explainInput && onScene && (
+      <AdvancedCoach
+        input={explainInput}
+        moveKey={moveKey}
+        previewActive={!!previewActive}
+        onScene={onScene}
+        compact={compact}
+        voice={voice}
+        voiceName={voiceName}
+      />
+    )}
     </div>
   );
 }

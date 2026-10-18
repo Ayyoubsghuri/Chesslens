@@ -109,6 +109,12 @@ export interface Settings {
   openaiApiKey: string;
   analysisDepth: number;
   coachModel: string;
+  /** Advanced coach mode: step-by-step move explanations under the coach bubble. */
+  advancedCoach?: boolean;
+  /** Advanced coach reads each step aloud (Puter.js text-to-speech, free). */
+  coachVoice?: boolean;
+  /** Voice used for the spoken explanation (e.g. 'Joanna'). */
+  coachVoiceName?: string;
 }
 
 export type View = 'analysis' | 'coach' | 'drills';

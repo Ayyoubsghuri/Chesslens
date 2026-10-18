@@ -12,6 +12,7 @@ import { detectKnightFork } from '@/lib/knight-fork';
 import { formatEval, evalToPawns, analyzePosition } from '@/lib/engine';
 import { classifyMove } from '@/lib/analysis';
 import { useElementSize } from '@/lib/useElementSize';
+import type { ExplainInput, Scene, SceneArrow } from '@/lib/coach-explain';
 import type { AnalysisResult, AnalyzedMove, MoveQuality, PieceColor } from '@/lib/types';
 import {
   ChevronLeft, ChevronRight, AlertTriangle, Target, TrendingUp, Award,
@@ -533,9 +534,14 @@ interface AnalysisViewProps {
   onCoachExplain: (move: AnalyzedMove) => void;
   /** Engine depth used to review free/explore moves. Defaults to 12 if not provided. */
   depth?: number;
+  /** Settings → Advanced coach mode. */
+  advancedCoach?: boolean;
+  /** Settings → Speak explanations (Puter.js TTS). */
+  coachVoice?: boolean;
+  coachVoiceName?: string;
 }
 
-export function AnalysisView({ analysis, currentIndex, onIndexChange, onCoachExplain, depth = 12 }: AnalysisViewProps) {
+export function AnalysisView({ analysis, currentIndex, onIndexChange, onCoachExplain, depth = 12, advancedCoach = false, coachVoice = false, coachVoiceName }: AnalysisViewProps) {
   const moves = analysis.moves;
   const move = moves[currentIndex] || null;
   const displayQuality: MoveQuality | null = move ? correctedQuality(move) : null;
@@ -589,7 +595,7 @@ export function AnalysisView({ analysis, currentIndex, onIndexChange, onCoachExp
   }, [playing, currentIndex, moves.length, onIndexChange]);
 
   const [bestPreview, setBestPreview] = useState<{
-    fen: string; from: Square; to: Square; san: string; uci: string; label?: string;
+    fen: string; from: Square; to: Square; san: string; uci: string; label?: string; arrows?: SceneArrow[];
   } | null>(null);
   const lineTimerRef = useRef<number | null>(null);
 
@@ -912,6 +918,31 @@ export function AnalysisView({ analysis, currentIndex, onIndexChange, onCoachExp
     } catch {}
   }
 
+  /** Everything the advanced coach needs to explain the current move. */
+  const explainInput = useMemo<ExplainInput | null>(() => {
+    if (!advancedCoach || !move || !displayQuality) return null;
+    return {
+      fenBefore: move.fenBefore,
+      fenAfter: move.fenAfter,
+      san: move.san,
+      color: move.color as 'w' | 'b',
+      quality: displayQuality,
+      isPlayedBest,
+      bestUci: engineBestUci,
+      evalBefore: move.evalBefore,
+      evalAfter: move.evalAfter,
+      depth,
+    };
+  }, [advancedCoach, move, displayQuality, isPlayedBest, engineBestUci, depth]);
+
+  /** The advanced coach puts a scene (position + arrows) on the board, or null to go back to the game. */
+  function showCoachScene(scene: Scene | null) {
+    stopLine();
+    setPlaying(false);
+    if (!scene) { setBestPreview(null); return; }
+    setBestPreview({ fen: scene.fen, from: scene.from, to: scene.to, san: scene.san, uci: scene.uci, label: 'Coach', arrows: scene.arrows });
+  }
+
   /** Play a list of positions on the board, one per second (used by the tablebase sequence). */
   function playFrames(frames: { fen: string; from: Square; to: Square; san: string; uci: string }[], label: string) {
     if (frames.length === 0) return;
@@ -992,6 +1023,7 @@ export function AnalysisView({ analysis, currentIndex, onIndexChange, onCoachExp
               fen={boardFen}
               orientation={orientation}
               lastMove={moveCoords}
+              arrows={bestPreview?.arrows ?? null}
               bestMoveUci={
                 bestPreview
                   ? null
@@ -1272,6 +1304,12 @@ export function AnalysisView({ analysis, currentIndex, onIndexChange, onCoachExp
                 fork={!!forkTargets}
                 fen={move.fenAfter}
                 onPlayTablebase={playFrames}
+                advanced={advancedCoach}
+                voice={coachVoice}
+                voiceName={coachVoiceName}
+                explainInput={explainInput}
+                previewActive={!!bestPreview}
+                onScene={showCoachScene}
         />
         <p className="px-2 pt-2 pb-1 text-xs text-ink-400">
           {forkBlurb ?? (displayQuality === 'book' ? bookText : qualityBlurb(displayQuality!, isPlayedBest))}
@@ -1480,6 +1518,22 @@ export function AnalysisView({ analysis, currentIndex, onIndexChange, onCoachExp
       className="grid grid-cols-1 lg:grid-cols-[minmax(0,580px)_1fr_380px] gap-4 sm:gap-6"
     >
       <div className="flex flex-col gap-4 min-w-0">
+        {/* Mobile: coach bubble pinned at the top so it stays visible together with the board */}
+        {!isExploring && move && moveMeta && (
+          <div className="lg:hidden sticky top-0 z-30 -mx-4 px-4 pb-2 pt-1 bg-ink-900">
+            <CoachBubble
+              compact
+              bubbleOnly
+              san={move.san}
+              quality={displayQuality!}
+              color={moveMeta.color}
+              evalText={move.evalAfter ? formatEval(move.evalAfter) : null}
+              moveKey={move.index}
+              fork={!!forkTargets}
+            />
+          </div>
+        )}
+
         {/* Mobile: row runs edge to edge (cancels the page's px-4). Desktop: unchanged. */}
         <div className="flex justify-center items-stretch gap-1.5 sm:gap-2 -mx-4 w-[calc(100%+2rem)] lg:mx-0 lg:w-full">
           <div className="hidden lg:flex">
@@ -1552,7 +1606,7 @@ export function AnalysisView({ analysis, currentIndex, onIndexChange, onCoachExp
 
 
 
-        {/* Mobile: coach card right below the navigation buttons */}
+        {/* Mobile: coach card right below the navigation buttons (bubble itself is pinned at the top) */}
         <div className="lg:hidden">
         {isExploring ? (
           <FreeMoveReviewCard review={exploreReview} />
@@ -1560,6 +1614,7 @@ export function AnalysisView({ analysis, currentIndex, onIndexChange, onCoachExp
           <div className="card p-0 overflow-hidden">
             <div className="p-3 pb-0">
               <CoachBubble
+                hideBubble
                 san={move.san}
                 quality={displayQuality!}
                 color={moveMeta.color}
@@ -1568,6 +1623,12 @@ export function AnalysisView({ analysis, currentIndex, onIndexChange, onCoachExp
                 fork={!!forkTargets}
                 fen={move.fenAfter}
                 onPlayTablebase={playFrames}
+                advanced={advancedCoach}
+                voice={coachVoice}
+                voiceName={coachVoiceName}
+                explainInput={explainInput}
+                previewActive={!!bestPreview}
+                onScene={showCoachScene}
               />
             </div>
             <p className="px-4 py-3 text-sm text-ink-400">{blurbText}</p>
@@ -1636,6 +1697,12 @@ export function AnalysisView({ analysis, currentIndex, onIndexChange, onCoachExp
                 fork={!!forkTargets}
                 fen={move.fenAfter}
                 onPlayTablebase={playFrames}
+                advanced={advancedCoach}
+                voice={coachVoice}
+                voiceName={coachVoiceName}
+                explainInput={explainInput}
+                previewActive={!!bestPreview}
+                onScene={showCoachScene}
               />
             </div>
             <p className="px-4 py-3 text-sm text-ink-400">{blurbText}</p>

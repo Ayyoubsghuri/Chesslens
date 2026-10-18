@@ -13,6 +13,8 @@ interface ChessBoardProps {
   highlightSquare?: Square | null;
   lastMove?: { from: Square; to: Square } | null;
   bestMoveUci?: string | null;
+  /** Extra arrows (advanced coach). */
+  arrows?: { from: Square; to: Square; color: 'green' | 'red' | 'blue' | 'yellow' }[] | null;
   onSquareClick?: (square: Square) => void;
   size?: number;
   annotationSquare?: Square | null;
@@ -98,6 +100,7 @@ export function ChessBoard({
   highlightSquare = null,
   lastMove = null,
   bestMoveUci = null,
+  arrows = null,
   onSquareClick,
   size = 480,
   annotationSquare = null,
@@ -374,6 +377,9 @@ export function ChessBoard({
         brush: 'green',
       });
     }
+    for (const a of arrows ?? []) {
+      autoShapes.push({ orig: a.from as Key, dest: a.to as Key, brush: a.color });
+    }
     if (annotationSquare && annotationColor) {
       autoShapes.push({
         orig: annotationSquare as Key,
@@ -436,6 +442,7 @@ export function ChessBoard({
     spotlightOn,
     highlightSquare,
     bestMoveUci,
+    arrows,
     annotationSquare,
     annotationColor,
     gameState.inCheck,

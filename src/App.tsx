@@ -24,7 +24,7 @@ import { Loader2, Plus, Settings as SettingsIcon, BarChart3, GraduationCap, Targ
 function App() {
   const [games, setGames] = useState<ImportedGame[]>([]);
   const [analyses, setAnalyses] = useState<Record<string, AnalysisResult>>({});
-  const [settings, setSettings] = useState<SettingsType>({ openaiApiKey: '', analysisDepth: 12, coachModel: 'gpt-4o-mini' });
+  const [settings, setSettings] = useState<SettingsType>({ openaiApiKey: '', analysisDepth: 12, coachModel: 'gpt-4o-mini', advancedCoach: false });
   const [selectedGameId, setSelectedGameId] = useState<string | null>(null);
   const [currentMoveIndex, setCurrentMoveIndex] = useState(0);
   const [view, setView] = useState<View>('analysis');
@@ -62,6 +62,12 @@ function App() {
   const selectedGame = games.find(g => g.id === selectedGameId) || null;
   const selectedAnalysis = selectedGameId ? analyses[selectedGameId] : null;
   const outcome = selectedGame ? getGameOutcome(selectedGame) : null;
+
+  /**
+   * Inside an analyzed game: on phones the header shrinks (no tab row, no tagline, not sticky)
+   * so the coach bubble is the first thing you see.
+   */
+  const inGame = page === 'home' && !!selectedGame && !!selectedAnalysis;
 
   const handleImport = useCallback((imported: ImportedGame[]) => {
     setGames(prev => {
@@ -197,19 +203,22 @@ function App() {
 
   return (
     <div className="min-h-screen flex flex-col">
-      <header className="border-b border-ink-800 bg-ink-900/80 backdrop-blur-md sticky top-0 z-40">
+      <header className={`border-b border-ink-800 bg-ink-900/80 backdrop-blur-md ${inGame ? 'lg:sticky' : 'sticky'} top-0 z-40`}>
         <div className="max-w-7xl mx-auto px-4 py-3 flex flex-wrap items-center justify-between gap-x-4 gap-y-2">
-          <button onClick={() => setPage('home')} className="flex items-center gap-2.5 text-left" title="Home">
+          <button onClick={() => { setPage('home'); }} className="flex items-center gap-2.5 text-left" title="Home">
             <div className="w-9 h-9 rounded-lg bg-gradient-to-br from-brand-400 to-brand-600 flex items-center justify-center shadow-lg">
               <ChessIcon size={20} className="text-white" />
             </div>
             <div>
               <h1 className="text-lg font-bold tracking-tight">ChessLens</h1>
-              <p className="text-xs text-ink-400 -mt-0.5">Analyze. Learn. Improve.</p>
+              <p className={`text-xs text-ink-400 -mt-0.5 ${inGame ? 'hidden sm:block' : ''}`}>Analyze. Learn. Improve.</p>
             </div>
           </button>
 
-          <nav className="flex items-center gap-1 order-last sm:order-none w-full sm:w-auto overflow-x-auto" aria-label="Main">
+          <nav
+            className={`${inGame ? 'hidden sm:flex' : 'flex'} items-center gap-1 order-last sm:order-none w-full sm:w-auto overflow-x-auto`}
+            aria-label="Main"
+          >
             <NavTab active={page === 'home'} onClick={() => setPage('home')} icon={Home} label="Home" />
             <NavTab active={page === 'learn'} onClick={() => setPage('learn')} icon={GraduationCap} label="Learn Path" />
             <NavTab active={page === 'openings'} onClick={() => setPage('openings')} icon={BookOpen} label="Openings" />
@@ -349,6 +358,9 @@ function App() {
                 onIndexChange={setCurrentMoveIndex}
                 onCoachExplain={handleCoachExplain}
                 depth={settings.analysisDepth}
+                advancedCoach={!!settings.advancedCoach}
+                coachVoice={!!settings.coachVoice}
+                coachVoiceName={settings.coachVoiceName}
               />
             ) : view === 'coach' ? (
               <CoachPanel move={coachMove || currentMove} settings={settings} moves={selectedAnalysis.moves} onNavigate={handleCoachNavigate} />
