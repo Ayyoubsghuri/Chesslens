@@ -8,11 +8,12 @@ import { CoachBubble } from './CoachBubble';
 import { BrilliantLineButton } from './BrilliantLineButton';
 import { GameEndBoard, detectGameEnd } from './GameEndBoard';
 import { CapturedPieces } from './CapturedPieces';
+import { CoachSquares } from './CoachSquares';
 import { detectKnightFork } from '@/lib/knight-fork';
 import { formatEval, evalToPawns, analyzePosition } from '@/lib/engine';
 import { classifyMove } from '@/lib/analysis';
 import { useElementSize } from '@/lib/useElementSize';
-import type { ExplainInput, Scene, SceneArrow } from '@/lib/coach-explain';
+import { sceneSquares, sceneLines, type SceneLine, type ExplainInput, type Scene, type SceneArrow } from '@/lib/coach-explain';
 import type { AnalysisResult, AnalyzedMove, MoveQuality, PieceColor } from '@/lib/types';
 import {
   ChevronLeft, ChevronRight, AlertTriangle, Target, TrendingUp, Award,
@@ -596,6 +597,10 @@ export function AnalysisView({ analysis, currentIndex, onIndexChange, onCoachExp
 
   const [bestPreview, setBestPreview] = useState<{
     fen: string; from: Square; to: Square; san: string; uci: string; label?: string; arrows?: SceneArrow[];
+    /** Squares the coach is talking about (lit up on the board). */
+    squares?: Square[];
+    /** Whole lines (file / rank / diagonal) the coach is talking about. */
+    lines?: SceneLine[];
   } | null>(null);
   const lineTimerRef = useRef<number | null>(null);
 
@@ -940,7 +945,7 @@ export function AnalysisView({ analysis, currentIndex, onIndexChange, onCoachExp
     stopLine();
     setPlaying(false);
     if (!scene) { setBestPreview(null); return; }
-    setBestPreview({ fen: scene.fen, from: scene.from, to: scene.to, san: scene.san, uci: scene.uci, label: 'Coach', arrows: scene.arrows });
+    setBestPreview({ fen: scene.fen, from: scene.from, to: scene.to, san: scene.san, uci: scene.uci, label: 'Coach', arrows: scene.arrows, squares: sceneSquares(scene), lines: sceneLines(scene) });
   }
 
   /** Play a list of positions on the board, one per second (used by the tablebase sequence). */
@@ -1019,6 +1024,7 @@ export function AnalysisView({ analysis, currentIndex, onIndexChange, onCoachExp
       blackName={analysis.game?.black}
     >
       {(boardFen, effectPlaying) => (
+        <div className="relative">
             <ChessBoard
               fen={boardFen}
               orientation={orientation}
@@ -1057,6 +1063,10 @@ export function AnalysisView({ analysis, currentIndex, onIndexChange, onCoachExp
               edgeToEdge
               onUserMove={handleUserMove}
             />
+            {((bestPreview?.squares?.length ?? 0) > 0 || (bestPreview?.lines?.length ?? 0) > 0) && (
+              <CoachSquares squares={bestPreview?.squares ?? []} lines={bestPreview?.lines ?? []} orientation={orientation} />
+            )}
+        </div>
       )}
     </GameEndBoard>
   );

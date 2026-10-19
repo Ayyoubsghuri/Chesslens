@@ -9,6 +9,7 @@ import { analyzePosition, evalToPawns, formatEval } from '@/lib/engine';
 import { detectKnightFork } from '@/lib/knight-fork';
 import { describeTactics, winnableCaptures } from '@/lib/tactics';
 import { threats, missedTactic, tacticalMoves } from '@/lib/tactics-lookahead';
+import { moveInsights, movePurpose, positionFacts, coachPlan, type Fact, type FactKind } from '@/lib/positional';
 
 export type Seg = { t: string; hl?: 'key' | 'good' | 'bad' };
 export type ArrowColor = 'green' | 'red' | 'blue' | 'yellow';
@@ -24,7 +25,22 @@ export interface Scene {
   arrows: SceneArrow[];
   /** Small label above the text, e.g. "Better move", "Why not Qxd5?" */
   chip?: string;
+  /** Extra squares to light up on the board (besides the ones named in the text). */
+  squares?: Square[];
+  /** Set on "Threat" scenes: the move that is threatened, so later scenes can point at it again. */
+  threat?: { san: string; does: string; afterCheck: boolean; arrows: SceneArrow[] };
+  /** Extra detail: hidden by default, shown when the player taps "Show more" (see visibleScenes). */
+  extra?: boolean;
+  /** Set on the "Why" scene of a mistake, so the app can count the player's typical mistakes over a game. */
+  cause?: { id: CauseId; label: string };
+  /**
+   * Set by the player while the coach is SPEAKING this scene: only squares the voice has already named should light up
+   * (instead of every square in the text at once). `done` = the sentence is finished. Absent = light everything (paused / muted).
+   */
+  spoken?: { named: Square[]; current: Square[]; done: boolean };
 }
+
+export type CauseId = 'hung-piece' | 'ignored-threat' | 'missed-tactic' | 'allowed-tactic' | 'greedy' | 'positional';
 
 export interface ExplainInput {
   fenBefore: string;
@@ -37,7 +53,16 @@ export interface ExplainInput {
   evalBefore?: any;
   evalAfter?: any;
   depth: number;
+  /** Who is learning: beginners get the short, simple version; advanced players get everything. Default: intermediate. */
+  level?: CoachLevel;
 }
+
+export type CoachLevel = 'beginner' | 'intermediate' | 'advanced';
+/** Rating -> level (rough: under 1000 beginner, 1000-1800 intermediate, above advanced). */
+export const levelFromRating = (rating?: number | null): CoachLevel =>
+  rating == null ? 'intermediate' : rating < 1000 ? 'beginner' : rating < 1800 ? 'intermediate' : 'advanced';
+/** Advanced players want all the detail straight away; others get the short version with "Show more". */
+export const showAllByDefault = (level?: CoachLevel) => level === 'advanced';
 
 const VAL: Record<string, number> = { p: 1, n: 3, b: 3, r: 5, q: 9, k: 0 };
 const NAME: Record<string, string> = { p: 'pawn', n: 'knight', b: 'bishop', r: 'rook', q: 'queen', k: 'king' };
@@ -52,6 +77,39 @@ const sideName = (c: 'w' | 'b') => (c === 'w' ? 'White' : 'Black');
 const other = (c: 'w' | 'b'): 'w' | 'b' => (c === 'w' ? 'b' : 'w');
 const cap = (s: string) => s.charAt(0).toUpperCase() + s.slice(1);
 const article = (w: string) => (/^[aeiou]/.test(w) ? 'an' : 'a');
+/** "a **fork**", "an **x-ray**", "**checkmate**": the tactic's name as a coach would say it. */
+const named = (name: string) => {
+  const n = name.toLowerCase();
+  if (n === 'checkmate' || n.startsWith('removing')) return `**${n}**`;
+  if (n.startsWith('greek')) return 'the classic **Greek gift**';
+  return `${article(n)} **${n}**`;
+};
+/** Turns a tactic's verb phrase into a clause that does not repeat the tactic's name ("That's a fork: it attacks ..."). */
+const howClause = (t: { kind: string; text: string }) => {
+  switch (t.kind) {
+    case 'fork': return `it attacks the ${t.text.replace(/^forks the /, '')} at once`;
+    case 'skewer': return `it attacks the ${t.text.replace(/^skewers the /, '')}`;
+    case 'pin': return `it ties the ${t.text.replace(/^pins the /, '')}`;
+    case 'mate-threat': return `it sets up ${t.text.replace(/^threatens /, '')}`;
+    case 'double-check': return 'two pieces attack the king at once, so it has to move';
+    case 'trapped': return `it ${t.text.replace(/^traps /, 'attacks ').replace(': it is attacked and has no safe square to go to', ', and it has nowhere safe to go')}`;
+    default: return `it ${t.text}`;
+  }
+};
+/** Same position + same move always gives the same wording, but different moves sound different. */
+const pickVar = (seed: string, opts: string[]) => {
+  let h = 0;
+  for (const ch of seed) h = (h * 31 + ch.charCodeAt(0)) >>> 0;
+  return opts[h % opts.length];
+};
+const GOOD_OPEN: Record<string, string[]> = {
+  brilliant: ['Brilliant!', 'Wow, what a find.'],
+  best: ['This is the best move here.', 'Spot on, this is the best move.'],
+  great: ['Great move.', 'Really strong move.'],
+  excellent: ['Excellent move.', 'Very nicely played.'],
+  good: ['Good move.', 'A solid choice.'],
+  book: ['A well-known book move.', 'Standard opening theory.'],
+};
 
 export function parseSegs(s: string): Seg[] {
   return s.split(/(\*\*.+?\*\*|\+\+.+?\+\+|~~.+?~~)/g).filter(Boolean).map((p) => {
@@ -62,6 +120,67 @@ export function parseSegs(s: string): Seg[] {
   });
 }
 export const plainText = (segs: Seg[]) => segs.map((s) => s.t).join('');
+/**
+ * Squares a scene's text talks about ("a1", "the knight on e5", "Rxb7" -> b7), so the board can light them up.
+ * The lookbehind skips letters inside words but allows capital piece letters and the "x" of a capture.
+ */
+export function sceneSquares(scene: Scene, max = 8): Square[] {
+  // While the voice is speaking, light only what has been said so far (extra squares appear when the sentence ends).
+  if (scene.spoken) {
+    return [...new Set([...(scene.spoken.done ? scene.squares ?? [] : []), ...scene.spoken.named])].slice(0, max) as Square[];
+  }
+  const found = plainText(scene.text).match(/(?<![a-wyz0-9])[a-h][1-8](?![a-z0-9])/g) ?? [];
+  return [...new Set([...(scene.squares ?? []), ...found])].slice(0, max) as Square[];
+}
+/** The square the voice is saying right now (for a brighter highlight), or [] when not speaking. */
+export const sceneCurrentSquares = (scene: Scene): Square[] => scene.spoken?.current ?? [];
+export interface SceneLine { label: string; squares: Square[] }
+
+/**
+ * Lines (files, the 7th rank, diagonals) a scene's text talks about, so the board can colour the whole line.
+ *  - "the d-file" / "open e-file"        -> every square of that file
+ *  - "seventh rank"                       -> that rank (the one of the first square named: 7 or 2)
+ *  - "...bishop on b7 rakes a diagonal"   -> the open rays of the bishop / queen on the first square named
+ */
+export function sceneLines(scene: Scene): SceneLine[] {
+  // Files / ranks / diagonals appear once the sentence has been spoken, not when the text shows up.
+  if (scene.spoken && !scene.spoken.done) return [];
+  const text = plainText(scene.text);
+  const named = (text.match(/(?<![a-wyz0-9])[a-h][1-8](?![a-z0-9])/g) ?? []) as string[];
+  const out: SceneLine[] = [];
+  for (const f of new Set([...text.matchAll(/\b([a-h])-file\b/g)].map((m) => m[1]))) {
+    out.push({ label: `${f}-file`, squares: [1, 2, 3, 4, 5, 6, 7, 8].map((r) => `${f}${r}` as Square) });
+  }
+  if (/\b(seventh|7th) rank\b/.test(text)) {
+    const r = named.map((q) => Number(q[1])).find((n) => n === 7 || n === 2) ?? 7;
+    out.push({ label: `${r === 7 ? '7th' : '2nd'} rank`, squares: 'abcdefgh'.split('').map((f) => `${f}${r}` as Square) });
+  }
+  if (/diagonal/.test(text) && named.length) {
+    try {
+      const c = new Chess(scene.fen);
+      const start = named[0];
+      const piece = c.get(start as Square);
+      if (piece && (piece.type === 'b' || piece.type === 'q')) {
+        const f0 = start.charCodeAt(0) - 97, r0 = Number(start[1]) - 1;
+        const rays: Square[][] = [];
+        for (const [df, dr] of [[1, 1], [1, -1], [-1, 1], [-1, -1]]) {
+          const ray: Square[] = [];
+          let f = f0 + df, r = r0 + dr;
+          while (f >= 0 && f < 8 && r >= 0 && r < 8) {
+            const q = ('abcdefgh'[f] + (r + 1)) as Square;
+            ray.push(q);
+            if (c.get(q)) break;
+            f += df; r += dr;
+          }
+          if (ray.length >= 2) rays.push(ray);
+        }
+        const best = rays.sort((a, b) => b.length - a.length).slice(0, 2).flat();
+        if (best.length) out.push({ label: /long diagonal/.test(text) ? 'long diagonal' : 'diagonal', squares: best });
+      }
+    } catch { /* ignore */ }
+  }
+  return out.slice(0, 3);
+}
 /** Reading time for a scene (ms). */
 export const sceneDuration = (s: Scene) => Math.min(9000, Math.max(3200, plainText(s.text).length * 62));
 
@@ -187,11 +306,12 @@ const colorArrows = (arrows: { from: Square; to: Square }[], color: ArrowColor):
 
 /** Label shown on the chip, and the color of the tactic's lines on the board. */
 const KIND_LABEL: Record<string, string> = {
-  mate: 'Checkmate', fork: 'Fork', pin: 'Pin', skewer: 'Skewer', discovered: 'Discovered attack',
+  mate: 'Checkmate', 'double-check': 'Double check', 'greek-gift': 'Greek gift', 'remove-defender': 'Removing the defender',
+  trapped: 'Trapped piece', fork: 'Fork', pin: 'Pin', skewer: 'Skewer', discovered: 'Discovered attack',
   'mate-threat': 'Mate threat', promotion: 'Promotion', capture: 'Wins material',
 };
 const KIND_COLOR: Record<string, ArrowColor> = {
-  mate: 'green', fork: 'yellow', pin: 'blue', skewer: 'blue', discovered: 'blue',
+  mate: 'green', 'double-check': 'yellow', 'greek-gift': 'yellow', 'remove-defender': 'blue', trapped: 'blue', fork: 'yellow', pin: 'blue', skewer: 'blue', discovered: 'blue',
   'mate-threat': 'yellow', promotion: 'yellow', capture: 'blue',
 };
 
@@ -313,6 +433,10 @@ function purpose(fenBefore: string, m: PlyMove, fenAfter: string, mover: 'w' | '
   const fullmove = Number(fenBefore.split(' ')[5] ?? 1);
   if (!bits.length && (m.piece === 'n' || m.piece === 'b') && /[18]/.test(m.from[1]) && fullmove <= 12) bits.push(`develops the ${NAME[m.piece]} toward the center`);
   if (!bits.length && m.piece === 'p' && ['e4', 'd4', 'e5', 'd5'].includes(m.to)) bits.push('fights for the center');
+  if (!bits.length) {
+    // Positional reason: open file, outpost, weak pawn for the opponent, king pressure...
+    try { const pp = movePurpose(fenBefore, m as any, fenAfter); if (pp) bits.push(pp); } catch { /* ignore */ }
+  }
   if (!bits.length) bits.push('improves the position without giving the opponent anything to attack');
   // "a, b and c" instead of "a and b and c"
   return bits.length > 1 ? `${bits.slice(0, -1).join(', ')} and ${bits[bits.length - 1]}` : bits[0];
@@ -358,8 +482,29 @@ export function buildCoreScenes(inp: ExplainInput): Scene[] {
       text += ` — it throws away the advantage: the position drops from **${formatEval(inp.evalBefore)}** to **${formatEval(inp.evalAfter)}**.`;
     } else text += '.';
   } else {
-    text += `: it ${purpose(inp.fenBefore, played, inp.fenAfter, mover)}.`;
-    if (inp.isPlayedBest && inp.quality !== 'book') text += ' The engine agrees — this is its top choice.';
+    const tacG = pickTactic(inp.fenBefore, played, inp.fenAfter);
+    const opener = pickVar(inp.fenAfter + inp.san, GOOD_OPEN[inp.quality] ?? ['Good move.']);
+    if (tacG && tacG.kind === 'mate') {
+      const expl = tacG.text.split(': ')[1];
+      text = `${describeMove(played)} — that's ${named(tacG.name)}${expl ? `: ${expl}` : ''}.`;
+    } else if (tacG) {
+      text = `${opener} ${describeMove(played)}. That's ${named(tacG.name)}: ${howClause(tacG)}.`;
+    } else {
+      text = `${opener} ${describeMove(played)} — it ${purpose(inp.fenBefore, played, inp.fenAfter, mover)}.`;
+    }
+    // A strong move whose piece can simply be taken is a sacrifice: say so, otherwise "brilliant" is unexplained.
+    const sac = tacG?.kind === 'mate' ? null : hangingInfo(inp.fenAfter, played.to, mover);
+    if (sac && sac.gain >= 2 && ['brilliant', 'great', 'best'].includes(inp.quality)) {
+      // What does the sacrifice buy? Taken from the engine's line, never guessed.
+      const moverMates = typeof inp.evalAfter?.mate === 'number' && (mover === 'w' ? inp.evalAfter.mate > 0 : inp.evalAfter.mate < 0);
+      let buys: string;
+      if (moverMates) buys = `${side} gets a forced **checkmate**`;
+      else if (lineMat.swing >= 1 && lineMat.best) buys = `after best play ${side} comes out ++ahead++, winning ${article(NAME[lineMat.best])} ${NAME[lineMat.best]}`;
+      else if (after != null && after >= 0.8) buys = `${side} gets a strong attack, and the engine rates it **${formatEval(inp.evalAfter)}**`;
+      else buys = `${side} gets more in return than it gives up`;
+      text += ` It's a **sacrifice**: ${oppName} can take the ${NAME[played.piece]}, but ${buys}.`;
+    }
+    if (inp.isPlayedBest && inp.quality !== 'book' && tacG?.kind !== 'mate') text += " It's also the engine's top choice.";
   }
   // Lines on the board: the tactic (fork / pin / skewer / ...) or, failing that, what the moved piece now attacks.
   // A bad move whose piece just hangs is explained by "can win the piece for free", not by a tactic.
@@ -371,10 +516,11 @@ export function buildCoreScenes(inp: ExplainInput): Scene[] {
       arrows.push({ from: played.to, to: t.square, color: 'blue' });
     }
   }
-  scenes.push(mk(inp.fenAfter, played, text, arrows, tac ? `${inp.san} · ${KIND_LABEL[tac.kind]}` : `${inp.san}`));
+  scenes.push(mk(inp.fenAfter, played, text, arrows, tac ? `${inp.san} · ${tac.name}` : `${inp.san}`));
 
   // ---- What happens next (punishment if bad, follow-up if good)
-  const lineSc = lineScenes(inp.fenAfter, refutation, mover, bad ? 5 : 3, bad ? 'reply' : 'then');
+  // After the best move there is nothing to warn about: explain why it is good and stop (no "the game could go...").
+  const lineSc = !bad && inp.isPlayedBest ? [] : lineScenes(inp.fenAfter, refutation, mover, bad ? 5 : 3, bad ? 'reply' : 'then');
   scenes.push(...lineSc);
   if (bad && lineSc.length) {
     const phrase = materialPhrase(lineMat);
@@ -388,11 +534,11 @@ export function buildCoreScenes(inp: ExplainInput): Scene[] {
       const n = Math.abs(mateN);
       resultText = `This loses the game: ${oppName} has a forced **checkmate in ${n}**${n === 1 ? ' — it comes on the very next move' : ''}.${before != null ? ` The position was ${formatEval(inp.evalBefore)} before the move.` : ''}`;
     } else if (after != null && after <= -5) {
-      resultText = `After this, ${side} is **completely lost**${phrase ? ` and ${phrase}` : ''}. Engine: **${formatEval(inp.evalAfter)}**${wasText}.`;
+      resultText = `After this, ${side} is **completely lost**${phrase ? ` and ${phrase}` : ''}. The engine now shows **${formatEval(inp.evalAfter)}**${wasText}.`;
     } else if (after != null && after <= -2.5) {
-      resultText = `After this, ${side} is **clearly losing**${phrase ? ` and ${phrase}` : ''}. Engine: **${formatEval(inp.evalAfter)}**${wasText}.`;
+      resultText = `After this, ${side} is **clearly losing**${phrase ? ` and ${phrase}` : ''}. The engine now shows **${formatEval(inp.evalAfter)}**${wasText}.`;
     } else {
-      resultText = `After this, ${side} ${phrase ?? 'is clearly worse'}. Engine: **${formatEval(inp.evalAfter)}**${wasText || ''}.`;
+      resultText = `After this, ${side} ${phrase ?? 'is clearly worse'}. The engine now shows **${formatEval(inp.evalAfter)}**${wasText || ''}.`;
     }
     scenes.push({
       ...last,
@@ -411,8 +557,8 @@ export function buildCoreScenes(inp: ExplainInput): Scene[] {
       scenes.push(mk(
         c.fen(), bm,
         bad
-          ? `Instead, ${describeMove(bm)} was much stronger — it ${why}. The evaluation would have stayed around **${formatEval(inp.evalBefore)}**.`
-          : `The engine slightly prefers ${describeMove(bm)}, which ${why}.`,
+          ? `A much better choice was ${describeMove(bm)}. It ${why}, and the position would have stayed around **${formatEval(inp.evalBefore)}**.`
+          : `The engine likes ${describeMove(bm)} a little more: it ${why}.`,
         [{ from: bm.from, to: bm.to, color: 'green' }],
         `Better: ${bm.san}`,
       ));
@@ -445,7 +591,7 @@ async function ideaScenes(inp: ExplainInput, isCancelled: () => boolean): Promis
   const out: Scene[] = [];
 
   // What the mover threatens next (only meaningful after a sound move)
-  if (!bad && !inp.san.endsWith('#')) {
+  if (!bad && !inp.isPlayedBest && !inp.san.endsWith('#')) {
     await tick();
     if (isCancelled()) return [];
     // After a check the opponent MUST react, so "if they don't react" makes no sense:
@@ -463,14 +609,17 @@ async function ideaScenes(inp: ExplainInput, isCancelled: () => boolean): Promis
     }
     const p = fenFrom ? threats(fenFrom, mover, 2).find((x) => !hangsItsPiece(x, mover)) : undefined;
     if (p) {
-      out.push(mk(
+      const arrows = itemArrows(p, 'green');
+      const sc = mk(
         p.fen, p,
         reply
-          ? `${oppName} has to answer the check (for example ${reply}). After that it is ${side}'s move, and ${side} threatens **${p.san}**, which ${p.does}.`
-          : `Next idea: if ${oppName} doesn't react, ${side} plays **${p.san}**, which ${p.does}.`,
-        itemArrows(p, 'green'),
+          ? `${oppName} has to deal with the check first. After that, ${side} threatens **${p.san}**, which ${p.does}.`
+          : `${side} now threatens **${p.san}**, which ${p.does}. ${oppName} has to respond.`,
+        arrows,
         `Threat · ${KIND_LABEL[p.kind]}`,
-      ));
+      );
+      sc.threat = { san: p.san, does: p.does, afterCheck: !!reply, arrows };
+      out.push(sc);
     }
   }
 
@@ -486,7 +635,7 @@ async function ideaScenes(inp: ExplainInput, isCancelled: () => boolean): Promis
     if (d && bad) {
       out.push(mk(
         d.fen, d,
-        `${oppName} now has **${d.san}**, which ${d.does}.`,
+        `Watch out: ${oppName} now threatens **${d.san}**, which ${d.does}.`,
         itemArrows(d, 'red'),
         `Danger · ${KIND_LABEL[d.kind]}`,
       ));
@@ -533,7 +682,7 @@ async function ideaScenes(inp: ExplainInput, isCancelled: () => boolean): Promis
     if (miss && !isBestAlready && !hangsItsPiece(miss, mover)) {
       out.push(mk(
         miss.fen, miss,
-        `${side} had a strong tactic: **${miss.san}** ${miss.does}.`,
+        `${side} missed ${named(KIND_LABEL[miss.kind] ?? 'tactic')}: **${miss.san}** ${miss.does}.`,
         itemArrows(miss, 'green'),
         `Missed · ${KIND_LABEL[miss.kind]}`,
       ));
@@ -560,7 +709,7 @@ async function bestLineScenes(inp: ExplainInput): Promise<Scene[]> {
  * (within ~0.35 pawns of the position's value). Bad or tempting-but-losing moves are never shown.
  */
 async function alternativeScenes(inp: ExplainInput): Promise<Scene[]> {
-  if (BAD.includes(inp.quality)) return [];
+  if (BAD.includes(inp.quality) || inp.isPlayedBest) return [];
   const mover = inp.color;
   let played: any;
   try { played = new Chess(inp.fenBefore).move(inp.san); } catch { return []; }
@@ -613,9 +762,305 @@ async function alternativeScenes(inp: ExplainInput): Promise<Scene[]> {
   return out;
 }
 
+// ---------- why did the player go wrong? ----------
+
+export const CAUSE_LABEL: Record<CauseId, string> = {
+  'hung-piece': 'Left a piece loose',
+  'ignored-threat': 'Missed a threat',
+  'missed-tactic': 'Missed a tactic',
+  'allowed-tactic': 'Allowed a tactic',
+  greedy: 'Greedy capture',
+  positional: 'Gave up the advantage',
+};
+const CAUSE_HABIT: Record<CauseId, string> = {
+  'hung-piece': 'Habit to build: before you move a piece, check it is still protected on its new square.',
+  'ignored-threat': 'Habit to build: before every move, ask what your opponent is threatening right now.',
+  'missed-tactic': 'Habit to build: look at checks, captures and threats first, because that is where tactics hide.',
+  'allowed-tactic': 'Habit to build: once you pick a move, ask what your opponent can do to you in reply.',
+  greedy: 'Habit to build: before grabbing material, check what the capture gives your opponent.',
+  positional: 'Habit to build: when nothing is hanging, compare moves by piece activity and king safety.',
+};
+
+/**
+ * The reason behind a mistake, in plain words. Checked in order of how clearly it can be proven on the board:
+ * a piece left loose, a threat that was ignored, a tactic that was allowed, a tactic that was missed,
+ * a greedy capture, and finally "no single tactic, the advantage just slipped away".
+ * Opponent ideas are only used when the engine's own reply is that move (so we never blame a threat that doesn't work).
+ */
+function causeScene(inp: ExplainInput): Scene | null {
+  if (!BAD.includes(inp.quality)) return null;
+  const mover = inp.color, opp = other(mover);
+  const side = sideName(mover), oppName = sideName(opp);
+  let played: any;
+  try { played = new Chess(inp.fenBefore).move(inp.san); } catch { return null; }
+  const refu = (inp.evalAfter?.continuation ?? '').split(/\s+/).filter(Boolean) as string[];
+  const mat = (() => {
+    try {
+      const c = new Chess(inp.fenAfter);
+      for (const u of refu.slice(0, 6)) c.move({ from: u.slice(0, 2), to: u.slice(2, 4), promotion: u.length > 4 ? u[4] : undefined });
+      return netMaterial(inp.fenAfter, c.fen(), mover);
+    } catch { return { swing: 0, worst: null, best: null }; }
+  })();
+  const engineUses = (x: { from: string; to: string; kind: string }) =>
+    !refu.length || refu[0].slice(0, 4) === x.from + x.to || x.kind === 'mate';
+  const make = (id: CauseId, text: string, arrows: SceneArrow[]): Scene => {
+    const sc = mk(inp.fenAfter, played, `${text} ${CAUSE_HABIT[id]}`, arrows, `Why · ${CAUSE_LABEL[id]}`);
+    sc.cause = { id, label: CAUSE_LABEL[id] };
+    return sc;
+  };
+
+  try {
+    // 1. The piece that just moved can be won.
+    const hang = hangingInfo(inp.fenAfter, played.to, mover);
+    if (hang && hang.gain >= 2) {
+      return make('hung-piece',
+        `The cause: the ${NAME[played.piece]} on ${played.to} ${hang.free ? 'has no protection there' : 'can be taken by a cheaper piece'}, so ${oppName} simply wins material.`,
+        [{ from: hang.from, to: played.to, color: 'red' }]);
+    }
+
+    const dangersAfter = threats(inp.fenAfter, opp, 4).filter((x) => !hangsItsPiece(x, opp));
+
+    // 2. The opponent was already threatening something big, and the move did nothing about it.
+    const ignored = threats(inp.fenBefore, opp, 4)
+      .filter((t) => t.score >= 30 && !hangsItsPiece(t, opp))
+      .find((t) => engineUses(t) && dangersAfter.some((x) => x.from === t.from && x.to === t.to));
+    if (ignored) {
+      return make('ignored-threat',
+        `${oppName} was already threatening **${ignored.san}**, which ${ignored.does}. This move didn't deal with it.`,
+        itemArrows(ignored, 'red'));
+    }
+
+    // 3. The move created a new opportunity for the opponent.
+    const allowed = dangersAfter.find((x) => x.score >= 30 && engineUses(x));
+    if (allowed) {
+      return make('allowed-tactic',
+        allowed.kind === 'capture'
+          ? `This move lets ${oppName} play **${allowed.san}**, which ${allowed.does}.`
+          : `This move allowed ${named(KIND_LABEL[allowed.kind] ?? 'tactic')}: ${oppName} can play **${allowed.san}**, which ${allowed.does}.`,
+        itemArrows(allowed, 'red'));
+    }
+
+    // 4. The player had a real tactic and played something else.
+    const miss = missedTactic(inp.fenBefore, mover, inp.san);
+    if (miss && miss.score >= 30 && !hangsItsPiece(miss, mover)) {
+      return make('missed-tactic',
+        `${side} had ${named(KIND_LABEL[miss.kind] ?? 'tactic')} available: **${miss.san}** ${miss.does}.`,
+        itemArrows(miss, 'green'));
+    }
+
+    // 5. A small capture that costs more than it wins.
+    if (played.captured && VAL[played.captured] <= 3 && mat.swing <= -2 && mat.worst) {
+      return make('greedy',
+        `${side} took the ${NAME[played.captured]}, but it cost more than it won: after ${oppName}'s reply ${side} loses ${article(NAME[mat.worst])} ${NAME[mat.worst]}.`,
+        [{ from: played.from, to: played.to, color: 'red' }]);
+    }
+
+    // 6. No single tactic to blame.
+    const b = moverPawns(inp.evalBefore, mover), a = moverPawns(inp.evalAfter, mover);
+    if (b != null && a != null && b - a >= 0.8) {
+      return make('positional',
+        `There is no single tactic to blame: this move just gave away about **${(b - a).toFixed(1)}** pawns of advantage.`,
+        [{ from: played.from, to: played.to, color: 'red' }]);
+    }
+  } catch { /* ignore */ }
+  return null;
+}
+
+/** The cause of one mistake (or null for a good move): call it for every move of a game, then pass the ids to causeSummary. */
+export const moveCause = (inp: ExplainInput): { id: CauseId; label: string } | null => causeScene(inp)?.cause ?? null;
+
+/** Counts the "Why" scenes of a whole game: "Your most common mistake this game: ... (3 times). Habit to build: ..." */
+export function causeSummary(ids: CauseId[]): string | null {
+  if (!ids.length) return null;
+  const n = new Map<CauseId, number>();
+  ids.forEach((i) => n.set(i, (n.get(i) ?? 0) + 1));
+  const [top, count] = [...n.entries()].sort((x, y) => y[1] - x[1])[0];
+  return `Your most common mistake this game: ${CAUSE_LABEL[top].toLowerCase()} (${count} time${count > 1 ? 's' : ''}). ${CAUSE_HABIT[top]}`;
+}
+
+// ---------- "Find a better move": let the player retry a mistake ----------
+
+export interface RetryChallenge {
+  fen: string;
+  side: 'w' | 'b';
+  prompt: string;
+  /** Progressive hints: which piece, which square it starts on, and finally the move. */
+  hints: string[];
+  bestUci: string;
+}
+
+/** Puzzle made from a mistake: the position before the move, same side to move. null if there is nothing to retry. */
+export function retryChallenge(inp: ExplainInput): RetryChallenge | null {
+  if (!BAD.includes(inp.quality) || !inp.bestUci || inp.bestUci.length < 4) return null;
+  try {
+    const c = new Chess(inp.fenBefore);
+    const from = inp.bestUci.slice(0, 2) as Square;
+    const piece = c.get(from);
+    if (!piece) return null;
+    const bm = c.move({ from, to: inp.bestUci.slice(2, 4), promotion: inp.bestUci.length > 4 ? inp.bestUci[4] : undefined });
+    return {
+      fen: inp.fenBefore,
+      side: inp.color,
+      prompt: `That was ${WORD[inp.quality] ?? 'a mistake'}. Can you find a better move for ${sideName(inp.color)}?`,
+      hints: [
+        `Think about your ${NAME[piece.type]}.`,
+        `The move starts from ${from}.`,
+        `The best move is ${bm.san}.`,
+      ],
+      bestUci: inp.bestUci,
+    };
+  } catch { return null; }
+}
+
+/**
+ * Checks the player's retry. The engine's move is always right, but so is any move the engine rates
+ * within ~0.35 pawns of it, so the player is not punished for finding another good idea.
+ */
+export async function checkRetryMove(inp: ExplainInput, uci: string): Promise<{ ok: boolean; text: string }> {
+  const best = inp.bestUci ?? '';
+  if (best.length >= 4 && uci.slice(0, 4) === best.slice(0, 4)) {
+    return { ok: true, text: "Yes, that's the engine's move. Well found!" };
+  }
+  try {
+    const c = new Chess(inp.fenBefore);
+    const m = c.move({ from: uci.slice(0, 2), to: uci.slice(2, 4), promotion: uci.length > 4 ? uci[4] : undefined });
+    const ev: any = await analyzePosition(c.fen(), Math.min(inp.depth, 12));
+    const ref = moverPawns(inp.evalBefore, inp.color);
+    const alt = moverPawns(ev, inp.color);
+    if (ref != null && alt != null && ref - alt <= 0.35) {
+      return { ok: true, text: `${m.san} works too: the engine rates it **${formatEval(ev)}**, about as good as its own choice.` };
+    }
+    return { ok: false, text: `${m.san} doesn't solve it${alt != null ? `: the engine rates it **${formatEval(ev)}**` : ''}. Want a hint?` };
+  } catch {
+    return { ok: false, text: "That move isn't legal here. Try another one." };
+  }
+}
+
+/** The short version: verdict, why, what happens, better move. Everything else needs "Show more". */
+export const visibleScenes = (scenes: Scene[], showAll = false): Scene[] => (showAll ? scenes : scenes.filter((s) => !s.extra));
+export const hasMoreScenes = (scenes: Scene[]) => scenes.some((s) => s.extra);
+
+// ---------- positional coaching: open lines, weak spots, structure, plan ----------
+
+const POS_LABEL: Partial<Record<FactKind, string>> = {
+  'open-file': 'Open file', 'half-open': 'Half-open file', 'file-info': 'Open file', 'file-king': 'Exposed king',
+  'rook-7th': '7th rank', 'rook-battery': 'Doubled rooks', diagonal: 'Open diagonal', 'bishop-pair': 'Bishop pair',
+  'bad-bishop': 'Bad bishop', 'rim-knight': 'Rim knight', outpost: 'Outpost', 'outpost-available': 'Outpost',
+  isolated: 'Isolated pawn', doubled: 'Doubled pawns', backward: 'Backward pawn', passed: 'Passed pawn',
+  islands: 'Pawn islands', center: 'Centre', castled: 'King safety', 'king-center': 'King in the centre',
+  shield: 'Weak king shield', 'king-zone': 'King under fire', 'back-rank': 'Back rank', pin: 'Pin',
+  trapped: 'Trapped piece', loose: 'Loose piece', development: 'Development', 'early-queen': 'Early queen',
+  'endgame-king': 'Active king', unstoppable: 'Unstoppable pawn',
+};
+const LINE_KINDS = new Set<FactKind>(['open-file', 'half-open', 'file-info', 'file-king', 'rook-7th', 'rook-battery', 'diagonal']);
+const SKIP_WEAK = new Set<FactKind>(['pin', 'loose', 'trapped', 'rim-knight', 'islands']); // tactics scenes already cover these
+
+/** Highlights the squares, and colours the "Good:" / "Careful:" lead-in. */
+function posMarkup(text: string, verdict: 'good' | 'bad' | 'neutral'): string {
+  const m = /^([A-Z][^:.]{2,40}):\s/.exec(text);
+  let head = '', body = text;
+  if (m) {
+    head = verdict === 'good' ? `++${m[1]}:++ ` : verdict === 'bad' ? `~~${m[1]}:~~ ` : `${m[0]}`;
+    body = text.slice(m[0].length);
+  }
+  return head + body.replace(/\b([a-h][1-8])\b/g, '**$1**');
+}
+
+/**
+ * What a real coach adds after the tactics: what the move did to the structure, which lines are open,
+ * who is vulnerable, and what to do next. Everything comes from positional.ts (verified on the board).
+ */
+async function positionalScenes(inp: ExplainInput, isCancelled: () => boolean): Promise<Scene[]> {
+  if (inp.quality === 'book') return [];
+  const mover = inp.color, opp = other(mover);
+  let played: any;
+  try { played = new Chess(inp.fenBefore).move(inp.san); } catch { return []; }
+  const bad = BAD.includes(inp.quality);
+  const out: Scene[] = [];
+  const used = new Set<string>();
+  const playedArrow: SceneArrow = { from: played.from, to: played.to, color: bad ? 'red' : 'green' };
+  const tone = (f: Fact): ArrowColor => {
+    if (f.polarity === 'info' || !f.side) return 'blue';
+    const mine = f.side === mover;
+    return f.polarity === 'asset' ? (mine ? 'green' : 'red') : (mine ? 'red' : 'green');
+  };
+
+  // A. What this move changed in the structure
+  await tick();
+  if (isCancelled()) return out;
+  try {
+    const ins = moveInsights(inp.fenBefore, played, inp.fenAfter, undefined, 4, !bad)
+      .filter((i) => i.kind !== 'pin' && i.kind !== 'loose' && !i.key.startsWith('x:earlyq'))
+      .slice(0, 2);
+    if (ins.length) {
+      ins.forEach((i) => used.add(i.key));
+      const arrows: SceneArrow[] = [playedArrow];
+      for (const i of ins) for (const a of i.arrows.slice(0, 2)) arrows.push({ ...a, color: i.verdict === 'bad' ? 'red' : i.verdict === 'good' ? 'green' : 'blue' });
+      // Coach tip only when the mover really broke the principle (a mistake, or a clearly harmful change), not on every move.
+      const tipFrom = ins.find((i) => i.lesson && i.verdict === 'bad' && i.side === mover && (bad || i.score >= 14));
+      const tip = tipFrom ? ` Coach tip: ${tipFrom.lesson}` : '';
+      out.push(mk(inp.fenAfter, played,
+        ins.map((i) => posMarkup(i.text, i.verdict)).join(' ') + tip,
+        arrows, `Structure · ${POS_LABEL[ins[0].kind] ?? 'Position'}`));
+    }
+  } catch { /* ignore */ }
+
+  // Static look at the position after the move. To avoid repeating the same background facts on every move,
+  // only things that are NEW after this move are shown (or, after a mistake, the biggest vulnerabilities).
+  await tick();
+  if (isCancelled()) return out;
+  let facts: Fact[] = [];
+  let beforeKeys = new Set<string>();
+  try {
+    facts = positionFacts(inp.fenAfter, undefined, false);
+    beforeKeys = new Set(positionFacts(inp.fenBefore, undefined, false).map((f) => f.key));
+  } catch { return out; }
+  const fresh = (f: Fact) => !used.has(f.key) && (bad || !beforeKeys.has(f.key));
+
+  // B. Open lines the move really made use of (a rook / bishop actually on the line; never "this file is open" noise)
+  const lines = facts.filter((f) => LINE_KINDS.has(f.kind) && f.polarity !== 'info' && f.score >= 13 && fresh(f))
+    .sort((a, b) => b.score - a.score).slice(0, 2);
+  // C. A vulnerability of the mover, or a target for the opponent
+  const weak = facts.filter((f) => f.polarity === 'weakness' && f.side && !LINE_KINDS.has(f.kind) && !SKIP_WEAK.has(f.kind) && f.score >= 12 && fresh(f));
+  const mine = weak.filter((f) => f.side === mover).sort((a, b) => b.score - a.score)[0];
+  const theirs = weak.filter((f) => f.side === opp).sort((a, b) => b.score - a.score)[0];
+
+  if (mine || theirs) {
+    const parts: string[] = [];
+    const arrows: SceneArrow[] = [];
+    if (mine) { parts.push(`~~Vulnerable:~~ ${posMarkup(mine.text, 'neutral')}`); arrows.push(...mine.arrows.slice(0, 2).map((a) => ({ ...a, color: 'red' as ArrowColor }))); }
+    if (theirs) { parts.push(`++Target:++ ${posMarkup(theirs.text, 'neutral')}`); arrows.push(...theirs.arrows.slice(0, 2).map((a) => ({ ...a, color: 'green' as ArrowColor }))); }
+    const lead = (mine ?? theirs)!;
+    // Only repeat the rule of thumb when the mover's own weakness is serious (or the move was a mistake).
+    const weakTip = mine && mine.lesson && (bad || mine.score >= 14) ? ` ${mine.lesson}` : '';
+    out.push(mk(inp.fenAfter, played, parts.join(' ') + weakTip,
+      arrows.length ? arrows : [playedArrow], `Weak spots · ${POS_LABEL[lead.kind] ?? 'Weakness'}`));
+  } else if (lines.length) {
+    const arrows: SceneArrow[] = lines.flatMap((f) => f.arrows.slice(0, 1).map((a) => ({ ...a, color: tone(f) })));
+    out.push(mk(inp.fenAfter, played, lines.map((f) => posMarkup(f.text, 'neutral')).join(' '),
+      arrows.length ? arrows : [playedArrow], `Open lines · ${POS_LABEL[lines[0].kind] ?? 'Lines'}`));
+  }
+
+  // D. Plan: only after a mistake (what the opponent can now aim for) or when something urgent is on the board
+  await tick();
+  if (isCancelled()) return out;
+  try {
+    const side = bad ? opp : mover;
+    const p = coachPlan(inp.fenAfter, side, undefined, 1)[0];
+    if (p && (bad || p.score >= 26)) {
+      out.push(mk(inp.fenAfter, played,
+        `${sideName(side)}'s plan: ${posMarkup(p.text, 'neutral')}`,
+        p.arrows.length ? p.arrows.slice(0, 2).map((a) => ({ ...a, color: 'blue' as ArrowColor })) : [playedArrow],
+        'Plan'));
+    }
+  } catch { /* ignore */ }
+  return out;
+}
+
 /**
  * Core scenes + look-ahead + engine-checked extras.
- * Order: verdict → threat / danger / missed → what happens next → better move → main line → "also good".
+ * Order: verdict → why (mistakes) → structure / open lines / weak spots / plan → threat / danger / missed → what happens next → better move → main line → "also good".
+ * Scenes with `extra: true` are the optional ones; use visibleScenes(scenes, showAll) to play the short version.
  */
 export async function buildAdvancedExplanation(
   inp: ExplainInput,
@@ -623,10 +1068,17 @@ export async function buildAdvancedExplanation(
 ): Promise<Scene[]> {
   const core = buildCoreScenes(inp);
   if (isCancelled() || core.length === 0) return core;
+  // The short version a player sees first: verdict, WHY it went wrong (for mistakes), what happens, the better move.
+  // Everything else (structure, threats, main line, other good moves) is marked `extra` for "Show more".
+  const cause = causeScene(inp);
+  const head: Scene[] = cause ? [core[0], cause] : [core[0]];
+  const ex = (s: Scene[]): Scene[] => s.map((x) => ({ ...x, extra: true }));
   const ideas = await ideaScenes(inp, isCancelled);
-  if (isCancelled()) return core;
+  if (isCancelled()) return [...head, ...core.slice(1)];
+  const positional = await positionalScenes(inp, isCancelled);
+  if (isCancelled()) return [...head, ...ex(positional), ...ex(ideas), ...core.slice(1)];
   const bestLine = await bestLineScenes(inp);
-  if (isCancelled()) return [core[0], ...ideas, ...core.slice(1)];
+  if (isCancelled()) return [...head, ...ex(positional), ...ex(ideas), ...core.slice(1)];
   const alsoGood = await alternativeScenes(inp);
   // The idea scenes move the board to hypothetical positions, so return to the move that was really played
   // before the line continues ("White answers: ...").
@@ -636,16 +1088,24 @@ export async function buildAdvancedExplanation(
   // If the look-ahead found something the played move THREATENS, the scenes that follow must know about it:
   // the engine's next move is then the opponent's defence, not "nothing happens".
   const threatScene = wasBad ? undefined : ideas.find((s) => (s.chip ?? '').startsWith('Threat'));
-  if (ideas.length) {
+  if (ideas.length && !inp.isPlayedBest) {
     try {
       const pm: any = new Chess(inp.fenBefore).move(inp.san);
-      const note = threatScene
-        ? ` It threatens **${threatScene.san}**, so ${oppName} has to deal with that.`
+      const th = threatScene?.threat;
+      // Say WHAT the threat is and show it on the board: arrow from the piece's current square to the target,
+      // plus the squares of the pieces it would hit.
+      const note = th
+        ? th.afterCheck
+          ? ` Once ${oppName} has dealt with the check, ${sideName(inp.color)} threatens **${th.san}**, which ${th.does}.`
+          : ` It threatens **${th.san}**, which ${th.does}. ${oppName} has to deal with that.`
         : '';
+      const threatArrows: SceneArrow[] = th ? th.arrows : [];
+      const lit = [...new Set(threatArrows.flatMap((a) => [a.from, a.to]))] as Square[];
       back = [{
         ...core[0],
-        chip: 'Back to the game',
-        arrows: [{ from: pm.from as Square, to: pm.to as Square, color: wasBad ? 'red' : 'green' }],
+        chip: th ? `Back to the game · Threat ${th.san}` : 'Back to the game',
+        arrows: [{ from: pm.from as Square, to: pm.to as Square, color: wasBad ? 'red' : 'green' }, ...threatArrows],
+        squares: lit,
         text: parseSegs(`Back to the game: ${describeMove(pm as PlyMove)} was played.${note} Now let's see how ${oppName} answers.`),
       }];
     } catch { /* ignore */ }
@@ -656,9 +1116,20 @@ export async function buildAdvancedExplanation(
     const segs = [...s.text];
     segs[0] = {
       ...segs[0],
-      t: `${oppName} has to stop that threat. The engine's best defence: ` + segs[0].t.slice('The game could go: '.length),
+      t: `${oppName} has to stop the threat of ${threatScene.threat?.san ?? 'that idea'}. The engine's best defence: ` + segs[0].t.slice('The game could go: '.length),
     };
     return { ...s, text: segs };
   });
-  return [core[0], ...ideas, ...back, ...rest, ...bestLine, ...alsoGood];
+  // verdict → structure / open lines / weak spots / plan → threats & dangers → back to the game → what happens next
+  // Beginners get the simple story only: no pawn-structure talk, no side lines, no alternative moves.
+  const beginner = inp.level === 'beginner';
+  return [
+    ...head,
+    ...(beginner ? [] : ex(positional)),
+    ...ex(ideas),
+    ...ex(back),
+    ...rest,
+    ...(beginner ? [] : ex(bestLine)),
+    ...(beginner ? [] : ex(alsoGood)),
+  ];
 }
