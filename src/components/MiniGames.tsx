@@ -1,19 +1,305 @@
 // Board-vision mini-games for the Learn Path.
 // Place in src/components/MiniGames.tsx
+//
+// Self-contained: this file draws its own board and pieces and every game is played by click / tap,
+// so it does not depend on ChessBoard or Piece. chess.js is only used to check captures, and every
+// position handed to it has both kings (chess.js 1.x refuses to load a position without them).
 import { useEffect, useRef, useState, type ReactNode } from 'react';
-import { Chess, type Square, type PieceSymbol, type Color } from 'chess.js';
+import { Chess } from 'chess.js';
 import { logMiniGame, type Activity } from '@/lib/activity';
-import { ChessBoard } from '@/components/ChessBoard';
-import { Piece } from '@/components/Piece';
 import {
   ArrowLeft, Crosshair, Scale, Timer, Palette, Move, Eye, ShieldAlert,
   Crown, GitBranch, Zap, Layers, Focus, Swords,
 } from 'lucide-react';
 
+// ───────────── tiny chess toolkit (no chess.js needed) ─────────────
+
+type PT = 'p' | 'n' | 'b' | 'r' | 'q' | 'k';
+type Col = 'w' | 'b';
+interface Pc { t: PT; c: Col }
+type Board = Map<string, Pc>; // key: 'e4'
+
 const FILES = 'abcdefgh';
 const sq = (f: number, r: number) => FILES[f] + (r + 1);
+const fr = (s: string): [number, number] => [s.charCodeAt(0) - 97, parseInt(s[1], 10) - 1];
 const rnd = (n: number) => Math.floor(Math.random() * n);
-const sqToFR = (s: string): [number, number] => [s.charCodeAt(0) - 97, parseInt(s[1], 10) - 1];
+const inb = (f: number, r: number) => f >= 0 && f < 8 && r >= 0 && r < 8;
+const pick = <T,>(a: readonly T[]): T => a[rnd(a.length)];
+const randomSquare = () => sq(rnd(8), rnd(8));
+const kingDist = (a: string, b: string) => {
+  const [af, ar] = fr(a), [bf, br] = fr(b);
+  return Math.max(Math.abs(af - bf), Math.abs(ar - br));
+};
+
+const KNIGHT = [[1, 2], [2, 1], [2, -1], [1, -2], [-1, -2], [-2, -1], [-2, 1], [-1, 2]];
+const ROOK = [[1, 0], [-1, 0], [0, 1], [0, -1]];
+const BISHOP = [[1, 1], [1, -1], [-1, 1], [-1, -1]];
+const ALL8 = ROOK.concat(BISHOP);
+const PIECES: PT[] = ['q', 'r', 'b', 'n', 'p'];
+
+/** Squares a piece attacks. Sliders stop at (and include) the first piece they meet. */
+function attacksFrom(board: Board, from: string): string[] {
+  const p = board.get(from);
+  if (!p) return [];
+  const [f0, r0] = fr(from);
+  const out: string[] = [];
+  const walk = (dirs: number[][], slide: boolean) => {
+    for (const [df, dr] of dirs) {
+      let f = f0 + df, r = r0 + dr;
+      while (inb(f, r)) {
+        const s = sq(f, r);
+        out.push(s);
+        if (!slide || board.has(s)) break;
+        f += df; r += dr;
+      }
+    }
+  };
+  if (p.t === 'n') walk(KNIGHT, false);
+  else if (p.t === 'k') walk(ALL8, false);
+  else if (p.t === 'r') walk(ROOK, true);
+  else if (p.t === 'b') walk(BISHOP, true);
+  else if (p.t === 'q') walk(ALL8, true);
+  else {
+    const dr = p.c === 'w' ? 1 : -1;
+    for (const df of [-1, 1]) if (inb(f0 + df, r0 + dr)) out.push(sq(f0 + df, r0 + dr));
+  }
+  return out;
+}
+
+function isAttacked(board: Board, s: string, by: Col): boolean {
+  for (const [from, p] of board) if (p.c === by && attacksFrom(board, from).includes(s)) return true;
+  return false;
+}
+
+function kingSq(board: Board, c: Col): string | null {
+  for (const [s, p] of board) if (p.t === 'k' && p.c === c) return s;
+  return null;
+}
+
+/** Drops a piece on a random free square (pawns never on rank 1 or 8) and returns that square. */
+function put(board: Board, t: PT, c: Col): string {
+  for (let i = 0; i < 300; i++) {
+    const f = rnd(8), r = rnd(8);
+    const s = sq(f, r);
+    if (board.has(s) || (t === 'p' && (r === 0 || r === 7))) continue;
+    board.set(s, { t, c });
+    return s;
+  }
+  for (let f = 0; f < 8; f++) for (let r = 0; r < 8; r++) {
+    const s = sq(f, r);
+    if (!board.has(s) && !(t === 'p' && (r === 0 || r === 7))) { board.set(s, { t, c }); return s; }
+  }
+  return 'a1';
+}
+
+/** Both kings on random squares, not touching. */
+function withKings(): { board: Board; wk: string; bk: string } {
+  const board: Board = new Map();
+  const wk = randomSquare();
+  let bk = randomSquare();
+  while (kingDist(wk, bk) < 2) bk = randomSquare();
+  board.set(wk, { t: 'k', c: 'w' });
+  board.set(bk, { t: 'k', c: 'b' });
+  return { board, wk, bk };
+}
+
+function toFen(board: Board, turn: Col): string {
+  const rows: string[] = [];
+  for (let r = 7; r >= 0; r--) {
+    let row = '', empty = 0;
+    for (let f = 0; f < 8; f++) {
+      const p = board.get(sq(f, r));
+      if (!p) { empty++; continue; }
+      if (empty) { row += empty; empty = 0; }
+      row += p.c === 'w' ? p.t.toUpperCase() : p.t;
+    }
+    if (empty) row += empty;
+    rows.push(row);
+  }
+  return `${rows.join('/')} ${turn} - - 0 1`;
+}
+
+const sameSet = (a: string[], b: string[]) => a.length === b.length && a.every((x) => b.includes(x));
+
+/** Captures `side` can make, split into all targets and the ones the opponent cannot take back. */
+function captureInfo(board: Board, side: Col): { all: string[]; safe: string[] } {
+  const chess = new Chess(toFen(board, side));
+  const all = new Set<string>(), safe = new Set<string>();
+  for (const m of chess.moves({ verbose: true })) {
+    if (!m.captured) continue;
+    all.add(m.to);
+    chess.move({ from: m.from, to: m.to, promotion: m.promotion });
+    const back = chess.moves({ verbose: true }).some((x) => x.to === m.to && !!x.captured);
+    chess.undo();
+    if (!back) safe.add(m.to);
+  }
+  return { all: [...all], safe: [...safe] };
+}
+
+// ───────────── puzzle generators ─────────────
+
+function genCheck(): { board: Board; inCheck: boolean } {
+  const want = Math.random() < 0.5;
+  for (let i = 0; i < 800; i++) {
+    const { board, wk, bk } = withKings();
+    const n = 2 + rnd(3);
+    for (let j = 0; j < n; j++) put(board, pick(PIECES), Math.random() < 0.6 ? 'b' : 'w');
+    if (isAttacked(board, bk, 'w')) continue; // White is to move, so Black cannot be in check
+    const inCheck = isAttacked(board, wk, 'b');
+    if (inCheck === want) return { board, inCheck };
+  }
+  return {
+    board: new Map<string, Pc>([['e1', { t: 'k', c: 'w' }], ['e8', { t: 'k', c: 'b' }], ['e5', { t: 'r', c: 'b' }]]),
+    inCheck: true,
+  };
+}
+
+/** White pieces that Black (to move) can win for free: attacked and nobody can recapture. */
+function genHanging(): { board: Board; answers: string[] } {
+  for (let i = 0; i < 600; i++) {
+    const { board, wk, bk } = withKings();
+    const nW = 3 + rnd(3), nB = 2 + rnd(3);
+    for (let j = 0; j < nW; j++) put(board, pick(PIECES), 'w');
+    for (let j = 0; j < nB; j++) put(board, pick(PIECES), 'b');
+    if (isAttacked(board, bk, 'w') || isAttacked(board, wk, 'b')) continue;
+    const { safe } = captureInfo(board, 'b');
+    const answers = safe.filter((s) => board.get(s)?.c === 'w');
+    // The hint says "attacked and has no defender". Only keep boards where that simple rule and the exact
+    // rules of chess agree (a king that cannot really recapture, a pinned defender... would make it unfair).
+    const simple = [...board]
+      .filter(([s, p]) => p.c === 'w' && p.t !== 'k' && isAttacked(board, s, 'b') && !isAttacked(board, s, 'w'))
+      .map(([s]) => s);
+    if (!sameSet(simple, answers)) continue;
+    if (answers.length >= 1 && answers.length <= 2) return { board, answers };
+  }
+  return {
+    board: new Map<string, Pc>([['g1', { t: 'k', c: 'w' }], ['h8', { t: 'k', c: 'b' }], ['e4', { t: 'p', c: 'w' }], ['d6', { t: 'n', c: 'b' }]]),
+    answers: ['e4'],
+  };
+}
+
+/** Black pieces White can capture without being recaptured. */
+function genCaptures(): { board: Board; answers: string[] } {
+  for (let i = 0; i < 800; i++) {
+    const { board, wk, bk } = withKings();
+    const nW = 2 + rnd(3), nB = 3 + rnd(2);
+    for (let j = 0; j < nW; j++) put(board, pick(PIECES), 'w');
+    for (let j = 0; j < nB; j++) put(board, pick(PIECES), 'b');
+    if (isAttacked(board, bk, 'w') || isAttacked(board, wk, 'b')) continue;
+    const { all, safe } = captureInfo(board, 'w');
+    // keep only boards where "White attacks it and Black has no defender" matches the exact rules
+    const simple = [...board]
+      .filter(([s, p]) => p.c === 'b' && p.t !== 'k' && all.includes(s) && !isAttacked(board, s, 'b'))
+      .map(([s]) => s);
+    if (!sameSet(simple, safe)) continue;
+    // prefer boards that also contain a tempting but defended capture
+    if (safe.length >= 1 && safe.length <= 3 && (all.length > safe.length || i > 400)) return { board, answers: safe };
+  }
+  return {
+    board: new Map<string, Pc>([['e1', { t: 'k', c: 'w' }], ['e8', { t: 'k', c: 'b' }], ['e4', { t: 'p', c: 'w' }], ['d5', { t: 'p', c: 'b' }]]),
+    answers: ['d5'],
+  };
+}
+
+/** A marked White piece; is it attacking two or more enemy pieces at once? */
+function genFork(): { board: Board; mark: string; targets: string[]; isFork: boolean } {
+  const want = Math.random() < 0.5;
+  for (let i = 0; i < 1000; i++) {
+    const { board } = withKings();
+    const mark = put(board, pick<PT>(['n', 'n', 'n', 'q', 'b', 'r']), 'w');
+    const nB = 2 + rnd(3);
+    for (let j = 0; j < nB; j++) put(board, pick(PIECES), 'b');
+    const targets = attacksFrom(board, mark).filter((s) => board.get(s)?.c === 'b');
+    const isFork = targets.length >= 2;
+    if (isFork === want) return { board, mark, targets, isFork };
+  }
+  const board: Board = new Map<string, Pc>([
+    ['e1', { t: 'k', c: 'w' }], ['a8', { t: 'k', c: 'b' }],
+    ['d5', { t: 'n', c: 'w' }], ['c7', { t: 'r', c: 'b' }], ['f6', { t: 'q', c: 'b' }],
+  ]);
+  return { board, mark: 'd5', targets: ['c7', 'f6'], isFork: true };
+}
+
+const ray = (from: string, df: number, dr: number): string[] => {
+  const [f0, r0] = fr(from);
+  const out: string[] = [];
+  let f = f0 + df, r = r0 + dr;
+  while (inb(f, r)) { out.push(sq(f, r)); f += df; r += dr; }
+  return out;
+};
+
+/** Absolute pin: the piece stands between White's king and a Black slider that would otherwise give check. */
+function pinnerOf(board: Board, s: string): string | null {
+  const p = board.get(s);
+  const wk = kingSq(board, 'w');
+  if (!p || p.c !== 'w' || p.t === 'k' || !wk) return null;
+  if (isAttacked(board, wk, 'b')) return null;
+  const without = new Map(board);
+  without.delete(s);
+  for (const [from, q] of without) {
+    if (q.c === 'b' && attacksFrom(without, from).includes(wk)) return from;
+  }
+  return null;
+}
+
+function genPin(): { board: Board; mark: string; isPinned: boolean; pinner: string | null } {
+  const want = Math.random() < 0.5;
+  for (let i = 0; i < 1500; i++) {
+    const board: Board = new Map();
+    const wk = randomSquare();
+    board.set(wk, { t: 'k', c: 'w' });
+    const [df, dr] = pick(ALL8);
+    const line = ray(wk, df, dr);
+    if (line.length < 2) continue;
+    const ortho = df === 0 || dr === 0;
+    const a = rnd(line.length - 1);              // where the White piece stands
+    const b = a + 1 + rnd(line.length - a - 1);  // where the Black slider stands, beyond it
+    const markT = pick<PT>(['n', 'b', 'r', 'q', 'p', 'n', 'b']);
+    const [, mr] = fr(line[a]);
+    if (markT === 'p' && (mr === 0 || mr === 7)) continue;
+    const goodSlider: PT = pick<PT>(ortho ? ['r', 'q'] : ['b', 'q']);
+    const wrongSlider: PT = ortho ? 'b' : 'r';
+    board.set(line[a], { t: markT, c: 'w' });
+    if (want) {
+      board.set(line[b], { t: goodSlider, c: 'b' });
+    } else {
+      const variant = pick(['wrong', 'double', 'none', 'offline']);
+      if (variant === 'wrong') board.set(line[b], { t: wrongSlider, c: 'b' });
+      else if (variant === 'double' && b - a >= 2) {
+        board.set(line[b], { t: goodSlider, c: 'b' });
+        // a second blocker between the piece and the slider: no pawns here, they could land on rank 1 or 8
+        board.set(line[a + 1 + rnd(b - a - 1)], { t: pick<PT>(['q', 'r', 'b', 'n']), c: Math.random() < 0.5 ? 'w' : 'b' });
+      } else if (variant === 'offline') {
+        board.delete(line[a]);
+        put(board, markT, 'w');
+        put(board, goodSlider, 'b');
+      } // 'none': nothing behind the piece
+    }
+    let bk = randomSquare();
+    let guard = 0;
+    while ((board.has(bk) || kingDist(wk, bk) < 2) && guard++ < 100) bk = randomSquare();
+    if (board.has(bk)) continue;
+    board.set(bk, { t: 'k', c: 'b' });
+    const clutter = rnd(3);
+    for (let j = 0; j < clutter; j++) put(board, pick(PIECES), Math.random() < 0.5 ? 'w' : 'b');
+    const wkNow = kingSq(board, 'w')!;
+    if (isAttacked(board, wkNow, 'b') || isAttacked(board, bk, 'w')) continue;
+    // the marked piece is the one we put on the line (or the relocated one)
+    const marks = [...board].filter(([s, p]) => p.c === 'w' && p.t !== 'k' && pinnerOf(board, s) !== null).map(([s]) => s);
+    const mark = want ? line[a] : [...board].find(([s, p]) => p.c === 'w' && p.t === markT && !marks.includes(s))?.[0];
+    if (!mark) continue;
+    const pinner = pinnerOf(board, mark);
+    if ((pinner !== null) !== want) continue;
+    if (!want && marks.length > 0) continue; // keep "No" boards free of any other pin that could confuse
+    return { board, mark, isPinned: want, pinner };
+  }
+  const board: Board = new Map<string, Pc>([
+    ['e1', { t: 'k', c: 'w' }], ['e2', { t: 'n', c: 'w' }], ['e7', { t: 'r', c: 'b' }], ['a8', { t: 'k', c: 'b' }],
+  ]);
+  return { board, mark: 'e2', isPinned: true, pinner: 'e7' };
+}
+
+// ───────────── games list ─────────────
 
 type GameId =
   | 'coords' | 'knight' | 'value' | 'colors' | 'legals' | 'hanging' | 'check'
@@ -26,13 +312,13 @@ const GAMES: { id: GameId; title: string; blurb: string; max: string; icon: Reac
   { id: 'colors', title: 'Square Colors', blurb: 'Light or dark? Train automatic colour recognition. 30 questions.', max: '/ 30', icon: <Palette size={18} /> },
   { id: 'legals', title: 'Legal Moves', blurb: 'Click every legal square for the given piece. Empty board, 8 rounds.', max: '/ 8', icon: <Move size={18} /> },
   { id: 'hanging', title: 'Hanging Pieces', blurb: 'Find the unprotected piece that can be captured for free. 8 puzzles.', max: '/ 8', icon: <ShieldAlert size={18} /> },
-  { id: 'check', title: 'Check or Not', blurb: 'Is the side to move in check? Fast yes / no training. 12 positions.', max: '/ 12', icon: <Zap size={18} /> },
+  { id: 'check', title: 'Check or Not', blurb: 'Is White in check? Fast yes / no training. 12 positions.', max: '/ 12', icon: <Zap size={18} /> },
   { id: 'kingpath', title: 'King Path', blurb: 'Move the king to the target square in the fewest moves. 5 rounds.', max: '/ 15', icon: <Crown size={18} /> },
   { id: 'bishopcolor', title: 'Bishop Colour', blurb: 'Are the two squares the same colour complex? Yes or no. 15 questions.', max: '/ 15', icon: <Layers size={18} /> },
-  { id: 'captures', title: 'Safe Captures', blurb: 'Click a square where White can capture safely. 8 boards.', max: '/ 8', icon: <Swords size={18} /> },
-  { id: 'sight', title: 'Piece Sight', blurb: 'Click every square the highlighted piece attacks. 8 rounds.', max: '/ 8', icon: <Eye size={18} /> },
-  { id: 'forks', title: 'Fork Finder', blurb: 'Does the marked piece fork two enemy units? Spot double attacks. 10 puzzles.', max: '/ 10', icon: <GitBranch size={18} /> },
-  { id: 'pins', title: 'Pin Spotter', blurb: 'Is the marked piece pinned against its king? Yes / no. 10 positions.', max: '/ 10', icon: <Focus size={18} /> },
+  { id: 'captures', title: 'Safe Captures', blurb: 'Click a piece White can capture safely. 8 boards.', max: '/ 8', icon: <Swords size={18} /> },
+  { id: 'sight', title: 'Piece Sight', blurb: 'Click every square the highlighted piece attacks. Other pieces block the way. 8 rounds.', max: '/ 8', icon: <Eye size={18} /> },
+  { id: 'forks', title: 'Fork Finder', blurb: 'Does the marked piece attack two or more enemy pieces at once? 10 puzzles.', max: '/ 10', icon: <GitBranch size={18} /> },
+  { id: 'pins', title: 'Pin Spotter', blurb: 'Is the marked White piece pinned against its king? Yes / no. 10 positions.', max: '/ 10', icon: <Focus size={18} /> },
 ];
 
 export function MiniGames({ activity, onPlayed }: { activity: Activity; onPlayed: (id: string, score: number) => void }) {
@@ -52,16 +338,16 @@ export function MiniGames({ activity, onPlayed }: { activity: Activity; onPlayed
         </button>
         <h4 className="font-bold text-lg mb-3 flex items-center gap-2">{g.icon} {g.title}</h4>
         {open === 'coords' && <CoordGame best={best} onFinish={finish('coords')} />}
-        {open === 'knight' && <KnightGame best={best} onFinish={finish('knight')} />}
+        {open === 'knight' && <HopGame kind="n" best={best} onFinish={finish('knight')} />}
         {open === 'value' && <ValueGame best={best} onFinish={finish('value')} />}
         {open === 'colors' && <ColorGame best={best} onFinish={finish('colors')} />}
-        {open === 'legals' && <LegalsGame best={best} onFinish={finish('legals')} />}
+        {open === 'legals' && <SelectGame mode="legals" best={best} onFinish={finish('legals')} />}
         {open === 'hanging' && <HangingGame best={best} onFinish={finish('hanging')} />}
         {open === 'check' && <CheckGame best={best} onFinish={finish('check')} />}
-        {open === 'kingpath' && <KingPathGame best={best} onFinish={finish('kingpath')} />}
+        {open === 'kingpath' && <HopGame kind="k" best={best} onFinish={finish('kingpath')} />}
         {open === 'bishopcolor' && <BishopColorGame best={best} onFinish={finish('bishopcolor')} />}
         {open === 'captures' && <CapturesGame best={best} onFinish={finish('captures')} />}
-        {open === 'sight' && <SightGame best={best} onFinish={finish('sight')} />}
+        {open === 'sight' && <SelectGame mode="sight" best={best} onFinish={finish('sight')} />}
         {open === 'forks' && <ForksGame best={best} onFinish={finish('forks')} />}
         {open === 'pins' && <PinsGame best={best} onFinish={finish('pins')} />}
       </div>
@@ -87,12 +373,49 @@ export function MiniGames({ activity, onPlayed }: { activity: Activity; onPlayed
   );
 }
 
-// ───────────── shared helpers ─────────────
+// ───────────── shared UI ─────────────
+
+type Overlay = 'sel' | 'ok' | 'bad' | 'miss' | 'target' | 'last' | 'mark' | 'trail';
+interface CellInfo { piece?: Pc; overlay?: Overlay; dot?: boolean; label?: string }
+
+const OVERLAY_BG: Record<Overlay, string> = {
+  sel: 'rgba(56,189,248,.65)',
+  ok: 'rgba(52,211,153,.85)',
+  bad: 'rgba(248,113,113,.85)',
+  miss: 'rgba(252,211,77,.75)',
+  target: 'rgba(255,214,10,.6)', // gold: stands out on both the light and the green squares
+  last: 'rgba(247,198,49,.45)',
+  mark: 'rgba(116,155,191,.75)',
+  trail: 'rgba(255,255,255,.28)',
+};
+const LIGHT = '#ebecd0';
+const DARK = '#779556';
+
+const GLYPH: Record<PT, string> = { k: '♚', q: '♛', r: '♜', b: '♝', n: '♞', p: '♟︎' };
+
+function PieceGlyph({ t, c }: Pc) {
+  return (
+    <span
+      aria-hidden="true"
+      className="relative z-10 leading-none select-none pointer-events-none"
+      style={{
+        fontSize: 'clamp(1.8rem, 8vw, 2.9rem)',
+        color: c === 'w' ? '#ffffff' : '#161512',
+        WebkitTextStroke: c === 'w' ? '0.8px #1b1b1b' : '0',
+        textShadow: c === 'w'
+          ? '0 0 1px #000, 0 1px 2px rgba(0,0,0,.7)'
+          : '0 0 1px rgba(255,255,255,.35)',
+      }}
+    >
+      {GLYPH[t]}
+    </span>
+  );
+}
 
 function MiniBoard({ flipped, onSquare, cell, sizeClass = 'max-w-[420px]' }: {
   flipped?: boolean;
   onSquare: (f: number, r: number) => void;
-  cell: (f: number, r: number) => { content?: ReactNode; cls?: string };
+  cell: (f: number, r: number) => CellInfo;
   sizeClass?: string;
 }) {
   const ranks = flipped ? [0, 1, 2, 3, 4, 5, 6, 7] : [7, 6, 5, 4, 3, 2, 1, 0];
@@ -104,10 +427,33 @@ function MiniBoard({ flipped, onSquare, cell, sizeClass = 'max-w-[420px]' }: {
           const dark = (f + r) % 2 === 0;
           const c = cell(f, r);
           return (
-            <button key={`${f}${r}`} onClick={() => onSquare(f, r)}
-              className={`aspect-square relative flex items-center justify-center text-2xl sm:text-3xl text-black ${dark ? 'bg-[#b58863]' : 'bg-[#f0d9b5]'} ${c.cls ?? ''}`}
-              aria-label={sq(f, r)}>
-              {c.content}
+            <button
+              type="button"
+              key={`${f}${r}`}
+              onClick={() => onSquare(f, r)}
+              data-sq={sq(f, r)}
+              data-piece={c.piece?.t}
+              data-color={c.piece?.c}
+              data-overlay={c.overlay}
+              aria-label={sq(f, r)}
+              className="aspect-square relative flex items-center justify-center touch-manipulation"
+              style={{ background: dark ? DARK : LIGHT }}
+            >
+              {c.overlay && (
+                <span
+                  className="absolute inset-0"
+                  style={{
+                    background: OVERLAY_BG[c.overlay],
+                    boxShadow: c.overlay === 'target' ? 'inset 0 0 0 3px #d99a00' : undefined,
+                  }}
+                />
+              )}
+              {c.overlay === 'target' && !c.piece && (
+                <span className="absolute z-10 w-1/2 h-1/2 rounded-full border-4 pointer-events-none" style={{ borderColor: '#b45309' }} />
+              )}
+              {c.dot && <span className="absolute z-10 w-3 h-3 rounded-full bg-black/35" />}
+              {c.piece && <PieceGlyph t={c.piece.t} c={c.piece.c} />}
+              {c.label && <span className="relative z-10 text-lg font-bold text-black">{c.label}</span>}
             </button>
           );
         }),
@@ -127,29 +473,8 @@ function Result({ score, max, best, onAgain, extra }: { score: number; max: stri
   );
 }
 
-function emptyFen(piece?: { type: PieceSymbol; color: Color; square: Square }, turn: Color = 'w'): string {
-  const c = new Chess();
-  c.clear();
-  if (piece) c.put({ type: piece.type, color: piece.color }, piece.square);
-  const parts = c.fen().split(' ');
-  parts[1] = turn;
-  parts[3] = '-';
-  parts[4] = '0';
-  parts[5] = '1';
-  return parts.join(' ');
-}
-
-/** Keep the same side to move so the piece stays draggable after each hop. */
-function keepTurn(fen: string, turn: Color = 'w'): string {
-  const parts = fen.split(' ');
-  parts[1] = turn;
-  parts[3] = '-';
-  return parts.join(' ');
-}
-
-function randomSquare(): Square {
-  return sq(rnd(8), rnd(8)) as Square;
-}
+const choiceCls = (answered: boolean, isCorrect: boolean, isPicked: boolean) =>
+  answered && isCorrect ? '!bg-emerald-500/30 !border-emerald-400' : isPicked ? '!bg-red-500/30 !border-red-400' : '';
 
 // ───────────── 1. Coordinate Sprint ─────────────
 
@@ -166,7 +491,7 @@ function CoordGame({ onFinish, best }: { onFinish: (s: number) => void; best?: n
   const scoreRef = useRef(0);
   const finished = useRef(false);
 
-  const pick = (prev?: [number, number]): [number, number] => {
+  const pickSq = (prev?: [number, number]): [number, number] => {
     let f = 0, r = 0;
     do { f = rnd(8); r = rnd(8); } while (prev && prev[0] === f && prev[1] === r);
     return [f, r];
@@ -178,7 +503,7 @@ function CoordGame({ onFinish, best }: { onFinish: (s: number) => void; best?: n
     setPrevBest(best);
     setScore(0); setMiss(0); setLeft(60);
     endAt.current = Date.now() + 60000;
-    setTarget(pick());
+    setTarget(pickSq());
     setPhase('run');
   };
 
@@ -205,7 +530,7 @@ function CoordGame({ onFinish, best }: { onFinish: (s: number) => void; best?: n
     if (ok) {
       scoreRef.current++;
       setScore(scoreRef.current);
-      setTarget(pick(target));
+      setTarget(pickSq(target));
     } else setMiss((m) => m + 1);
   };
 
@@ -228,28 +553,28 @@ function CoordGame({ onFinish, best }: { onFinish: (s: number) => void; best?: n
       ) : (
         <div className="flex items-center justify-between max-w-[420px] mx-auto">
           <span className="text-sm text-ink-400">Time <b className="text-ink-100 tabular-nums">{left}s</b></span>
-          <span className="text-4xl font-bold font-mono text-brand-300">{sq(target[0], target[1])}</span>
+          <span data-testid="coord-target" className="text-4xl font-bold font-mono text-brand-300">{sq(target[0], target[1])}</span>
           <span className="text-sm text-ink-400">Score <b className="text-ink-100 tabular-nums">{score}</b></span>
         </div>
       )}
       <MiniBoard flipped={flip} onSquare={click}
-        cell={(f, r) => ({ cls: flash?.key === `${f}${r}` ? (flash.ok ? '!bg-emerald-400' : '!bg-red-400') : '' })} />
+        cell={(f, r) => ({ overlay: flash?.key === `${f}${r}` ? (flash.ok ? 'ok' : 'bad') : undefined })} />
     </div>
   );
 }
 
-// ───────────── 2. Knight Hop (real board + pieces) ─────────────
+// ───────────── 2 + 8. Knight Hop / King Path ─────────────
 
-const KN: [number, number][] = [[1, 2], [2, 1], [2, -1], [1, -2], [-1, -2], [-2, -1], [-2, 1], [-1, 2]];
-const inb = (f: number, r: number) => f >= 0 && f < 8 && r >= 0 && r < 8;
+type XY = [number, number];
+interface HopPuz { start: XY; target: XY; opt: number }
 
 function knightDist(f0: number, r0: number): number[][] {
   const d: number[][] = Array.from({ length: 8 }, () => Array(8).fill(-1));
   d[f0][r0] = 0;
-  const q: [number, number][] = [[f0, r0]];
+  const q: XY[] = [[f0, r0]];
   while (q.length) {
     const [f, r] = q.shift()!;
-    for (const [df, dr] of KN) {
+    for (const [df, dr] of KNIGHT) {
       const nf = f + df, nr = r + dr;
       if (inb(nf, nr) && d[nf][nr] < 0) { d[nf][nr] = d[f][r] + 1; q.push([nf, nr]); }
     }
@@ -257,89 +582,108 @@ function knightDist(f0: number, r0: number): number[][] {
   return d;
 }
 
-function newKnightRound() {
-  const start: [number, number] = [rnd(8), rnd(8)];
-  const d = knightDist(start[0], start[1]);
-  const cands: [number, number][] = [];
-  for (let f = 0; f < 8; f++) for (let r = 0; r < 8; r++) if (d[f][r] >= 2 && d[f][r] <= 4) cands.push([f, r]);
-  const target = cands[rnd(cands.length)] ?? [rnd(8), rnd(8)];
-  return { start, target, opt: d[target[0]][target[1]] };
+function newHopRound(kind: 'n' | 'k'): HopPuz {
+  const start: XY = [rnd(8), rnd(8)];
+  if (kind === 'n') {
+    const d = knightDist(start[0], start[1]);
+    const cands: XY[] = [];
+    for (let f = 0; f < 8; f++) for (let r = 0; r < 8; r++) if (d[f][r] >= 2 && d[f][r] <= 4) cands.push([f, r]);
+    const target = cands[rnd(cands.length)];
+    return { start, target, opt: d[target[0]][target[1]] };
+  }
+  let target: XY;
+  let dist = 0;
+  do {
+    target = [rnd(8), rnd(8)];
+    dist = Math.max(Math.abs(start[0] - target[0]), Math.abs(start[1] - target[1]));
+  } while (dist < 2 || dist > 5);
+  return { start, target, opt: dist };
 }
 
-function KnightGame({ onFinish, best }: { onFinish: (s: number) => void; best?: number }) {
+function isHop(kind: 'n' | 'k', a: XY, b: XY): boolean {
+  const dx = Math.abs(a[0] - b[0]), dy = Math.abs(a[1] - b[1]);
+  return kind === 'n' ? (dx === 1 && dy === 2) || (dx === 2 && dy === 1) : dx <= 1 && dy <= 1 && dx + dy > 0;
+}
+
+interface HopState { puz: HopPuz; pos: XY; moves: number; trail: string[]; pts: number | null; note: string }
+const freshHop = (kind: 'n' | 'k'): HopState => {
+  const puz = newHopRound(kind);
+  return { puz, pos: puz.start, moves: 0, trail: [], pts: null, note: '' };
+};
+
+function HopGame({ kind, onFinish, best }: { kind: 'n' | 'k'; onFinish: (s: number) => void; best?: number }) {
   const [phase, setPhase] = useState<'play' | 'done'>('play');
   const [round, setRound] = useState(0);
-  const [puz, setPuz] = useState(newKnightRound);
-  const [fen, setFen] = useState(() => emptyFen({ type: 'n', color: 'w', square: sq(puz.start[0], puz.start[1]) as Square }));
-  const [moves, setMoves] = useState(0);
-  const [pts, setPts] = useState<number | null>(null);
+  const [st, setSt] = useState<HopState>(() => freshHop(kind));
   const [total, setTotal] = useState(0);
+  const [hints, setHints] = useState(false);
   const [prevBest, setPrevBest] = useState<number | undefined>(best);
-  const [lastMove, setLastMove] = useState<{ from: Square; to: Square } | null>(null);
 
-  const targetSq = sq(puz.target[0], puz.target[1]) as Square;
+  const name = kind === 'n' ? 'knight' : 'king';
+  const targetSq = sq(st.puz.target[0], st.puz.target[1]);
 
-  const onUserMove = (m: { from: Square; to: Square; san: string; fen: string }) => {
-    if (pts !== null) return;
-    setLastMove({ from: m.from, to: m.to });
-    setFen(keepTurn(m.fen, 'w'));
-    const newMoves = moves + 1;
-    setMoves(newMoves);
-    if (m.to === targetSq) {
-      const p = newMoves === puz.opt ? 3 : newMoves === puz.opt + 1 ? 1 : 0;
-      setPts(p);
+  const click = (f: number, r: number) => {
+    if (st.pts !== null) return;
+    if (!isHop(kind, st.pos, [f, r])) {
+      setSt({ ...st, note: kind === 'n' ? 'A knight jumps in an L: two squares one way, one the other.' : 'The king moves one square in any direction.' });
+      return;
+    }
+    const moves = st.moves + 1;
+    let pts: number | null = null;
+    if (f === st.puz.target[0] && r === st.puz.target[1]) {
+      const p = moves === st.puz.opt ? 3 : moves === st.puz.opt + 1 ? 1 : 0;
+      pts = p;
       setTotal((t) => t + p);
     }
+    setSt({ ...st, pos: [f, r], moves, trail: [...st.trail, sq(st.pos[0], st.pos[1])], pts, note: '' });
   };
+
+  const restartRound = () => setSt({ ...st, pos: st.puz.start, moves: 0, trail: [], pts: null, note: '' });
 
   const next = () => {
     if (round === 4) { setPhase('done'); onFinish(total); return; }
-    const p = newKnightRound();
     setRound((r) => r + 1);
-    setPuz(p);
-    setFen(emptyFen({ type: 'n', color: 'w', square: sq(p.start[0], p.start[1]) as Square }));
-    setMoves(0); setPts(null); setLastMove(null);
+    setSt(freshHop(kind));
   };
 
   const again = () => {
-    const p = newKnightRound();
     setPrevBest(best === undefined ? total : Math.max(best, total));
-    setRound(0); setTotal(0); setPuz(p);
-    setFen(emptyFen({ type: 'n', color: 'w', square: sq(p.start[0], p.start[1]) as Square }));
-    setMoves(0); setPts(null); setLastMove(null); setPhase('play');
+    setRound(0); setTotal(0); setSt(freshHop(kind)); setPhase('play');
   };
 
   if (phase === 'done') return <Result score={total} max="/ 15" best={prevBest} onAgain={again} />;
 
+  const here = sq(st.pos[0], st.pos[1]);
   return (
     <div className="space-y-3">
       <div className="flex items-center justify-between max-w-[420px] mx-auto text-sm text-ink-400">
         <span>Round <b className="text-ink-100">{round + 1}/5</b></span>
-        <span>Moves <b className="text-ink-100">{moves}</b> <span className="text-ink-500">(best possible: {puz.opt})</span></span>
+        <span>Moves <b className="text-ink-100">{st.moves}</b> <span className="text-ink-500">(best: {st.puz.opt})</span></span>
         <span>Points <b className="text-ink-100">{total}</b></span>
       </div>
-      <div className="max-w-[420px] mx-auto">
-        <ChessBoard
-          key={`knight-${round}-${targetSq}`}
-          fen={fen}
-          size={420}
-          interactive={pts === null}
-          onUserMove={onUserMove}
-          annotationSquare={targetSq}
-          annotationColor="#81b64c"
-          lastMove={lastMove}
-          showCelebration={false}
-          whiteName="You"
-          blackName="Target"
-        />
-      </div>
-      <div className="flex items-center justify-center gap-2 min-h-[2.25rem]">
-        {pts === null ? (
-          <p className="text-xs text-ink-500">Drag or click the knight toward the green target square</p>
+      <MiniBoard
+        onSquare={click}
+        cell={(f, r) => {
+          const s = sq(f, r);
+          const legal = hints && st.pts === null && isHop(kind, st.pos, [f, r]);
+          return {
+            piece: s === here ? { t: kind, c: 'w' } : undefined,
+            overlay: s === targetSq ? 'target' : st.trail.includes(s) ? 'trail' : undefined,
+            dot: legal && s !== here,
+          };
+        }}
+      />
+      <div className="flex items-center justify-center gap-2 flex-wrap min-h-[2.25rem]">
+        {st.pts === null ? (
+          <>
+            <p className="text-xs text-ink-500">{st.note || `Click where the ${name} should go. Reach the gold square.`}</p>
+            <button onClick={() => setHints((h) => !h)} className="btn-ghost text-xs px-2 py-1">{hints ? 'Hide' : 'Show'} legal squares</button>
+            {st.moves > 0 && <button onClick={restartRound} className="btn-ghost text-xs px-2 py-1">Restart round</button>}
+          </>
         ) : (
           <>
             <p className="text-sm text-ink-200">
-              {pts === 3 ? 'Perfect — shortest route! +3' : pts === 1 ? 'One move over the best. +1' : `Reached it in ${moves} — best was ${puz.opt}. +0`}
+              {st.pts === 3 ? 'Perfect — shortest route! +3' : st.pts === 1 ? 'One move over the best. +1' : `Reached it in ${st.moves} — best was ${st.puz.opt}. +0`}
             </p>
             <button onClick={next} className="btn-primary text-sm">{round === 4 ? 'Finish' : 'Next round'}</button>
           </>
@@ -351,14 +695,14 @@ function KnightGame({ onFinish, best }: { onFinish: (s: number) => void; best?: 
 
 // ───────────── 3. Material Count ─────────────
 
-interface Pc { g: string; v: number }
-const WHITE: Pc[] = [{ g: '♕', v: 9 }, { g: '♖', v: 5 }, { g: '♗', v: 3 }, { g: '♘', v: 3 }, { g: '♙\uFE0E', v: 1 }];
-const BLACK: Pc[] = [{ g: '♛', v: 9 }, { g: '♜', v: 5 }, { g: '♝', v: 3 }, { g: '♞\uFE0E', v: 3 }, { g: '♟\uFE0E', v: 1 }];
-const sum = (a: Pc[]) => a.reduce((x, p) => x + p.v, 0);
+interface Glyph { g: string; v: number }
+const WHITE: Glyph[] = [{ g: '♕', v: 9 }, { g: '♖', v: 5 }, { g: '♗', v: 3 }, { g: '♘', v: 3 }, { g: '♙︎', v: 1 }];
+const BLACK: Glyph[] = [{ g: '♛', v: 9 }, { g: '♜', v: 5 }, { g: '♝', v: 3 }, { g: '♞︎', v: 3 }, { g: '♟︎', v: 1 }];
+const sum = (a: Glyph[]) => a.reduce((x, p) => x + p.v, 0);
 
-function pickSide(set: Pc[]): Pc[] {
+function pickSide(set: Glyph[]): Glyph[] {
   const n = 2 + rnd(4);
-  const out: Pc[] = [];
+  const out: Glyph[] = [];
   for (let i = 0; i < n; i++) {
     const r = Math.random();
     out.push(set[r < 0.4 ? 4 : r < 0.6 ? 2 : r < 0.75 ? 3 : r < 0.9 ? 1 : 0]);
@@ -404,7 +748,7 @@ function ValueGame({ onFinish, best }: { onFinish: (s: number) => void; best?: n
 
   const btn = (key: 'w' | 'e' | 'b', label: string) => (
     <button key={key} onClick={() => choose(key)} disabled={!!answer}
-      className={`btn-secondary text-sm flex-1 justify-center ${answer && key === correct ? '!bg-emerald-500/30 !border-emerald-400' : answer === key ? '!bg-red-500/30 !border-red-400' : ''}`}>
+      className={`btn-secondary text-sm flex-1 justify-center ${choiceCls(!!answer, key === correct, answer === key)}`}>
       {label}
     </button>
   );
@@ -419,7 +763,7 @@ function ValueGame({ onFinish, best }: { onFinish: (s: number) => void; best?: n
         {[{ label: 'White', pcs: q.w, light: true }, { label: 'Black', pcs: q.b, light: false }].map((s) => (
           <div key={s.label} className={`rounded-xl p-3 ${s.light ? 'bg-[#f0d9b5] text-black' : 'bg-[#4a3b2c] text-white'}`}>
             <p className="text-xs font-semibold opacity-70 mb-1">{s.label}</p>
-            <p className="text-3xl leading-tight break-words">{s.pcs.map((p) => p.g).join(' ')}</p>
+            <p data-testid={`pieces-${s.label.toLowerCase()}`} className="text-3xl leading-tight break-words">{s.pcs.map((p) => p.g).join(' ')}</p>
           </div>
         ))}
       </div>
@@ -437,6 +781,11 @@ function ValueGame({ onFinish, best }: { onFinish: (s: number) => void; best?: n
 
 // ───────────── 4. Square Colors ─────────────
 
+const isDarkSq = (s: string) => {
+  const [f, r] = fr(s);
+  return (f + r) % 2 === 0;
+};
+
 function ColorGame({ onFinish, best }: { onFinish: (s: number) => void; best?: number }) {
   const [n, setN] = useState(0);
   const [score, setScore] = useState(0);
@@ -445,11 +794,7 @@ function ColorGame({ onFinish, best }: { onFinish: (s: number) => void; best?: n
   const [done, setDone] = useState(false);
   const [prevBest, setPrevBest] = useState<number | undefined>(best);
 
-  const isDark = (s: Square) => {
-    const [f, r] = sqToFR(s);
-    return (f + r) % 2 === 0;
-  };
-  const correct = isDark(target) ? 'd' : 'l';
+  const correct = isDarkSq(target) ? 'd' : 'l';
 
   const choose = (a: 'l' | 'd') => {
     if (answer) return;
@@ -474,16 +819,16 @@ function ColorGame({ onFinish, best }: { onFinish: (s: number) => void; best?: n
         <span>Score <b className="text-ink-100">{score}</b></span>
       </div>
       <div className="text-center">
-        <p className="text-5xl font-bold font-mono text-brand-300 mb-2">{target}</p>
+        <p data-testid="color-target" className="text-5xl font-bold font-mono text-brand-300 mb-2">{target}</p>
         <p className="text-sm text-ink-400">Is this square light or dark?</p>
       </div>
       <div className="flex gap-3">
         <button onClick={() => choose('l')} disabled={!!answer}
-          className={`btn-secondary flex-1 justify-center ${answer && correct === 'l' ? '!bg-emerald-500/30 !border-emerald-400' : answer === 'l' ? '!bg-red-500/30 !border-red-400' : ''}`}>
+          className={`btn-secondary flex-1 justify-center ${choiceCls(!!answer, correct === 'l', answer === 'l')}`}>
           Light
         </button>
         <button onClick={() => choose('d')} disabled={!!answer}
-          className={`btn-secondary flex-1 justify-center ${answer && correct === 'd' ? '!bg-emerald-500/30 !border-emerald-400' : answer === 'd' ? '!bg-red-500/30 !border-red-400' : ''}`}>
+          className={`btn-secondary flex-1 justify-center ${choiceCls(!!answer, correct === 'd', answer === 'd')}`}>
           Dark
         </button>
       </div>
@@ -497,22 +842,26 @@ function ColorGame({ onFinish, best }: { onFinish: (s: number) => void; best?: n
   );
 }
 
-// ───────────── 5. Legal Moves ─────────────
+// ───────────── 5 + 11. Legal Moves / Piece Sight ─────────────
 
-const PIECE_TYPES: PieceSymbol[] = ['n', 'b', 'r', 'q', 'k'];
+interface SelPuz { board: Board; from: string; piece: PT; answers: Set<string> }
 
-function newLegalsRound() {
-  const type = PIECE_TYPES[rnd(PIECE_TYPES.length)];
-  const square = randomSquare();
-  const fen = emptyFen({ type, color: 'w', square });
-  const chess = new Chess(fen);
-  const dests = new Set(chess.moves({ square, verbose: true }).map((m) => m.to));
-  return { type, square, fen, dests };
+function newSelRound(mode: 'legals' | 'sight'): SelPuz {
+  const piece = mode === 'legals' ? pick<PT>(['n', 'b', 'r', 'q', 'k']) : pick<PT>(['n', 'b', 'r', 'q']);
+  const from = randomSquare();
+  const board: Board = new Map<string, Pc>([[from, { t: piece, c: 'w' }]]);
+  if (mode === 'sight') {
+    const blockers = 2 + rnd(3);
+    for (let i = 0; i < blockers; i++) put(board, pick(PIECES), Math.random() < 0.5 ? 'w' : 'b');
+  }
+  return { board, from, piece, answers: new Set(attacksFrom(board, from)) };
 }
 
-function LegalsGame({ onFinish, best }: { onFinish: (s: number) => void; best?: number }) {
+const PIECE_NAME: Record<PT, string> = { n: 'Knight', b: 'Bishop', r: 'Rook', q: 'Queen', k: 'King', p: 'Pawn' };
+
+function SelectGame({ mode, onFinish, best }: { mode: 'legals' | 'sight'; onFinish: (s: number) => void; best?: number }) {
   const [round, setRound] = useState(0);
-  const [puz, setPuz] = useState(newLegalsRound);
+  const [puz, setPuz] = useState(() => newSelRound(mode));
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [submitted, setSubmitted] = useState(false);
   const [score, setScore] = useState(0);
@@ -522,89 +871,79 @@ function LegalsGame({ onFinish, best }: { onFinish: (s: number) => void; best?: 
   const click = (f: number, r: number) => {
     if (submitted) return;
     const s = sq(f, r);
-    if (s === puz.square) return;
+    if (s === puz.from) return;
     setSelected((prev) => {
       const next = new Set(prev);
-      if (next.has(s)) next.delete(s);
-      else next.add(s);
+      if (next.has(s)) next.delete(s); else next.add(s);
       return next;
     });
   };
 
+  const hits = [...selected].filter((s) => puz.answers.has(s)).length;
+  const perfect = selected.size === puz.answers.size && hits === puz.answers.size;
+
   const submit = () => {
-    if (submitted) return;
+    if (submitted || selected.size === 0) return;
     setSubmitted(true);
-    let correct = 0;
-    let wrong = 0;
-    for (const s of selected) {
-      if (puz.dests.has(s as Square)) correct++;
-      else wrong++;
-    }
-    const missed = puz.dests.size - correct;
-    if (wrong === 0 && missed === 0) setScore((s) => s + 1);
+    if (perfect) setScore((s) => s + 1);
   };
 
   const next = () => {
     if (round === 7) { setDone(true); onFinish(score); return; }
     setRound((r) => r + 1);
-    setPuz(newLegalsRound());
+    setPuz(newSelRound(mode));
     setSelected(new Set());
     setSubmitted(false);
   };
 
   const again = () => {
     setPrevBest(best === undefined ? score : Math.max(best, score));
-    setRound(0); setScore(0); setPuz(newLegalsRound());
+    setRound(0); setScore(0); setPuz(newSelRound(mode));
     setSelected(new Set()); setSubmitted(false); setDone(false);
   };
 
   if (done) return <Result score={score} max="/ 8" best={prevBest} onAgain={again} />;
 
-  const names: Record<string, string> = { n: 'Knight', b: 'Bishop', r: 'Rook', q: 'Queen', k: 'King' };
-
   return (
     <div className="space-y-3">
       <div className="flex justify-between max-w-[420px] mx-auto text-sm text-ink-400">
         <span>Round <b className="text-ink-100">{round + 1}/8</b></span>
-        <span>Click all legal squares for the <b className="text-ink-100">{names[puz.type]}</b></span>
+        <span>
+          {mode === 'legals'
+            ? <>Every legal square for the <b className="text-ink-100">{PIECE_NAME[puz.piece]}</b></>
+            : <>Every square the <b className="text-ink-100">{PIECE_NAME[puz.piece]}</b> attacks</>}
+        </span>
         <span>Score <b className="text-ink-100">{score}</b></span>
       </div>
       <MiniBoard
         onSquare={click}
         cell={(f, r) => {
           const s = sq(f, r);
-          const isPiece = s === puz.square;
           const isSel = selected.has(s);
-          const isDest = puz.dests.has(s as Square);
-          let cls = '';
+          const isAns = puz.answers.has(s);
+          let overlay: Overlay | undefined;
           if (submitted) {
-            if (isSel && isDest) cls = '!bg-emerald-400';
-            else if (isSel && !isDest) cls = '!bg-red-400';
-            else if (!isSel && isDest) cls = '!bg-amber-300/70';
-          } else if (isSel) cls = '!bg-sky-400/70';
-          return {
-            cls,
-            content: isPiece ? (
-              <Piece piece={puz.type} color="w" size={36} />
-            ) : isSel && !submitted ? (
-              <span className="w-3 h-3 rounded-full bg-black/50" />
-            ) : null,
-          };
+            if (isSel && isAns) overlay = 'ok';
+            else if (isSel) overlay = 'bad';
+            else if (isAns) overlay = 'miss';
+          } else if (isSel) overlay = 'sel';
+          if (s === puz.from) overlay = 'mark';
+          return { piece: puz.board.get(s), overlay };
         }}
       />
-      <div className="flex items-center justify-center gap-2 min-h-[2.25rem]">
+      <div className="flex items-center justify-center gap-2 flex-wrap min-h-[2.25rem]">
         {!submitted ? (
           <>
-            <p className="text-xs text-ink-500">Select every square the piece can move to, then submit.</p>
+            <p className="text-xs text-ink-500">
+              {mode === 'legals'
+                ? 'Select every square the piece can move to, then submit.'
+                : 'Pieces block the way. A square holding a piece counts if the line reaches it.'}
+            </p>
             <button onClick={submit} className="btn-primary text-sm" disabled={selected.size === 0}>Submit</button>
           </>
         ) : (
           <>
-            <p className="text-sm text-ink-200">
-              {selected.size === puz.dests.size && [...selected].every((s) => puz.dests.has(s as Square))
-                ? 'Perfect!'
-                : `Found ${[...selected].filter((s) => puz.dests.has(s as Square)).length} of ${puz.dests.size}`}
-            </p>
+            <p className="text-sm text-ink-200">{perfect ? (mode === 'legals' ? 'Perfect!' : 'Perfect vision!') : `Found ${hits} of ${puz.answers.size}${selected.size > hits ? ` (${selected.size - hits} wrong)` : ''}`}</p>
             <button onClick={next} className="btn-primary text-sm">{round === 7 ? 'Finish' : 'Next'}</button>
           </>
         )}
@@ -613,571 +952,76 @@ function LegalsGame({ onFinish, best }: { onFinish: (s: number) => void; best?: 
   );
 }
 
-// ───────────── 6. Hanging Pieces ─────────────
+// ───────────── 6 + 10. Hanging Pieces / Safe Captures (click a piece) ─────────────
 
-function genHanging(): { fen: string; hanging: Square[] } {
-  for (let attempt = 0; attempt < 80; attempt++) {
-    const c = new Chess();
-    c.clear();
-    c.put({ type: 'k', color: 'b' }, 'a8');
-    c.put({ type: 'k', color: 'w' }, 'h1');
-    const pieces: PieceSymbol[] = ['q', 'r', 'b', 'n', 'p'];
-    const used = new Set<string>(['a8', 'h1']);
-    const whiteSquares: Square[] = [];
-    const nW = 3 + rnd(3);
-    for (let i = 0; i < nW; i++) {
-      let s: Square;
-      do { s = randomSquare(); } while (used.has(s));
-      used.add(s);
-      c.put({ type: pieces[rnd(pieces.length)], color: 'w' }, s);
-      whiteSquares.push(s);
-    }
-    const nB = 2 + rnd(3);
-    for (let i = 0; i < nB; i++) {
-      let s: Square;
-      do { s = randomSquare(); } while (used.has(s));
-      used.add(s);
-      c.put({ type: pieces[rnd(pieces.length - 1)], color: 'b' }, s);
-    }
-    const fenParts = c.fen().split(' ');
-    fenParts[1] = 'b';
-    fenParts[3] = '-';
-    const fen = fenParts.join(' ');
-    try {
-      const chess = new Chess(fen);
-      const hanging: Square[] = [];
-      for (const s of whiteSquares) {
-        const attackers = (chess as any).attackers?.(s, 'b') ?? [];
-        const defenders = (chess as any).attackers?.(s, 'w') ?? [];
-        if (attackers.length > 0 && defenders.length === 0) hanging.push(s);
-      }
-      if (hanging.length >= 1 && hanging.length <= 2) return { fen, hanging };
-    } catch { /* continue */ }
-  }
-  return { fen: '8/8/8/3n4/8/8/4P3/4K2k b - - 0 1', hanging: ['e2'] };
-}
+interface PickPuz { board: Board; answers: string[] }
 
-function HangingGame({ onFinish, best }: { onFinish: (s: number) => void; best?: number }) {
+function PickGame({ gen, rounds, prompt, hint, canPick, okMsg, badMsg, onFinish, best }: {
+  gen: () => PickPuz;
+  rounds: number;
+  prompt: string;
+  hint: string;
+  canPick: (p: Pc | undefined) => boolean;
+  okMsg: string;
+  badMsg: (answers: string[]) => string;
+  onFinish: (s: number) => void;
+  best?: number;
+}) {
   const [round, setRound] = useState(0);
-  const [puz, setPuz] = useState(genHanging);
-  const [picked, setPicked] = useState<Square | null>(null);
-  const [score, setScore] = useState(0);
-  const [done, setDone] = useState(false);
-  const [prevBest, setPrevBest] = useState<number | undefined>(best);
-
-  const onSquareClick = (square: Square) => {
-    if (picked) return;
-    setPicked(square);
-    if (puz.hanging.includes(square)) setScore((s) => s + 1);
-  };
-
-  const next = () => {
-    if (round === 7) { setDone(true); onFinish(score); return; }
-    setRound((r) => r + 1);
-    setPuz(genHanging());
-    setPicked(null);
-  };
-
-  const again = () => {
-    setPrevBest(best === undefined ? score : Math.max(best, score));
-    setRound(0); setScore(0); setPuz(genHanging()); setPicked(null); setDone(false);
-  };
-
-  if (done) return <Result score={score} max="/ 8" best={prevBest} onAgain={again} />;
-
-  return (
-    <div className="space-y-3">
-      <div className="flex justify-between max-w-[420px] mx-auto text-sm text-ink-400">
-        <span>Round <b className="text-ink-100">{round + 1}/8</b></span>
-        <span>Click a hanging (unprotected) white piece</span>
-        <span>Score <b className="text-ink-100">{score}</b></span>
-      </div>
-      <div className="max-w-[420px] mx-auto">
-        <ChessBoard
-          fen={puz.fen}
-          size={420}
-          interactive={false}
-          onSquareClick={onSquareClick}
-          highlightSquare={picked}
-          annotationSquare={picked && puz.hanging.includes(picked) ? picked : null}
-          annotationColor={picked && puz.hanging.includes(picked) ? '#81b64c' : '#fa412d'}
-          showCelebration={false}
-        />
-      </div>
-      <div className="flex items-center justify-center gap-2 min-h-[2.25rem]">
-        {!picked ? (
-          <p className="text-xs text-ink-500">A hanging piece is attacked and has no defender.</p>
-        ) : (
-          <>
-            <p className="text-sm text-ink-200">
-              {puz.hanging.includes(picked) ? 'Correct — that piece is hanging!' : `Not hanging. Hanging: ${puz.hanging.join(', ')}`}
-            </p>
-            <button onClick={next} className="btn-primary text-sm">{round === 7 ? 'Finish' : 'Next'}</button>
-          </>
-        )}
-      </div>
-    </div>
-  );
-}
-
-// ───────────── 7. Check or Not ─────────────
-
-function genCheckPos(): { fen: string; inCheck: boolean } {
-  for (let i = 0; i < 60; i++) {
-    const c = new Chess();
-    c.clear();
-    c.put({ type: 'k', color: 'w' }, randomSquare());
-    c.put({ type: 'k', color: 'b' }, randomSquare());
-    const pieces: PieceSymbol[] = ['q', 'r', 'b', 'n'];
-    const n = 2 + rnd(4);
-    const used = new Set(
-      c.board().flat().filter(Boolean).map((p) => p!.square),
-    );
-    for (let j = 0; j < n; j++) {
-      let s: Square;
-      do { s = randomSquare(); } while (used.has(s));
-      used.add(s);
-      const color: Color = Math.random() < 0.5 ? 'w' : 'b';
-      c.put({ type: pieces[rnd(pieces.length)], color }, s);
-    }
-    try {
-      const fenParts = c.fen().split(' ');
-      fenParts[1] = 'w';
-      fenParts[3] = '-';
-      const fen = fenParts.join(' ');
-      const chess = new Chess(fen);
-      if (chess.isCheckmate() || chess.isStalemate()) continue;
-      return { fen: chess.fen(), inCheck: chess.inCheck() };
-    } catch { continue; }
-  }
-  return { fen: '4k3/8/8/8/8/8/4R3/4K3 w - - 0 1', inCheck: true };
-}
-
-function CheckGame({ onFinish, best }: { onFinish: (s: number) => void; best?: number }) {
-  const [n, setN] = useState(0);
-  const [score, setScore] = useState(0);
-  const [puz, setPuz] = useState(genCheckPos);
-  const [answer, setAnswer] = useState<boolean | null>(null);
-  const [done, setDone] = useState(false);
-  const [prevBest, setPrevBest] = useState<number | undefined>(best);
-
-  const choose = (a: boolean) => {
-    if (answer !== null) return;
-    setAnswer(a);
-    if (a === puz.inCheck) setScore((s) => s + 1);
-  };
-  const next = () => {
-    if (n === 11) { setDone(true); onFinish(score); return; }
-    setN(n + 1); setPuz(genCheckPos()); setAnswer(null);
-  };
-  const again = () => {
-    setPrevBest(best === undefined ? score : Math.max(best, score));
-    setN(0); setScore(0); setPuz(genCheckPos()); setAnswer(null); setDone(false);
-  };
-
-  if (done) return <Result score={score} max="/ 12" best={prevBest} onAgain={again} />;
-
-  return (
-    <div className="space-y-3">
-      <div className="flex justify-between max-w-[420px] mx-auto text-sm text-ink-400">
-        <span>Question <b className="text-ink-100">{n + 1}/12</b></span>
-        <span>Is White in check?</span>
-        <span>Score <b className="text-ink-100">{score}</b></span>
-      </div>
-      <div className="max-w-[420px] mx-auto">
-        <ChessBoard fen={puz.fen} size={420} interactive={false} showCelebration={false} />
-      </div>
-      <div className="flex gap-3 max-w-[420px] mx-auto">
-        <button onClick={() => choose(true)} disabled={answer !== null}
-          className={`btn-secondary flex-1 justify-center ${answer !== null && puz.inCheck ? '!bg-emerald-500/30 !border-emerald-400' : answer === true ? '!bg-red-500/30 !border-red-400' : ''}`}>
-          Yes — Check
-        </button>
-        <button onClick={() => choose(false)} disabled={answer !== null}
-          className={`btn-secondary flex-1 justify-center ${answer !== null && !puz.inCheck ? '!bg-emerald-500/30 !border-emerald-400' : answer === false ? '!bg-red-500/30 !border-red-400' : ''}`}>
-          No
-        </button>
-      </div>
-      {answer !== null && (
-        <div className="flex items-center justify-center gap-2">
-          <p className="text-sm text-ink-200">{answer === puz.inCheck ? 'Correct!' : puz.inCheck ? 'It is check.' : 'Not in check.'}</p>
-          <button onClick={next} className="btn-primary text-sm">{n === 11 ? 'Finish' : 'Next'}</button>
-        </div>
-      )}
-    </div>
-  );
-}
-
-// ───────────── 8. King Path ─────────────
-
-function kingDist(f0: number, r0: number, f1: number, r1: number) {
-  return Math.max(Math.abs(f0 - f1), Math.abs(r0 - r1));
-}
-
-function newKingRound() {
-  const start: [number, number] = [rnd(8), rnd(8)];
-  let target: [number, number];
-  do {
-    target = [rnd(8), rnd(8)];
-  } while (kingDist(start[0], start[1], target[0], target[1]) < 2 || kingDist(start[0], start[1], target[0], target[1]) > 5);
-  return { start, target, opt: kingDist(start[0], start[1], target[0], target[1]) };
-}
-
-function KingPathGame({ onFinish, best }: { onFinish: (s: number) => void; best?: number }) {
-  const [phase, setPhase] = useState<'play' | 'done'>('play');
-  const [round, setRound] = useState(0);
-  const [puz, setPuz] = useState(newKingRound);
-  const [fen, setFen] = useState(() => emptyFen({ type: 'k', color: 'w', square: sq(puz.start[0], puz.start[1]) as Square }));
-  const [moves, setMoves] = useState(0);
-  const [pts, setPts] = useState<number | null>(null);
-  const [total, setTotal] = useState(0);
-  const [prevBest, setPrevBest] = useState<number | undefined>(best);
-  const [lastMove, setLastMove] = useState<{ from: Square; to: Square } | null>(null);
-
-  const targetSq = sq(puz.target[0], puz.target[1]) as Square;
-
-  const onUserMove = (m: { from: Square; to: Square; fen: string }) => {
-    if (pts !== null) return;
-    setLastMove({ from: m.from, to: m.to });
-    setFen(keepTurn(m.fen, 'w'));
-    const newMoves = moves + 1;
-    setMoves(newMoves);
-    if (m.to === targetSq) {
-      const p = newMoves === puz.opt ? 3 : newMoves === puz.opt + 1 ? 1 : 0;
-      setPts(p);
-      setTotal((t) => t + p);
-    }
-  };
-
-  const next = () => {
-    if (round === 4) { setPhase('done'); onFinish(total); return; }
-    const p = newKingRound();
-    setRound((r) => r + 1);
-    setPuz(p);
-    setFen(emptyFen({ type: 'k', color: 'w', square: sq(p.start[0], p.start[1]) as Square }));
-    setMoves(0); setPts(null); setLastMove(null);
-  };
-
-  const again = () => {
-    const p = newKingRound();
-    setPrevBest(best === undefined ? total : Math.max(best, total));
-    setRound(0); setTotal(0); setPuz(p);
-    setFen(emptyFen({ type: 'k', color: 'w', square: sq(p.start[0], p.start[1]) as Square }));
-    setMoves(0); setPts(null); setLastMove(null); setPhase('play');
-  };
-
-  if (phase === 'done') return <Result score={total} max="/ 15" best={prevBest} onAgain={again} />;
-
-  return (
-    <div className="space-y-3">
-      <div className="flex items-center justify-between max-w-[420px] mx-auto text-sm text-ink-400">
-        <span>Round <b className="text-ink-100">{round + 1}/5</b></span>
-        <span>Moves <b className="text-ink-100">{moves}</b> <span className="text-ink-500">(best: {puz.opt})</span></span>
-        <span>Points <b className="text-ink-100">{total}</b></span>
-      </div>
-      <div className="max-w-[420px] mx-auto">
-        <ChessBoard
-          key={`king-${round}-${targetSq}`}
-          fen={fen}
-          size={420}
-          interactive={pts === null}
-          onUserMove={onUserMove}
-          annotationSquare={targetSq}
-          annotationColor="#81b64c"
-          lastMove={lastMove}
-          showCelebration={false}
-        />
-      </div>
-      <div className="flex items-center justify-center gap-2 min-h-[2.25rem]">
-        {pts === null ? (
-          <p className="text-xs text-ink-500">Move the king to the green target in as few moves as possible.</p>
-        ) : (
-          <>
-            <p className="text-sm text-ink-200">
-              {pts === 3 ? 'Perfect! +3' : pts === 1 ? 'One extra move. +1' : `Took ${moves} (best ${puz.opt}). +0`}
-            </p>
-            <button onClick={next} className="btn-primary text-sm">{round === 4 ? 'Finish' : 'Next round'}</button>
-          </>
-        )}
-      </div>
-    </div>
-  );
-}
-
-// ───────────── 9. Bishop Colour ─────────────
-
-function BishopColorGame({ onFinish, best }: { onFinish: (s: number) => void; best?: number }) {
-  const [n, setN] = useState(0);
-  const [score, setScore] = useState(0);
-  const [a, setA] = useState(() => randomSquare());
-  const [b, setB] = useState(() => randomSquare());
-  const [answer, setAnswer] = useState<boolean | null>(null);
-  const [done, setDone] = useState(false);
-  const [prevBest, setPrevBest] = useState<number | undefined>(best);
-
-  const sameColor = (() => {
-    const [fa, ra] = sqToFR(a);
-    const [fb, rb] = sqToFR(b);
-    return (fa + ra) % 2 === (fb + rb) % 2;
-  })();
-
-  const choose = (yes: boolean) => {
-    if (answer !== null) return;
-    setAnswer(yes);
-    if (yes === sameColor) setScore((s) => s + 1);
-  };
-  const next = () => {
-    if (n === 14) { setDone(true); onFinish(score); return; }
-    setN(n + 1); setA(randomSquare()); setB(randomSquare()); setAnswer(null);
-  };
-  const again = () => {
-    setPrevBest(best === undefined ? score : Math.max(best, score));
-    setN(0); setScore(0); setA(randomSquare()); setB(randomSquare()); setAnswer(null); setDone(false);
-  };
-
-  if (done) return <Result score={score} max="/ 15" best={prevBest} onAgain={again} />;
-
-  return (
-    <div className="space-y-4 max-w-[420px] mx-auto">
-      <div className="flex justify-between text-sm text-ink-400">
-        <span>Question <b className="text-ink-100">{n + 1}/15</b></span>
-        <span>Score <b className="text-ink-100">{score}</b></span>
-      </div>
-      <div className="text-center space-y-1">
-        <p className="text-3xl font-bold font-mono text-brand-300">{a} &nbsp;·&nbsp; {b}</p>
-        <p className="text-sm text-ink-400">Same colour complex? (Can a bishop reach both?)</p>
-      </div>
-      <MiniBoard
-        onSquare={() => {}}
-        cell={(f, r) => {
-          const s = sq(f, r);
-          const isA = s === a;
-          const isB = s === b;
-          return {
-            cls: isA || isB ? '!ring-2 !ring-brand-400 ring-inset' : '',
-            content: isA || isB ? <span className="text-lg font-bold">{s}</span> : null,
-          };
-        }}
-      />
-      <div className="flex gap-3">
-        <button onClick={() => choose(true)} disabled={answer !== null}
-          className={`btn-secondary flex-1 justify-center ${answer !== null && sameColor ? '!bg-emerald-500/30 !border-emerald-400' : answer === true ? '!bg-red-500/30 !border-red-400' : ''}`}>
-          Yes — same
-        </button>
-        <button onClick={() => choose(false)} disabled={answer !== null}
-          className={`btn-secondary flex-1 justify-center ${answer !== null && !sameColor ? '!bg-emerald-500/30 !border-emerald-400' : answer === false ? '!bg-red-500/30 !border-red-400' : ''}`}>
-          No — different
-        </button>
-      </div>
-      {answer !== null && (
-        <div className="flex items-center justify-between gap-2">
-          <p className="text-sm text-ink-200">{answer === sameColor ? 'Correct!' : sameColor ? 'They are the same colour.' : 'Different colours.'}</p>
-          <button onClick={next} className="btn-primary text-sm">{n === 14 ? 'Finish' : 'Next'}</button>
-        </div>
-      )}
-    </div>
-  );
-}
-
-// ───────────── 10. Safe Captures ─────────────
-
-function genCaptures(): { fen: string; good: Square[] } {
-  for (let attempt = 0; attempt < 60; attempt++) {
-    const c = new Chess();
-    c.clear();
-    c.put({ type: 'k', color: 'w' }, 'e1');
-    c.put({ type: 'k', color: 'b' }, 'e8');
-    const used = new Set(['e1', 'e8']);
-    const pieces: PieceSymbol[] = ['q', 'r', 'b', 'n', 'p'];
-    for (let i = 0; i < 3 + rnd(2); i++) {
-      let s: Square;
-      do { s = randomSquare(); } while (used.has(s));
-      used.add(s);
-      c.put({ type: pieces[rnd(pieces.length)], color: 'b' }, s);
-    }
-    for (let i = 0; i < 3 + rnd(2); i++) {
-      let s: Square;
-      do { s = randomSquare(); } while (used.has(s));
-      used.add(s);
-      c.put({ type: pieces[rnd(pieces.length)], color: 'w' }, s);
-    }
-    const fenParts = c.fen().split(' ');
-    fenParts[1] = 'w';
-    fenParts[3] = '-';
-    const fen = fenParts.join(' ');
-    try {
-      const chess = new Chess(fen);
-      const good: Square[] = [];
-      for (const m of chess.moves({ verbose: true })) {
-        if (m.captured) {
-          const defenders = (chess as any).attackers?.(m.to, 'b') ?? [];
-          if (defenders.length === 0) good.push(m.to);
-        }
-      }
-      if (good.length >= 1) return { fen, good: [...new Set(good)] };
-    } catch { /* continue */ }
-  }
-  return { fen: '4k3/8/8/3p4/8/8/4P3/4K3 w - - 0 1', good: ['d5'] };
-}
-
-function CapturesGame({ onFinish, best }: { onFinish: (s: number) => void; best?: number }) {
-  const [round, setRound] = useState(0);
-  const [puz, setPuz] = useState(genCaptures);
-  const [picked, setPicked] = useState<Square | null>(null);
-  const [score, setScore] = useState(0);
-  const [done, setDone] = useState(false);
-  const [prevBest, setPrevBest] = useState<number | undefined>(best);
-
-  const onSquareClick = (square: Square) => {
-    if (picked) return;
-    setPicked(square);
-    if (puz.good.includes(square)) setScore((s) => s + 1);
-  };
-
-  const next = () => {
-    if (round === 7) { setDone(true); onFinish(score); return; }
-    setRound((r) => r + 1);
-    setPuz(genCaptures());
-    setPicked(null);
-  };
-
-  const again = () => {
-    setPrevBest(best === undefined ? score : Math.max(best, score));
-    setRound(0); setScore(0); setPuz(genCaptures()); setPicked(null); setDone(false);
-  };
-
-  if (done) return <Result score={score} max="/ 8" best={prevBest} onAgain={again} />;
-
-  return (
-    <div className="space-y-3">
-      <div className="flex justify-between max-w-[420px] mx-auto text-sm text-ink-400">
-        <span>Round <b className="text-ink-100">{round + 1}/8</b></span>
-        <span>Click a square where White can capture safely</span>
-        <span>Score <b className="text-ink-100">{score}</b></span>
-      </div>
-      <div className="max-w-[420px] mx-auto">
-        <ChessBoard
-          fen={puz.fen}
-          size={420}
-          interactive={false}
-          onSquareClick={onSquareClick}
-          highlightSquare={picked}
-          showCelebration={false}
-        />
-      </div>
-      <div className="flex items-center justify-center gap-2 min-h-[2.25rem]">
-        {!picked ? (
-          <p className="text-xs text-ink-500">A safe capture is one that is not defended by the opponent.</p>
-        ) : (
-          <>
-            <p className="text-sm text-ink-200">
-              {puz.good.includes(picked) ? 'Yes — safe capture!' : `Not a safe capture. Valid: ${puz.good.join(', ') || 'none'}`}
-            </p>
-            <button onClick={next} className="btn-primary text-sm">{round === 7 ? 'Finish' : 'Next'}</button>
-          </>
-        )}
-      </div>
-    </div>
-  );
-}
-
-// ───────────── 11. Piece Sight ─────────────
-
-function newSightRound() {
-  const type = (['n', 'b', 'r', 'q'] as PieceSymbol[])[rnd(4)];
-  const square = randomSquare();
-  const fen = emptyFen({ type, color: 'w', square });
-  const chess = new Chess(fen);
-  const attacks = new Set(chess.moves({ square, verbose: true }).map((m) => m.to));
-  return { type, square, fen, attacks };
-}
-
-function SightGame({ onFinish, best }: { onFinish: (s: number) => void; best?: number }) {
-  const [round, setRound] = useState(0);
-  const [puz, setPuz] = useState(newSightRound);
-  const [selected, setSelected] = useState<Set<string>>(new Set());
-  const [submitted, setSubmitted] = useState(false);
+  const [puz, setPuz] = useState(gen);
+  const [picked, setPicked] = useState<string | null>(null);
+  const [note, setNote] = useState('');
   const [score, setScore] = useState(0);
   const [done, setDone] = useState(false);
   const [prevBest, setPrevBest] = useState<number | undefined>(best);
 
   const click = (f: number, r: number) => {
-    if (submitted) return;
+    if (picked) return;
     const s = sq(f, r);
-    if (s === puz.square) return;
-    setSelected((prev) => {
-      const next = new Set(prev);
-      if (next.has(s)) next.delete(s);
-      else next.add(s);
-      return next;
-    });
-  };
-
-  const submit = () => {
-    if (submitted) return;
-    setSubmitted(true);
-    let ok = 0;
-    for (const s of selected) if (puz.attacks.has(s as Square)) ok++;
-    if (ok === puz.attacks.size && selected.size === puz.attacks.size) setScore((s) => s + 1);
+    if (!canPick(puz.board.get(s))) { setNote(hint); return; }
+    setNote('');
+    setPicked(s);
+    if (puz.answers.includes(s)) setScore((x) => x + 1);
   };
 
   const next = () => {
-    if (round === 7) { setDone(true); onFinish(score); return; }
-    setRound((r) => r + 1);
-    setPuz(newSightRound());
-    setSelected(new Set());
-    setSubmitted(false);
+    if (round === rounds - 1) { setDone(true); onFinish(score); return; }
+    setRound((r) => r + 1); setPuz(gen()); setPicked(null); setNote('');
   };
-
   const again = () => {
     setPrevBest(best === undefined ? score : Math.max(best, score));
-    setRound(0); setScore(0); setPuz(newSightRound());
-    setSelected(new Set()); setSubmitted(false); setDone(false);
+    setRound(0); setScore(0); setPuz(gen()); setPicked(null); setNote(''); setDone(false);
   };
 
-  if (done) return <Result score={score} max="/ 8" best={prevBest} onAgain={again} />;
+  if (done) return <Result score={score} max={`/ ${rounds}`} best={prevBest} onAgain={again} />;
 
-  const names: Record<string, string> = { n: 'Knight', b: 'Bishop', r: 'Rook', q: 'Queen' };
-
+  const right = picked !== null && puz.answers.includes(picked);
   return (
     <div className="space-y-3">
       <div className="flex justify-between max-w-[420px] mx-auto text-sm text-ink-400">
-        <span>Round <b className="text-ink-100">{round + 1}/8</b></span>
-        <span>Click every square the <b className="text-ink-100">{names[puz.type]}</b> attacks</span>
+        <span>Round <b className="text-ink-100">{round + 1}/{rounds}</b></span>
+        <span>{prompt}</span>
         <span>Score <b className="text-ink-100">{score}</b></span>
       </div>
       <MiniBoard
         onSquare={click}
         cell={(f, r) => {
           const s = sq(f, r);
-          const isPiece = s === puz.square;
-          const isSel = selected.has(s);
-          const isAtt = puz.attacks.has(s as Square);
-          let cls = '';
-          if (submitted) {
-            if (isSel && isAtt) cls = '!bg-emerald-400';
-            else if (isSel && !isAtt) cls = '!bg-red-400';
-            else if (!isSel && isAtt) cls = '!bg-amber-300/70';
-          } else if (isSel) cls = '!bg-sky-400/70';
-          return {
-            cls,
-            content: isPiece ? <Piece piece={puz.type} color="w" size={36} /> : null,
-          };
+          let overlay: Overlay | undefined;
+          if (picked) {
+            if (s === picked) overlay = right ? 'ok' : 'bad';
+            else if (!right && puz.answers.includes(s)) overlay = 'miss';
+          }
+          return { piece: puz.board.get(s), overlay };
         }}
       />
-      <div className="flex items-center justify-center gap-2 min-h-[2.25rem]">
-        {!submitted ? (
-          <>
-            <p className="text-xs text-ink-500">Mark every attacked square, then submit.</p>
-            <button onClick={submit} className="btn-primary text-sm">Submit</button>
-          </>
+      <div className="flex items-center justify-center gap-2 flex-wrap min-h-[2.25rem]">
+        {!picked ? (
+          <p className="text-xs text-ink-500">{note || hint}</p>
         ) : (
           <>
-            <p className="text-sm text-ink-200">
-              {selected.size === puz.attacks.size && [...selected].every((s) => puz.attacks.has(s as Square))
-                ? 'Perfect vision!'
-                : `Got ${[...selected].filter((s) => puz.attacks.has(s as Square)).length}/${puz.attacks.size}`}
-            </p>
-            <button onClick={next} className="btn-primary text-sm">{round === 7 ? 'Finish' : 'Next'}</button>
+            <p className="text-sm text-ink-200">{right ? okMsg : badMsg(puz.answers)}</p>
+            <button onClick={next} className="btn-primary text-sm">{round === rounds - 1 ? 'Finish' : 'Next'}</button>
           </>
         )}
       </div>
@@ -1185,186 +1029,205 @@ function SightGame({ onFinish, best }: { onFinish: (s: number) => void; best?: n
   );
 }
 
-// ───────────── 12. Fork Finder ─────────────
-
-function genFork(): { fen: string; isFork: boolean; pieceSq: Square } {
-  for (let attempt = 0; attempt < 80; attempt++) {
-    const c = new Chess();
-    c.clear();
-    c.put({ type: 'k', color: 'b' }, 'e8');
-    c.put({ type: 'k', color: 'w' }, 'e1');
-    const used = new Set(['e8', 'e1']);
-    for (let i = 0; i < 2; i++) {
-      let s: Square;
-      do { s = randomSquare(); } while (used.has(s));
-      used.add(s);
-      c.put({ type: (['q', 'r', 'b', 'n'] as PieceSymbol[])[rnd(4)], color: 'b' }, s);
-    }
-    let pieceSq: Square;
-    do { pieceSq = randomSquare(); } while (used.has(pieceSq));
-    const pType: PieceSymbol = Math.random() < 0.6 ? 'n' : 'q';
-    c.put({ type: pType, color: 'w' }, pieceSq);
-    const fenParts = c.fen().split(' ');
-    fenParts[1] = 'w';
-    fenParts[3] = '-';
-    const fen = fenParts.join(' ');
-    try {
-      const chess = new Chess(fen);
-      const attacks = chess.moves({ square: pieceSq, verbose: true }).filter((m) => m.captured).map((m) => m.to);
-      const isFork = attacks.length >= 2;
-      if (Math.random() < 0.5 || isFork) return { fen, isFork, pieceSq };
-    } catch { /* continue */ }
-  }
-  return { fen: '4k3/8/8/3n4/8/8/8/4K3 w - - 0 1', isFork: false, pieceSq: 'd5' };
+function HangingGame({ onFinish, best }: { onFinish: (s: number) => void; best?: number }) {
+  return (
+    <PickGame
+      gen={genHanging}
+      rounds={8}
+      prompt="Click White's hanging piece"
+      hint="A hanging piece is attacked by Black and has no defender. Black is to move."
+      canPick={(p) => !!p && p.c === 'w' && p.t !== 'k'}
+      okMsg="Correct — that piece is hanging!"
+      badMsg={(a) => `Not hanging. Hanging: ${a.join(', ')} (highlighted)`}
+      onFinish={onFinish}
+      best={best}
+    />
+  );
 }
 
-function ForksGame({ onFinish, best }: { onFinish: (s: number) => void; best?: number }) {
+function CapturesGame({ onFinish, best }: { onFinish: (s: number) => void; best?: number }) {
+  return (
+    <PickGame
+      gen={genCaptures}
+      rounds={8}
+      prompt="Click a Black piece White can take safely"
+      hint="A safe capture is one the opponent cannot take back. White is to move."
+      canPick={(p) => !!p && p.c === 'b' && p.t !== 'k'}
+      okMsg="Yes — safe capture!"
+      badMsg={(a) => `Not safe. Safe captures: ${a.join(', ')} (highlighted)`}
+      onFinish={onFinish}
+      best={best}
+    />
+  );
+}
+
+// ───────────── 7, 9, 12, 13. Yes / no games ─────────────
+
+function YesNoGame<T>({ gen, total, question, yesLabel, noLabel, truth, board, explain, onFinish, best }: {
+  gen: () => T;
+  total: number;
+  question: string;
+  yesLabel: string;
+  noLabel: string;
+  truth: (p: T) => boolean;
+  board: (p: T, answered: boolean) => ReactNode;
+  explain: (p: T, correct: boolean) => string;
+  onFinish: (s: number) => void;
+  best?: number;
+}) {
   const [n, setN] = useState(0);
   const [score, setScore] = useState(0);
-  const [puz, setPuz] = useState(genFork);
+  const [puz, setPuz] = useState<T>(gen);
   const [answer, setAnswer] = useState<boolean | null>(null);
   const [done, setDone] = useState(false);
   const [prevBest, setPrevBest] = useState<number | undefined>(best);
 
-  const choose = (yes: boolean) => {
+  const correct = truth(puz);
+  const choose = (a: boolean) => {
     if (answer !== null) return;
-    setAnswer(yes);
-    if (yes === puz.isFork) setScore((s) => s + 1);
+    setAnswer(a);
+    if (a === correct) setScore((s) => s + 1);
   };
   const next = () => {
-    if (n === 9) { setDone(true); onFinish(score); return; }
-    setN(n + 1); setPuz(genFork()); setAnswer(null);
+    if (n === total - 1) { setDone(true); onFinish(score); return; }
+    setN(n + 1); setPuz(gen()); setAnswer(null);
   };
   const again = () => {
     setPrevBest(best === undefined ? score : Math.max(best, score));
-    setN(0); setScore(0); setPuz(genFork()); setAnswer(null); setDone(false);
+    setN(0); setScore(0); setPuz(gen()); setAnswer(null); setDone(false);
   };
 
-  if (done) return <Result score={score} max="/ 10" best={prevBest} onAgain={again} />;
+  if (done) return <Result score={score} max={`/ ${total}`} best={prevBest} onAgain={again} />;
 
   return (
     <div className="space-y-3">
       <div className="flex justify-between max-w-[420px] mx-auto text-sm text-ink-400">
-        <span>Question <b className="text-ink-100">{n + 1}/10</b></span>
-        <span>Does the highlighted piece fork two enemies?</span>
+        <span>Question <b className="text-ink-100">{n + 1}/{total}</b></span>
+        <span>{question}</span>
         <span>Score <b className="text-ink-100">{score}</b></span>
       </div>
-      <div className="max-w-[420px] mx-auto">
-        <ChessBoard
-          fen={puz.fen}
-          size={420}
-          interactive={false}
-          highlightSquare={puz.pieceSq}
-          annotationSquare={puz.pieceSq}
-          annotationColor="#749bbf"
-          showCelebration={false}
-        />
-      </div>
+      {board(puz, answer !== null)}
       <div className="flex gap-3 max-w-[420px] mx-auto">
         <button onClick={() => choose(true)} disabled={answer !== null}
-          className={`btn-secondary flex-1 justify-center ${answer !== null && puz.isFork ? '!bg-emerald-500/30 !border-emerald-400' : answer === true ? '!bg-red-500/30 !border-red-400' : ''}`}>
-          Yes — Fork
+          className={`btn-secondary flex-1 justify-center ${choiceCls(answer !== null, correct, answer === true)}`}>
+          {yesLabel}
         </button>
         <button onClick={() => choose(false)} disabled={answer !== null}
-          className={`btn-secondary flex-1 justify-center ${answer !== null && !puz.isFork ? '!bg-emerald-500/30 !border-emerald-400' : answer === false ? '!bg-red-500/30 !border-red-400' : ''}`}>
-          No
+          className={`btn-secondary flex-1 justify-center ${choiceCls(answer !== null, !correct, answer === false)}`}>
+          {noLabel}
         </button>
       </div>
       {answer !== null && (
-        <div className="flex items-center justify-center gap-2">
-          <p className="text-sm text-ink-200">{answer === puz.isFork ? 'Correct!' : puz.isFork ? 'It is a fork.' : 'Not a fork.'}</p>
-          <button onClick={next} className="btn-primary text-sm">{n === 9 ? 'Finish' : 'Next'}</button>
+        <div className="flex items-center justify-center gap-2 flex-wrap">
+          <p className="text-sm text-ink-200">{answer === correct ? 'Correct! ' : ''}{explain(puz, correct)}</p>
+          <button onClick={next} className="btn-primary text-sm">{n === total - 1 ? 'Finish' : 'Next'}</button>
         </div>
       )}
     </div>
   );
 }
 
-// ───────────── 13. Pin Spotter ─────────────
+function CheckGame({ onFinish, best }: { onFinish: (s: number) => void; best?: number }) {
+  return (
+    <YesNoGame
+      gen={genCheck}
+      total={12}
+      question="Is White in check?"
+      yesLabel="Yes — Check"
+      noLabel="No"
+      truth={(p) => p.inCheck}
+      board={(p, answered) => {
+        const wk = kingSq(p.board, 'w');
+        return (
+          <MiniBoard onSquare={() => {}}
+            cell={(f, r) => {
+              const s = sq(f, r);
+              return { piece: p.board.get(s), overlay: answered && p.inCheck && s === wk ? 'bad' : undefined };
+            }} />
+        );
+      }}
+      explain={(p) => (p.inCheck ? 'White is in check.' : 'White is not in check.')}
+      onFinish={onFinish}
+      best={best}
+    />
+  );
+}
 
-function genPin(): { fen: string; isPinned: boolean; pieceSq: Square } {
-  const patterns = [
-    { fen: '4k3/8/8/8/8/8/4b3/4K2R w - - 0 1', isPinned: true, pieceSq: 'e2' as Square },
-    { fen: '4k3/8/8/8/8/8/4n3/4K2R w - - 0 1', isPinned: true, pieceSq: 'e2' as Square },
-    { fen: '4k3/8/8/8/8/4b3/8/4K2R w - - 0 1', isPinned: false, pieceSq: 'e3' as Square },
-    { fen: '4k3/8/8/8/4r3/8/8/4K3 w - - 0 1', isPinned: false, pieceSq: 'e5' as Square },
-    { fen: '4k3/8/8/8/8/8/4q3/R3K3 w - - 0 1', isPinned: true, pieceSq: 'e2' as Square },
-    { fen: '4k3/8/8/8/8/8/3b4/4K2R w - - 0 1', isPinned: false, pieceSq: 'd2' as Square },
-    { fen: '4k3/8/8/8/8/8/2n5/4K2R w - - 0 1', isPinned: false, pieceSq: 'c2' as Square },
-    { fen: '4k3/8/8/8/8/8/4r3/4K3 w - - 0 1', isPinned: false, pieceSq: 'e2' as Square },
-  ];
-  if (Math.random() < 0.35) {
-    const c = new Chess();
-    c.clear();
-    c.put({ type: 'k', color: 'w' }, 'e1');
-    c.put({ type: 'k', color: 'b' }, 'e8');
-    const s = randomSquare();
-    c.put({ type: 'n', color: 'w' }, s);
-    const fenParts = c.fen().split(' ');
-    fenParts[1] = 'w';
-    return { fen: fenParts.join(' '), isPinned: false, pieceSq: s };
-  }
-  return patterns[rnd(patterns.length)];
+function BishopColorGame({ onFinish, best }: { onFinish: (s: number) => void; best?: number }) {
+  return (
+    <YesNoGame
+      gen={() => ({ a: randomSquare(), b: randomSquare() })}
+      total={15}
+      question="Same colour complex?"
+      yesLabel="Yes — same"
+      noLabel="No — different"
+      truth={(p) => isDarkSq(p.a) === isDarkSq(p.b)}
+      board={(p) => (
+        <>
+          <p data-testid="bishop-squares" className="text-3xl font-bold font-mono text-brand-300 text-center">{p.a} &nbsp;·&nbsp; {p.b}</p>
+          <MiniBoard onSquare={() => {}}
+            cell={(f, r) => {
+              const s = sq(f, r);
+              const on = s === p.a || s === p.b;
+              return { overlay: on ? 'mark' : undefined, label: on ? s : undefined };
+            }} />
+        </>
+      )}
+      explain={(p) => (isDarkSq(p.a) === isDarkSq(p.b) ? 'They are the same colour.' : 'They are different colours.')}
+      onFinish={onFinish}
+      best={best}
+    />
+  );
+}
+
+function ForksGame({ onFinish, best }: { onFinish: (s: number) => void; best?: number }) {
+  return (
+    <YesNoGame
+      gen={genFork}
+      total={10}
+      question="Does the marked piece fork two enemies?"
+      yesLabel="Yes — Fork"
+      noLabel="No"
+      truth={(p) => p.isFork}
+      board={(p, answered) => (
+        <MiniBoard onSquare={() => {}}
+          cell={(f, r) => {
+            const s = sq(f, r);
+            let overlay: Overlay | undefined;
+            if (s === p.mark) overlay = 'mark';
+            else if (answered && p.targets.includes(s)) overlay = 'bad';
+            return { piece: p.board.get(s), overlay };
+          }} />
+      )}
+      explain={(p) => (p.isFork ? `It attacks ${p.targets.join(' and ')} at once.` : p.targets.length === 1 ? `It only attacks ${p.targets[0]}.` : 'It attacks no enemy piece.')}
+      onFinish={onFinish}
+      best={best}
+    />
+  );
 }
 
 function PinsGame({ onFinish, best }: { onFinish: (s: number) => void; best?: number }) {
-  const [n, setN] = useState(0);
-  const [score, setScore] = useState(0);
-  const [puz, setPuz] = useState(genPin);
-  const [answer, setAnswer] = useState<boolean | null>(null);
-  const [done, setDone] = useState(false);
-  const [prevBest, setPrevBest] = useState<number | undefined>(best);
-
-  const choose = (yes: boolean) => {
-    if (answer !== null) return;
-    setAnswer(yes);
-    if (yes === puz.isPinned) setScore((s) => s + 1);
-  };
-  const next = () => {
-    if (n === 9) { setDone(true); onFinish(score); return; }
-    setN(n + 1); setPuz(genPin()); setAnswer(null);
-  };
-  const again = () => {
-    setPrevBest(best === undefined ? score : Math.max(best, score));
-    setN(0); setScore(0); setPuz(genPin()); setAnswer(null); setDone(false);
-  };
-
-  if (done) return <Result score={score} max="/ 10" best={prevBest} onAgain={again} />;
-
   return (
-    <div className="space-y-3">
-      <div className="flex justify-between max-w-[420px] mx-auto text-sm text-ink-400">
-        <span>Question <b className="text-ink-100">{n + 1}/10</b></span>
-        <span>Is the highlighted piece pinned to its king?</span>
-        <span>Score <b className="text-ink-100">{score}</b></span>
-      </div>
-      <div className="max-w-[420px] mx-auto">
-        <ChessBoard
-          fen={puz.fen}
-          size={420}
-          interactive={false}
-          highlightSquare={puz.pieceSq}
-          annotationSquare={puz.pieceSq}
-          annotationColor="#f7c631"
-          showCelebration={false}
-        />
-      </div>
-      <div className="flex gap-3 max-w-[420px] mx-auto">
-        <button onClick={() => choose(true)} disabled={answer !== null}
-          className={`btn-secondary flex-1 justify-center ${answer !== null && puz.isPinned ? '!bg-emerald-500/30 !border-emerald-400' : answer === true ? '!bg-red-500/30 !border-red-400' : ''}`}>
-          Yes — Pinned
-        </button>
-        <button onClick={() => choose(false)} disabled={answer !== null}
-          className={`btn-secondary flex-1 justify-center ${answer !== null && !puz.isPinned ? '!bg-emerald-500/30 !border-emerald-400' : answer === false ? '!bg-red-500/30 !border-red-400' : ''}`}>
-          No
-        </button>
-      </div>
-      {answer !== null && (
-        <div className="flex items-center justify-center gap-2">
-          <p className="text-sm text-ink-200">{answer === puz.isPinned ? 'Correct!' : puz.isPinned ? 'It is pinned.' : 'Not pinned.'}</p>
-          <button onClick={next} className="btn-primary text-sm">{n === 9 ? 'Finish' : 'Next'}</button>
-        </div>
+    <YesNoGame
+      gen={genPin}
+      total={10}
+      question="Is the marked piece pinned to its king?"
+      yesLabel="Yes — Pinned"
+      noLabel="No"
+      truth={(p) => p.isPinned}
+      board={(p, answered) => (
+        <MiniBoard onSquare={() => {}}
+          cell={(f, r) => {
+            const s = sq(f, r);
+            let overlay: Overlay | undefined;
+            if (s === p.mark) overlay = 'mark';
+            else if (answered && p.pinner === s) overlay = 'bad';
+            return { piece: p.board.get(s), overlay };
+          }} />
       )}
-    </div>
+      explain={(p) => (p.isPinned ? `Pinned by the ${PIECE_NAME[p.board.get(p.pinner!)!.t].toLowerCase()} on ${p.pinner}: if it moves, the king is in check.` : 'Not pinned: moving it would not expose the king.')}
+      onFinish={onFinish}
+      best={best}
+    />
   );
 }

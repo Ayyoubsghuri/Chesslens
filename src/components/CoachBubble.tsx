@@ -219,7 +219,7 @@ export function CoachBubble({ san, quality, color, evalText, moveKey, compact, f
       <CoachAvatar size={avatar} angry={angry} />
 
       <div
-        className="relative flex-1 min-w-0 mb-3 ml-2 flex items-center gap-3 rounded-2xl bg-white px-3.5 py-3"
+        className="relative flex-1 min-w-0 mb-3 ml-2 flex items-center gap-3 rounded-2xl bg-white px-3.5 py-3 h-[3.25rem] sm:h-[3.75rem]"
         style={{ color: '#262421' }}
         role="status"
         aria-live="polite"
@@ -235,7 +235,7 @@ export function CoachBubble({ san, quality, color, evalText, moveKey, compact, f
 
         <span
           key={lang}
-          className={`flex-1 min-w-0 font-extrabold leading-tight text-left coach-swap ${compact ? 'text-base' : 'text-xl'}`}
+          className={`flex-1 min-w-0 font-extrabold leading-none text-left coach-swap whitespace-nowrap overflow-hidden text-ellipsis ${compact ? 'text-base' : 'text-xl'}`}
           dir={lang === 'ar' && !fork ? 'rtl' : 'ltr'}
           lang={lang === 'ar' && !fork ? 'ar' : 'en'}
           style={lang === 'ar' && !fork ? { fontFamily: '"Segoe UI", Tahoma, system-ui, sans-serif', textAlign: 'left' } : undefined}

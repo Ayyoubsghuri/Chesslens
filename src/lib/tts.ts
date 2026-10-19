@@ -10,7 +10,8 @@
  */
 declare global { interface Window { puter?: any } }
 
-export const COACH_VOICES = ['Brian', 'Amy'] as const;
+/** Brian is the coach's voice everywhere. (To offer Amy again, add 'Amy' here: saved 'Amy' settings are mapped to Brian until then.) */
+export const COACH_VOICES = ['Brian'] as const;
 export const DEFAULT_COACH_VOICE = 'Brian';
 /** Old saved settings may still say Joanna / Matthew: map them to a voice that exists. */
 const normalizeVoice = (v?: string) => ((COACH_VOICES as readonly string[]).includes(v ?? '') ? (v as string) : DEFAULT_COACH_VOICE);
@@ -173,14 +174,32 @@ function voicesReady(): Promise<void> {
   });
 }
 
+// Phones and tablets have no voice called "Brian", so we look for a MALE English voice by name or Android voice id.
+// (The old check /male/ also matched "Fe-male", which is why a female voice was picked on mobile.)
+const FEMALE_RE = /female|woman|zira|samantha|susan|aria|jenny|fiona|karen|moira|tessa|amy|emma|serena|kate|hazel|libby|sonia|victoria|allison|ava|joanna|kimberly|salli|ivy|kendra|-x-(gba|gbc|gbf|iob|iof|iog|ioc)/i;
+const MALE_RE = /(^|[^a-z])male\b|brian|david|daniel|alex\b|mark|guy|george|ryan|thomas|arthur|oliver|james|fred|rishi|aaron|matthew|joey|justin|-x-(gbb|gbd|rjs|iol)/i;
+const isMaleVoice = (v: SpeechSynthesisVoice) => MALE_RE.test(v.name) && !FEMALE_RE.test(v.name);
+const langOf = (v: SpeechSynthesisVoice) => v.lang.toLowerCase().replace('_', '-'); // Android reports "en_GB"
+
 function pickBrowserVoice(name: string): SpeechSynthesisVoice | undefined {
   const all = window.speechSynthesis.getVoices();
-  const en = all.filter((v) => v.lang.toLowerCase().startsWith('en'));
+  const en = all.filter((v) => langOf(v).startsWith('en'));
   const wantLang = UK.has(name) ? 'en-gb' : 'en-us';
+  if (MALE.has(name)) {
+    return (
+      all.find((v) => v.name.toLowerCase().includes(name.toLowerCase())) ??
+      en.find((v) => langOf(v) === wantLang && isMaleVoice(v)) ??
+      en.find((v) => isMaleVoice(v)) ??                                      // any English male voice beats a female one
+      en.find((v) => langOf(v) === wantLang && !FEMALE_RE.test(v.name)) ??
+      en.find((v) => !FEMALE_RE.test(v.name)) ??
+      en.find((v) => langOf(v) === wantLang) ??
+      en[0]
+    );
+  }
   return (
     all.find((v) => v.name.toLowerCase().includes(name.toLowerCase())) ??
-    en.find((v) => v.lang.toLowerCase() === wantLang && (MALE.has(name) ? /male|david|daniel|alex|mark|guy/i.test(v.name) : /female|zira|samantha|susan|aria|jenny|google/i.test(v.name))) ??
-    en.find((v) => v.lang.toLowerCase() === wantLang) ??
+    en.find((v) => langOf(v) === wantLang && FEMALE_RE.test(v.name)) ??
+    en.find((v) => langOf(v) === wantLang) ??
     en[0]
   );
 }
@@ -196,6 +215,8 @@ function speakBrowser(spoken: string, voice: string, opts: SpeakOptions): SpeakH
       const u = new SpeechSynthesisUtterance(spoken);
       const v = pickBrowserVoice(voice);
       if (v) { u.voice = v; u.lang = v.lang; } else u.lang = UK.has(voice) ? 'en-GB' : 'en-US';
+      // No male voice on this device (some phones only ship female ones): lower the pitch so Brian still sounds like Brian.
+      u.pitch = MALE.has(voice) && !(v && isMaleVoice(v)) ? 0.75 : 1;
       u.rate = opts.rate ?? 0.95;
       let best = 0;
       const t0 = performance.now();

@@ -92,11 +92,6 @@ export function AdvancedCoach({
   showAllRef.current = showAllNow;
   const idxRef = useRef(0);
   idxRef.current = idx;
-  // Phone layout: the sentence is ONE line inside a fixed-size strip, so the bubble never changes size.
-  // The strip scrolls along with the spoken sentence; when paused the learner can swipe it.
-  const textRef = useRef<HTMLParagraphElement>(null);
-  const isPhone = () => typeof window !== 'undefined' && window.matchMedia('(max-width: 639px)').matches;
-
   // New move → reset everything.
   useEffect(() => {
     token.current++;
@@ -216,21 +211,6 @@ export function AdvancedCoach({
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [playing, idx, speaking, voiceName]);
-
-  // New step -> show the start of the line again.
-  useEffect(() => {
-    if (textRef.current) textRef.current.scrollLeft = 0;
-  }, [idx, shown]);
-
-  // While playing, slide the line so the words being spoken stay in view.
-  useEffect(() => {
-    const el = textRef.current;
-    if (!el || !playing || !isPhone()) return;
-    const max = el.scrollWidth - el.clientWidth;
-    if (max <= 0) return;
-    const t = Math.min(1, Math.max(0, (prog - 0.08) / 0.84));
-    el.scrollLeft = t * max;
-  }, [prog, playing]);
 
   // Muting while a sentence is being read: stop the voice right away.
   useEffect(() => {
@@ -389,10 +369,7 @@ export function AdvancedCoach({
       ) : (
         <>
           <p
-            ref={textRef}
-            className={`${compact ? 'text-sm' : 'text-[15px]'} leading-snug text-ink-100
-              h-[1.5em] overflow-x-auto overflow-y-hidden whitespace-nowrap [scrollbar-width:none] [&::-webkit-scrollbar]:hidden
-              sm:h-auto sm:min-h-[3.6em] sm:overflow-visible sm:whitespace-normal`}
+            className={`${compact ? 'text-sm' : 'text-[15px]'} leading-snug text-ink-100 min-h-[1.5em] sm:min-h-[3.6em]`}
             aria-live="polite"
           >
             <Text segs={scene.text} />
