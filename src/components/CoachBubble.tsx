@@ -224,7 +224,7 @@ export function CoachBubble({ san, quality, color, evalText, moveKey, compact, f
       <CoachAvatar
         size={avatar}
         angry={angry}
-        onClick={angry ? () => window.dispatchEvent(new CustomEvent('coach-blunder-run')) : undefined}
+        onClick={angry || ['inaccuracy', 'mistake', 'miss'].includes(quality) ? () => window.dispatchEvent(new CustomEvent('coach-blunder-run')) : undefined}
       />
 
       <div

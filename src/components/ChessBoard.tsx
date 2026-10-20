@@ -42,6 +42,9 @@ interface ChessBoardProps {
   }) => void;
 }
 
+/** Move qualities where clicking the coach plays the "this is the best move" correction. */
+const COACH_FIX: MoveQuality[] = ['blunder', 'mistake', 'miss', 'inaccuracy'];
+
 function colorToBrush(color: string): string {
   return `custom-${color.replace('#', '')}`;
 }
@@ -462,14 +465,18 @@ export function ChessBoard({
   // blundered, puts it back, plays the best move and yells about it, then walks home.
   const [flyer, setFlyer] = useState<{ x: number; y: number; scale: number; ms: number; grab: boolean } | null>(null);
   const [shout, setShout] = useState<{ x: number; y: number; size: number } | null>(null);
+  const [coachFx, setCoachFx] = useState({ angry: true, text: 'THIS IS THE BEST MOVE!' });
   useEffect(() => {
-    if (!coachRun || moveQuality !== 'blunder' || !lastMove || !bestMoveUci || bestMoveUci.length < 4) return;
+    if (!coachRun || !moveQuality || !COACH_FIX.includes(moveQuality) || !lastMove || !bestMoveUci || bestMoveUci.length < 4) return;
     // Runs only when the person clicks the coach (CoachBubble fires 'coach-blunder-run').
     let stopRun: (() => void) | null = null;
     const startRun = (): (() => void) | null => {
     const box = containerRef.current;
     if (!box) return null;
     const moved = lastMove;
+    const furious = moveQuality === 'blunder';
+    const phrase = furious ? 'This is the best move!' : 'This is the best move here!';
+    setCoachFx({ angry: furious, text: phrase });
     const bFrom = bestMoveUci.slice(0, 2) as Square;
     const bTo = bestMoveUci.slice(2, 4) as Square;
     const promo = bestMoveUci.length > 4 ? bestMoveUci[4] : undefined;
@@ -556,10 +563,10 @@ export function ChessBoard({
       setShout({
         x: Math.min(Math.max(c.x, 110), window.innerWidth - 110),
         y: Math.max(c.y - c.sz * 2.3, 36),
-        size: Math.min(Math.max(c.sz * 0.4, 14), 28),
+        size: Math.min(Math.max(c.sz * 0.24, 11), 15),
       });
       try {
-        const u = new SpeechSynthesisUtterance('This is the best move!');
+        const u = new SpeechSynthesisUtterance(phrase);
         u.pitch = 1.6; u.rate = 1.05; u.volume = 1;
         window.speechSynthesis.cancel();
         window.speechSynthesis.speak(u);
@@ -687,7 +694,7 @@ export function ChessBoard({
             }}
             aria-hidden="true"
           >
-            <CoachAvatar size={88} angry flying />
+            <CoachAvatar size={88} angry={coachFx.angry} flying />
             <span
               style={{ position: 'absolute', left: '50%', bottom: -22, transform: 'translateX(-50%)', fontSize: 44, lineHeight: 1 }}
             >
@@ -707,19 +714,21 @@ export function ChessBoard({
               zIndex: 101,
               pointerEvents: 'none',
               animation: 'cb-shah-pop 0.35s ease-out both',
-              background: '#fff',
-              color: '#d11a1a',
-              border: '3px solid #d11a1a',
-              fontWeight: 900,
+              background: '#f5ecd9',
+              color: '#1a2a24',
+              border: '1px solid rgba(26, 42, 36, 0.15)',
+              fontFamily: 'var(--cl-font-display)',
+              fontStyle: 'italic',
+              fontWeight: 700,
               fontSize: shout.size,
-              padding: '0.25em 0.7em',
+              padding: '0.2em 0.65em',
               borderRadius: 999,
               whiteSpace: 'nowrap',
               boxShadow: '0 4px 14px rgba(0,0,0,0.45)',
             }}
             aria-hidden="true"
           >
-            THIS IS THE BEST MOVE!
+            {coachFx.text}
           </div>,
           document.body
         )}
