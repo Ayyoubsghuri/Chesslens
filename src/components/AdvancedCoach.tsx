@@ -2,14 +2,15 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import type { Square } from 'chess.js';
 import {
   Play, Pause, RotateCcw, SkipBack, SkipForward, Sparkles, Loader2, Volume2, VolumeX,
-  Lightbulb, ChevronDown, ChevronUp, X,
+  Lightbulb, ChevronDown, ChevronUp, X, FastForward,
 } from 'lucide-react';
 import {
   buildAdvancedExplanation, buildCoreScenes, sceneDuration, plainText, parseSegs,
-  visibleScenes, hasMoreScenes, showAllByDefault, retryChallenge, checkRetryMove,
+  visibleScenes, hasMoreScenes, showAllByDefault, retryChallenge, checkRetryMove, continuationScenes, sceneMoveQuality, whyNotScenes,
   type ExplainInput, type Scene, type Seg, type RetryChallenge,
 } from '@/lib/coach-explain';
 import { speak, unlockSpeech, squareCues, litSquares } from '@/lib/tts';
+import { onCoachMove } from '@/lib/coach-bus';
 
 interface Props {
   /** Everything needed to explain the move. null = nothing to explain. (input.level = beginner / intermediate / advanced) */
@@ -55,6 +56,18 @@ const sameScene = (a: Scene, b: Scene) =>
   a.fen === b.fen && a.uci === b.uci && plainText(a.text) === plainText(b.text);
 const sameList = (a: string[], b: string[]) => a.length === b.length && a.every((x, i) => x === b[i]);
 
+/** Colours / names of the move verdicts (same as the main review). */
+const QUALITY_PILL: Record<string, { label: string; color: string }> = {
+  brilliant: { label: 'Brilliant', color: '#26c2a3' }, best: { label: 'Best', color: '#81b64c' },
+  great: { label: 'Great', color: '#749bbf' }, excellent: { label: 'Excellent', color: '#96bc4b' },
+  good: { label: 'Good', color: '#95b3b8' }, book: { label: 'Book', color: '#a88865' },
+  inaccuracy: { label: 'Inaccuracy', color: '#f7c631' }, mistake: { label: 'Mistake', color: '#ffa459' },
+  miss: { label: 'Miss', color: '#e040fb' }, blunder: { label: 'Blunder', color: '#fa412d' },
+};
+/** One move in one position. */
+const sceneKey = (s: Scene) => `${s.fen.split(' ').slice(0, 4).join(' ')}|${s.uci}`;
+
+
 /** Which squares the voice has said so far, for ONE scene (idx = its position, so a stale value never leaks onto the next scene). */
 interface SpokenState { idx: number; named: Square[]; current: Square[]; done: boolean }
 interface RetryState { hints: number; checking: boolean; result: { ok: boolean; text: string } | null }
@@ -68,7 +81,21 @@ export function AdvancedCoach({
   const [scenes, setScenes] = useState<Scene[]>(core);
   const [showMore, setShowMore] = useState(false);
   const showAllNow = showMore || showAllByDefault(input?.level);
-  const shown = useMemo(() => visibleScenes(scenes, showAllNow), [scenes, showAllNow]);
+  const baseShown = useMemo(() => visibleScenes(scenes, showAllNow), [scenes, showAllNow]);
+  /**
+   * "Why not this move?": the player dragged another move on the board. Its explanation replaces the main steps
+   * (same playback, same board) until "Back to explanation".
+   */
+  const [alt, setAlt] = useState<{ scenes: Scene[] } | null>(null);
+  const [altBusy, setAltBusy] = useState(false);
+  const [altNote, setAltNote] = useState<string | null>(null);
+  const altGen = useRef(0);
+  /** Where the main explanation was when the question was asked, so "Back" returns to the same step. */
+  const altBack = useRef<number | null>(null);
+  /** "Continue" steps (the engine's next moves) are added after the explanation. */
+  const [contScenes, setContScenes] = useState<Scene[]>([]);
+  const mainShown = useMemo(() => (contScenes.length ? [...baseShown, ...contScenes] : baseShown), [baseShown, contScenes]);
+  const shown = useMemo(() => (alt ? alt.scenes : mainShown), [alt, mainShown]);
   const [idx, setIdx] = useState(0);
   const [prog, setProg] = useState(0);
   const [playing, setPlaying] = useState(false);
@@ -79,6 +106,12 @@ export function AdvancedCoach({
   const [voiceError, setVoiceError] = useState<string | null>(null);
   const [spoken, setSpoken] = useState<SpokenState | null>(null);
   const [retry, setRetry] = useState<RetryState | null>(null);
+  const [continuing, setContinuing] = useState(false);
+  const [lineOver, setLineOver] = useState(false);
+  /** Bumped whenever the continuation must be thrown away (new move, show more / less). */
+  const contGen = useRef(0);
+  /** Engine verdict of every move shown so far, by sceneKey ('' = no verdict). */
+  const [quals, setQuals] = useState<Record<string, string>>({});
   const speaking = voice && !muted;
   const challenge = useMemo(() => (input ? retryChallenge(input) : null), [input]);
   const extrasFor = useRef<string | null>(null);
@@ -97,6 +130,15 @@ export function AdvancedCoach({
     token.current++;
     extrasFor.current = null;
     setScenes(core);
+    setContScenes([]);
+    setContinuing(false);
+    setLineOver(false);
+    contGen.current++;
+    altGen.current++;
+    altBack.current = null;
+    setAlt(null);
+    setAltBusy(false);
+    setAltNote(null);
     setShowMore(false);
     setIdx(0);
     setProg(0);
@@ -118,9 +160,21 @@ export function AdvancedCoach({
     const s = shown[idx];
     if (!started || !s) return;
     const sp = spoken && spoken.idx === idx ? { named: spoken.named, current: spoken.current, done: spoken.done } : undefined;
-    onScene(sp ? { ...s, spoken: sp } : s);
+    onScene({ ...s, quality: quals[sceneKey(s)] || s.quality || undefined, ...(sp ? { spoken: sp } : {}) });
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [started, idx, shown, spoken]);
+  }, [started, idx, shown, spoken, quals]);
+
+  // Judge the move of the scene on the board (best / great / brilliant / good...) like the main review does.
+  useEffect(() => {
+    const s = shown[idx];
+    if (!started || !s || !input || !s.uci || s.uci.length < 4 || s.quality) return; // scenes that arrive with a verdict ("Why not") keep it
+    const key = sceneKey(s);
+    if (quals[key] !== undefined) return;
+    sceneMoveQuality(s, input, shown.map((x) => x.fen))
+      .then((q) => setQuals((p) => (p[key] !== undefined ? p : { ...p, [key]: q ?? '' })))
+      .catch(() => setQuals((p) => ({ ...p, [key]: '' })));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [started, idx, shown]);
 
   // The user closed the preview with "Back" → stop.
   useEffect(() => {
@@ -284,9 +338,38 @@ export function AdvancedCoach({
     const next = visibleScenes(scenes, !showMore);
     const ni = cur ? next.findIndex((s) => sameScene(s, cur)) : 0;
     setShowMore((m) => !m);
+    // the continuation started from the old last step, so it is dropped
+    setContScenes([]);
+    setContinuing(false);
+    setLineOver(false);
+    contGen.current++;
     setIdx(Math.max(0, ni));
     setProg(0);
     setPlaying(false);
+  }
+  /** "Continue": plays the engine's next ~10 moves from the last step. Press it again to keep going. */
+  async function continueLine() {
+    if (!input || continuing || loadingExtras) return;
+    const last = shown[shown.length - 1];
+    if (!last) return;
+    unlockSpeech();
+    const gen = contGen.current;
+    const start = shown.length;
+    setContinuing(true);
+    setLineOver(false);
+    try {
+      const more = await continuationScenes(last.fen, input.color, 10, input.depth, () => contGen.current !== gen);
+      if (contGen.current !== gen) return;
+      if (!more.length) { setLineOver(true); return; }
+      setContScenes((c) => [...c, ...more]);
+      setIdx(start);
+      setProg(0);
+      setPlaying(true);
+    } catch {
+      if (contGen.current === gen) setLineOver(true);
+    } finally {
+      if (contGen.current === gen) setContinuing(false);
+    }
   }
   function startRetry() {
     if (!challenge || !onRetry) return;
@@ -300,14 +383,54 @@ export function AdvancedCoach({
     setRetry(null);
     onRetryEnd?.();
   }
+  /**
+   * "Why not this move?": the board offers every move the player drags while a scene is showing.
+   * Returns true when the coach takes it (so the board does not treat it as a free exploration move).
+   */
+  function tryMove(m: { fen: string; uci: string }): boolean {
+    if (!startedRef.current || !input || retry) return false;
+    unlockSpeech();
+    setPlaying(false);
+    const gen = ++altGen.current;
+    setAltBusy(true);
+    setAltNote(null);
+    whyNotScenes(input, m.fen, m.uci, () => altGen.current !== gen)
+      .then((sc) => {
+        if (altGen.current !== gen) return;
+        if (!sc.length) { setAltNote("That move isn't legal in this position."); return; }
+        if (altBack.current === null) altBack.current = idxRef.current;
+        setAlt({ scenes: sc });
+        setIdx(0);
+        setProg(0);
+        setPlaying(true);
+      })
+      .catch(() => { if (altGen.current === gen) setAltNote("Couldn't reach the engine for that move."); })
+      .finally(() => { if (altGen.current === gen) setAltBusy(false); });
+    return true;
+  }
+  const tryMoveRef = useRef(tryMove);
+  tryMoveRef.current = tryMove;
+  useEffect(() => onCoachMove((m) => tryMoveRef.current(m)), []);
+  /** Leave the "Why not" explanation and go back to the step the player was on. */
+  function backToExplanation() {
+    altGen.current++;
+    setAlt(null);
+    setAltBusy(false);
+    setAltNote(null);
+    setIdx(Math.min(altBack.current ?? 0, Math.max(0, mainShown.length - 1)));
+    altBack.current = null;
+    setProg(0);
+    setPlaying(false);
+  }
 
   if (!input || core.length === 0) return null;
   const scene = shown[idx] ?? shown[0] ?? core[0];
+  const sceneQ = quals[sceneKey(scene)];
   const total = Math.max(shown.length, 1);
   const overall = Math.min(1, (idx + (started ? prog : 0)) / total);
   const btn = 'flex items-center justify-center rounded-lg bg-ink-700/60 hover:bg-ink-600/70 text-ink-200 transition-colors disabled:opacity-40 w-9 h-9';
   const moreCount = scenes.filter((s) => s.extra).length;
-  const canToggleMore = hasMoreScenes(scenes) && !showAllByDefault(input.level);
+  const canToggleMore = hasMoreScenes(scenes) && !showAllByDefault(input.level) && !alt;
 
   return (
     <div className="mt-2 w-full min-w-0 max-w-full overflow-hidden rounded-xl bg-ink-800/70 border border-ink-700/60 p-3">
@@ -316,6 +439,14 @@ export function AdvancedCoach({
         <span className="shrink-0 font-semibold text-ink-300">Advanced coach</span>
         {!retry && scene.chip && <span className="min-w-0 truncate rounded-md bg-ink-700/70 px-1.5 py-0.5 font-mono text-[11px] text-ink-200">{scene.chip}</span>}
         {retry && <span className="min-w-0 truncate rounded-md bg-ink-700/70 px-1.5 py-0.5 font-mono text-[11px] text-ink-200">Find a better move</span>}
+        {!retry && started && sceneQ && QUALITY_PILL[sceneQ] && (
+          <span
+            className="shrink-0 rounded-full px-2 py-0.5 text-[11px] font-bold"
+            style={{ backgroundColor: QUALITY_PILL[sceneQ].color + '30', color: QUALITY_PILL[sceneQ].color }}
+          >
+            {QUALITY_PILL[sceneQ].label}
+          </span>
+        )}
         {voice && (
           <button
             onClick={() => setMuted((m) => !m)}
@@ -368,6 +499,17 @@ export function AdvancedCoach({
         </div>
       ) : (
         <>
+          {alt && (
+            <div className="mb-2 flex items-center gap-2 text-xs">
+              <span className="rounded-md bg-amber-500/15 px-1.5 py-0.5 font-medium text-amber-200">Your move</span>
+              <button
+                onClick={backToExplanation}
+                className="ml-auto flex items-center gap-1 rounded-lg bg-ink-700/60 px-2.5 py-1 text-ink-100 hover:bg-ink-600/70"
+              >
+                <X size={12} /> Back to explanation
+              </button>
+            </div>
+          )}
           <p
             className={`${compact ? 'text-sm' : 'text-[15px]'} leading-snug text-ink-100 min-h-[1.5em] sm:min-h-[3.6em]`}
             aria-live="polite"
@@ -391,9 +533,20 @@ export function AdvancedCoach({
             </button>
           </div>
 
-          {(canToggleMore || (challenge && onRetry)) && (
+          {(canToggleMore || started || (challenge && onRetry)) && (
             <div className="mt-2 flex flex-wrap items-center gap-2">
-              {challenge && onRetry && (
+              {started && !alt && (
+                <button
+                  onClick={continueLine}
+                  disabled={continuing || loadingExtras || lineOver}
+                  className="flex items-center gap-1.5 rounded-lg bg-brand-500/15 px-3 py-1.5 text-xs font-medium text-brand-300 hover:bg-brand-500/25 disabled:opacity-50"
+                  title="Play the engine's next 10 moves from the last step. You can press it again to keep going."
+                >
+                  {continuing ? <Loader2 size={13} className="animate-spin" /> : <FastForward size={13} />}
+                  {lineOver ? 'The game ends here' : continuing ? 'Calculating…' : 'Continue +10 moves'}
+                </button>
+              )}
+              {challenge && onRetry && !alt && (
                 <button
                   onClick={startRetry}
                   className="flex items-center gap-1.5 rounded-lg bg-ink-700/60 px-3 py-1.5 text-xs text-ink-100 hover:bg-ink-600/70"
@@ -414,6 +567,15 @@ export function AdvancedCoach({
         </>
       )}
 
+      {started && !retry && !alt && !altBusy && !altNote && (
+        <div className="mt-2 text-[11px] text-ink-500">Tip: drag a piece on the board to ask “Why not this move?”</div>
+      )}
+      {altBusy && (
+        <div className="mt-2 flex items-center gap-1.5 text-[11px] text-ink-400">
+          <Loader2 size={11} className="animate-spin" /> Asking the engine about that move…
+        </div>
+      )}
+      {altNote && !altBusy && <div className="mt-2 text-[11px] text-amber-300/80">{altNote}</div>}
       {voiceBusy && (
         <div className="mt-2 flex items-center gap-1.5 text-[11px] text-ink-400">
           <Loader2 size={11} className="animate-spin" /> Getting the coach's voice…

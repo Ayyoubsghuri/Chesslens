@@ -2,6 +2,7 @@ import { Chess } from 'chess.js';
 import type { AnalyzedMove, Settings } from './types';
 import { formatEval } from './engine';
 import { getBoardContext } from './board-analysis';
+import { lineOutcome } from './coach-explain';
 
 export async function getCoachExplanation(
   move: AnalyzedMove,
@@ -13,6 +14,13 @@ export async function getCoachExplanation(
 
   const ctx = getBoardContext(move.fenBefore);
   const moveNumber = Math.floor(move.index / 2) + 1;
+
+  // Where does the engine's own line end? A sacrifice that forces stalemate, a perpetual or a mate changes what the move means.
+  const lineUcis = (move.evalAfter?.continuation ?? '').split(/\s+/).filter(Boolean);
+  const end = lineOutcome(move.fenAfter, lineUcis);
+  const endText = end
+    ? `The engine's line ENDS THE GAME: ${end.kind === 'mate' ? 'checkmate' : end.kind === 'stalemate' ? 'stalemate (draw)' : 'a draw (' + end.kind + ')'} after ${end.ply + 1} plies.`
+    : 'The engine line does not end the game within its length.';
 
   const prompt = `You are an expert chess coach. Analyze the following move based ONLY on the concrete board position provided. Do NOT invent threats, tactics, or piece placements that are not shown below.
 
@@ -44,6 +52,8 @@ Eval after: ${move.evalAfter ? formatEval(move.evalAfter) : 'N/A'}
 Eval loss: ${move.evalDelta !== null ? move.evalDelta.toFixed(2) + ' pawns' : 'N/A'}
 Best engine move: ${move.evalBefore?.bestMove || 'N/A'}
 Suggested continuation: ${move.evalBefore?.continuation || 'N/A'}
+Line after the move played: ${move.evalAfter?.continuation || 'N/A'}
+${endText}
 
 === CRITICAL RULES ===
 1. You MUST only reference pieces and squares visible in the ASCII board above.
@@ -52,6 +62,8 @@ Suggested continuation: ${move.evalBefore?.continuation || 'N/A'}
 4. Do NOT invent tactical sequences. Only describe what is concretely present.
 5. If the move is a blunder or mistake, explain the concrete tactical refutation using exact squares.
 6. Keep your explanation to 2-4 sentences. Be specific and accurate.
+7. Material is not the whole story: if the eval after the move is far better than the material suggests (for example a sacrifice that takes the eval from clearly lost to 0.00), explain what the sacrifice achieves, using the engine line (stalemate, perpetual check, mate, fortress). Never call such a move a blunder just because it gives up material.
+8. When you recommend a different move, it MUST be the "Best engine move" or the first move of the "Suggested continuation". Never invent your own suggestion, and never recommend a capture that leaves a bigger piece hanging.
 
 Explain why this move was ${move.quality}:`;
 

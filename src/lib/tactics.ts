@@ -124,6 +124,19 @@ function raysFrom(c: Chess, from: Square, type: 'b' | 'r' | 'q') {
 
 const list = (parts: string[]) => (parts.length <= 1 ? parts[0] ?? '' : parts.slice(0, -1).join(', ') + ' and ' + parts[parts.length - 1]);
 
+/** Is `s` strictly between `a` and `b` on a rank, file or diagonal? (the square a piece left when it uncovered a line) */
+function strictlyBetween(a: Square, b: Square, s: Square): boolean {
+  const ax = FILES.indexOf(a[0]), ay = Number(a[1]) - 1;
+  const bx = FILES.indexOf(b[0]), by = Number(b[1]) - 1;
+  const sx = FILES.indexOf(s[0]), sy = Number(s[1]) - 1;
+  const dx = bx - ax, dy = by - ay;
+  const steps = Math.max(Math.abs(dx), Math.abs(dy));
+  if (steps < 2 || (dx !== 0 && dy !== 0 && Math.abs(dx) !== Math.abs(dy))) return false;
+  const ux = Math.sign(dx), uy = Math.sign(dy);
+  for (let i = 1; i < steps; i++) if (ax + ux * i === sx && ay + uy * i === sy) return true;
+  return false;
+}
+
 /** Tactics created by move `m` (played from `fenBefore`, giving `fenAfter`), best first. */
 export function describeTactics(fenBefore: string, m: PlyMove, fenAfter: string): Tactic[] {
   const out: Tactic[] = [];
@@ -223,7 +236,10 @@ export function describeTactics(fenBefore: string, m: PlyMove, fenAfter: string)
   // --- Discovered attack: moving this piece uncovered a NEW attack by another piece
   if (!gaveMate) {
     const was = new Set(winnableCaptures(fenBefore, mover).map((x) => x.from + x.to));
-    const fresh = winnableCaptures(fenAfter, mover).filter((x) => x.from !== here && !was.has(x.from + x.to));
+    const fresh = winnableCaptures(fenAfter, mover).filter(
+      // a REAL discovered attack: the square the moved piece left lies on the line between the attacker and its target
+      (x) => x.from !== here && !was.has(x.from + x.to) && strictlyBetween(x.from, x.to, m.from as Square),
+    );
     if (fresh.length) {
       const f = fresh[0];
       let attackerName = 'piece';

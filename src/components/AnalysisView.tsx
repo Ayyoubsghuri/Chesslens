@@ -13,7 +13,8 @@ import { detectKnightFork } from '@/lib/knight-fork';
 import { formatEval, evalToPawns, analyzePosition } from '@/lib/engine';
 import { classifyMove } from '@/lib/analysis';
 import { useElementSize } from '@/lib/useElementSize';
-import { sceneSquares, sceneLines, type SceneLine, type ExplainInput, type Scene, type SceneArrow } from '@/lib/coach-explain';
+import { offerCoachMove } from '@/lib/coach-bus';
+import { sceneSquares, sceneLines, type SceneLine, type ExplainInput, type Scene, type SceneArrow, type SceneEval } from '@/lib/coach-explain';
 import type { AnalysisResult, AnalyzedMove, MoveQuality, PieceColor } from '@/lib/types';
 import {
   ChevronLeft, ChevronRight, AlertTriangle, Target, TrendingUp, Award,
@@ -601,6 +602,12 @@ export function AnalysisView({ analysis, currentIndex, onIndexChange, onCoachExp
     squares?: Square[];
     /** Whole lines (file / rank / diagonal) the coach is talking about. */
     lines?: SceneLine[];
+    /** Engine eval of the coach scene's position: the eval bar follows it. */
+    evalInfo?: SceneEval | null;
+    /** Stockfish's best move from the coach scene's position. */
+    best?: { san: string; uci: string } | null;
+    /** Engine verdict on the coach scene's move (best / great / brilliant...): drawn as the badge on the board. */
+    quality?: string | null;
   } | null>(null);
   const lineTimerRef = useRef<number | null>(null);
 
@@ -698,6 +705,8 @@ export function AnalysisView({ analysis, currentIndex, onIndexChange, onCoachExp
   }
 
   function handleUserMove(m: { from: Square; to: Square; promotion?: string; san: string; fen: string }) {
+    // A piece dragged while the coach is showing a scene is a "Why not this move?" question, not a free exploration step.
+    if (bestPreview?.label === 'Coach' && offerCoachMove({ fen: bestPreview.fen, uci: m.from + m.to + (m.promotion ?? '') })) return;
     setPlaying(false);
     setBestPreview(null);
     const beforeFen = exploreFen ?? (move?.fenAfter ?? new Chess().fen());
@@ -923,6 +932,24 @@ export function AnalysisView({ analysis, currentIndex, onIndexChange, onCoachExp
     } catch {}
   }
 
+  /** "Best line": the engine's best move from the position BEFORE this move, followed by its continuation, one ply per second. */
+  function playBestLine() {
+    if (!move) return;
+    const line = (move.evalBefore?.continuation ?? '').split(/\s+/).filter(Boolean).slice(0, 10);
+    if (line.length < 2) { handleBestMoveClick(move.evalBefore?.bestMove || ''); return; }
+    try {
+      const chess = new Chess(move.fenBefore);
+      const frames: { fen: string; from: Square; to: Square; san: string; uci: string }[] = [];
+      for (const uci of line) {
+        try {
+          const r = chess.move({ from: uci.slice(0, 2), to: uci.slice(2, 4), promotion: uci.length > 4 ? uci[4] : undefined });
+          frames.push({ fen: chess.fen(), from: r.from as Square, to: r.to as Square, san: r.san, uci: r.from + r.to + (r.promotion ?? '') });
+        } catch { break; }
+      }
+      playFrames(frames, 'Best line');
+    } catch {}
+  }
+
   /** Everything the advanced coach needs to explain the current move. */
   const explainInput = useMemo<ExplainInput | null>(() => {
     if (!advancedCoach || !move || !displayQuality) return null;
@@ -945,7 +972,7 @@ export function AnalysisView({ analysis, currentIndex, onIndexChange, onCoachExp
     stopLine();
     setPlaying(false);
     if (!scene) { setBestPreview(null); return; }
-    setBestPreview({ fen: scene.fen, from: scene.from, to: scene.to, san: scene.san, uci: scene.uci, label: 'Coach', arrows: scene.arrows, squares: sceneSquares(scene), lines: sceneLines(scene) });
+    setBestPreview({ fen: scene.fen, from: scene.from, to: scene.to, san: scene.san, uci: scene.uci, label: 'Coach', arrows: scene.arrows, squares: sceneSquares(scene), lines: sceneLines(scene), evalInfo: scene.evalInfo ?? null, best: scene.best ?? null, quality: scene.quality ?? null });
   }
 
   /** Play a list of positions on the board, one per second (used by the tablebase sequence). */
@@ -1041,21 +1068,21 @@ export function AnalysisView({ analysis, currentIndex, onIndexChange, onCoachExp
               }
               annotationSquare={
                 bestPreview
-                  ? null
+                  ? (bestPreview.quality ? bestPreview.to : null)
                   : isExploring
                     ? (exploreQuality ? exploreLastMove?.to || null : null)
                     : (moveCoords?.to || null)
               }
               annotationColor={
                 bestPreview
-                  ? null
+                  ? (bestPreview.quality ? QUALITY_META[bestPreview.quality as MoveQuality]?.color ?? null : null)
                   : isExploring
                     ? (exploreQuality ? QUALITY_META[exploreQuality]?.color : null)
                     : displayQuality
                       ? QUALITY_META[displayQuality]?.color
                       : null
               }
-              moveQuality={bestPreview ? null : isExploring ? exploreQuality : displayQuality}
+              moveQuality={bestPreview ? ((bestPreview.quality as MoveQuality | null | undefined) ?? null) : isExploring ? exploreQuality : displayQuality}
               size={boardPx}
               whiteName={whiteName}
               blackName={blackName}
@@ -1110,6 +1137,14 @@ export function AnalysisView({ analysis, currentIndex, onIndexChange, onCoachExp
             <span>
               {bestPreview.label ?? 'Previewing engine best'}: <span className="font-mono font-semibold">{bestPreview.san}</span>{' '}
               <span className="text-brand-400/70">({bestPreview.uci})</span>
+              {bestPreview.evalInfo && (
+                <span className="ml-2 font-mono text-ink-300">eval {bestPreview.evalInfo.label}</span>
+              )}
+              {bestPreview.best && (
+                <span className="ml-2 text-ink-300">
+                  · best: <span className="font-mono font-semibold text-brand-300">{bestPreview.best.san}</span>
+                </span>
+              )}
             </span>
             <button onClick={() => setBestPreview(null)} className="btn-ghost text-xs px-2 py-1 shrink-0">
               <X size={12} /> Back
@@ -1151,7 +1186,7 @@ export function AnalysisView({ analysis, currentIndex, onIndexChange, onCoachExp
                   </span>
                 ) : (
                   <button
-                    onClick={() => handleBestMoveClick(move.evalBefore?.bestMove || '')}
+                    onClick={() => playBestLine()}
                     className="font-mono text-brand-300 hover:text-brand-200 hover:underline decoration-dotted underline-offset-2 cursor-pointer"
                     title="Click to preview this move on the board"
                   >
@@ -1372,7 +1407,7 @@ export function AnalysisView({ analysis, currentIndex, onIndexChange, onCoachExp
           <div className="flex flex-col gap-2 shrink-0">
             {!isWide && <PlayerBar name={topName} color={topColor} fen={fen} />}
             <div className="flex items-stretch gap-2">
-              <EvalBar evaluation={move?.evalAfter ?? null} orientation={orientation} height={theaterBoardPx} />
+              <EvalBar evaluation={move?.evalAfter ?? null} override={bestPreview?.evalInfo ?? null} orientation={orientation} height={theaterBoardPx} />
               <div style={{ width: theaterBoardPx }}>{renderBoard(theaterBoardPx)}</div>
             </div>
             {!isWide && <PlayerBar name={bottomName} color={bottomColor} fen={fen} />}
@@ -1482,12 +1517,12 @@ export function AnalysisView({ analysis, currentIndex, onIndexChange, onCoachExp
 
               <div className="grid grid-cols-2 gap-2">
                 <button
-                  onClick={() => move && handleBestMoveClick(move.evalBefore?.bestMove || '')}
-                  disabled={!move || isPlayedBest || !engineBestUci}
+                  onClick={() => move && playBestLine()}
+                  disabled={!move || !engineBestUci}
                   className="btn-secondary justify-center py-2.5 text-sm disabled:opacity-40"
-                  title={isPlayedBest ? "This move was already the engine's best choice" : "Preview the engine's best move"}
+                  title="Play the engine's best line on the board"
                 >
-                  <Sparkles size={14} /> {isPlayedBest ? 'Was best' : 'Best move'}
+                  <Sparkles size={14} /> Best line
                 </button>
                 <button onClick={handleFlip} className="btn-secondary justify-center py-2.5 text-sm" title="Flip board">
                   <RotateCcw size={14} /> Flip board
@@ -1547,12 +1582,12 @@ export function AnalysisView({ analysis, currentIndex, onIndexChange, onCoachExp
         {/* Mobile: row runs edge to edge (cancels the page's px-4). Desktop: unchanged. */}
         <div className="flex justify-center items-stretch gap-1.5 sm:gap-2 -mx-4 w-[calc(100%+2rem)] lg:mx-0 lg:w-full">
           <div className="hidden lg:flex">
-            <EvalBar evaluation={move?.evalAfter ?? null} orientation={orientation} height={boardSize} />
+            <EvalBar evaluation={move?.evalAfter ?? null} override={bestPreview?.evalInfo ?? null} orientation={orientation} height={boardSize} />
           </div>
           <div ref={boardColRef} className="flex flex-col gap-1.5 flex-1 min-w-0" style={{ maxWidth: boardMaxSize }}>
             {/* Mobile: eval bar sits on top, above the players and board */}
             <div className="lg:hidden">
-              <EvalBar evaluation={move?.evalAfter ?? null} orientation={orientation} horizontal />
+              <EvalBar evaluation={move?.evalAfter ?? null} override={bestPreview?.evalInfo ?? null} orientation={orientation} horizontal />
             </div>
             <PlayerBar name={topName} color={topColor} fen={fen} />
             {renderBoard(boardMaxSize)}
@@ -1648,13 +1683,13 @@ export function AnalysisView({ analysis, currentIndex, onIndexChange, onCoachExp
                 <MessageSquare size={14} className="text-brand-400" /> Explain
               </button>
               <button
-                onClick={() => handleBestMoveClick(move.evalBefore?.bestMove || '')}
-                disabled={isPlayedBest || !engineBestUci}
-                title={isPlayedBest ? "This move was already the engine's best choice" : engineBestUci ? "Preview the engine's best move" : 'No engine best move'}
+                onClick={() => playBestLine()}
+                disabled={!engineBestUci}
+                title={engineBestUci ? "Play the engine's best line on the board" : 'No engine best move'}
                 className="flex items-center justify-center gap-2 py-2.5 text-sm text-ink-200 hover:bg-ink-700/50 transition-colors disabled:opacity-40 disabled:cursor-default"
               >
-                <Sparkles size={14} className={isPlayedBest ? 'text-brand-400/50' : 'text-brand-400'} />
-                {isPlayedBest ? 'Was Best' : 'Best'}
+                <Sparkles size={14} className="text-brand-400" />
+                Best line
               </button>
               <button
                 onClick={() => onIndexChange(Math.min(moves.length - 1, currentIndex + 1))}
@@ -1722,13 +1757,13 @@ export function AnalysisView({ analysis, currentIndex, onIndexChange, onCoachExp
                 <MessageSquare size={14} className="text-brand-400" /> Explain
               </button>
               <button
-                onClick={() => handleBestMoveClick(move.evalBefore?.bestMove || '')}
-                disabled={isPlayedBest || !engineBestUci}
-                title={isPlayedBest ? "This move was already the engine's best choice" : engineBestUci ? "Preview the engine's best move" : 'No engine best move'}
+                onClick={() => playBestLine()}
+                disabled={!engineBestUci}
+                title={engineBestUci ? "Play the engine's best line on the board" : 'No engine best move'}
                 className="flex items-center justify-center gap-2 py-2.5 text-sm text-ink-200 hover:bg-ink-700/50 transition-colors disabled:opacity-40 disabled:cursor-default"
               >
-                <Sparkles size={14} className={isPlayedBest ? 'text-brand-400/50' : 'text-brand-400'} />
-                {isPlayedBest ? 'Was Best' : 'Best'}
+                <Sparkles size={14} className="text-brand-400" />
+                Best line
               </button>
               <button
                 onClick={() => onIndexChange(Math.min(moves.length - 1, currentIndex + 1))}

@@ -1,6 +1,7 @@
 import { useMemo } from 'react';
 import { evalToPawns, formatEval } from '@/lib/engine';
 import type { AnalyzedMove } from '@/lib/types';
+import type { SceneEval } from '@/lib/coach-explain';
 
 type Eval = AnalyzedMove['evalAfter'];
 
@@ -10,10 +11,17 @@ interface EvalBarProps {
   height?: number;
   /** Lay the bar out left → right (full width, slim) instead of bottom → top. Used on phones. */
   horizontal?: boolean;
+  /** A coach scene is on the board: show ITS evaluation instead of the move's (the bar moves with the coach's moves). */
+  override?: SceneEval | null;
 }
 
-export function EvalBar({ evaluation, orientation = 'white', height = 480, horizontal = false }: EvalBarProps) {
+export function EvalBar({ evaluation, orientation = 'white', height = 480, horizontal = false, override = null }: EvalBarProps) {
   const { whitePercent, label } = useMemo(() => {
+    if (override) {
+      if (override.mate !== null) return { whitePercent: override.mate > 0 ? 100 : 0, label: override.label };
+      const clampedO = Math.max(-15, Math.min(15, override.pawns));
+      return { whitePercent: 50 + 50 * (2 / (1 + Math.exp(-0.55 * clampedO)) - 1), label: override.label };
+    }
     if (!evaluation) return { whitePercent: 50, label: '0.0' };
     const anyEval = evaluation as any;
     if (anyEval.mate !== undefined && anyEval.mate !== null) {
@@ -24,7 +32,7 @@ export function EvalBar({ evaluation, orientation = 'white', height = 480, horiz
     const clamped = Math.max(-15, Math.min(15, pawns));
     const pct = 50 + 50 * (2 / (1 + Math.exp(-0.55 * clamped)) - 1);
     return { whitePercent: pct, label: formatEval(evaluation) };
-  }, [evaluation]);
+  }, [evaluation, override]);
 
   const isWhiteBottom = orientation === 'white';
   const fillPercent = isWhiteBottom ? whitePercent : 100 - whitePercent;

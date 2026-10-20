@@ -6,12 +6,19 @@
  */
 import { Chess, type Square } from 'chess.js';
 import { analyzePosition, evalToPawns, formatEval } from '@/lib/engine';
+import { classifyMove } from '@/lib/analysis';
 import { detectKnightFork } from '@/lib/knight-fork';
 import { describeTactics, winnableCaptures } from '@/lib/tactics';
-import { threats, missedTactic, tacticalMoves } from '@/lib/tactics-lookahead';
-import { moveInsights, movePurpose, positionFacts, coachPlan, type Fact, type FactKind } from '@/lib/positional';
+import { tacticalMoves } from '@/lib/tactics-lookahead';
+import { moveInsights, movePurpose, positionFacts, coachPlan, analyzePhase, type Fact, type FactKind } from '@/lib/positional';
+import { material, netMaterial, lineOutcome, settleLine, verifyClaim, type LineEnd } from '@/lib/claim-check';
+// The line checks live in claim-check.ts (pure chess.js, unit-tested); re-exported so existing imports keep working.
+export { lineOutcome };
+export type { LineEnd };
 
 export type Seg = { t: string; hl?: 'key' | 'good' | 'bad' };
+/** What the eval bar shows for a scene (white's point of view, like the main bar). */
+export interface SceneEval { pawns: number; mate: number | null; label: string }
 export type ArrowColor = 'green' | 'red' | 'blue' | 'yellow';
 export interface SceneArrow { from: Square; to: Square; color: ArrowColor }
 
@@ -33,6 +40,12 @@ export interface Scene {
   extra?: boolean;
   /** Set on the "Why" scene of a mistake, so the app can count the player's typical mistakes over a game. */
   cause?: { id: CauseId; label: string };
+  /** Engine evaluation of THIS scene's position: the eval bar follows it while the scene is on the board. */
+  evalInfo?: SceneEval;
+  /** Engine verdict on the move this scene shows: brilliant / best / great / excellent / good / inaccuracy / mistake / miss / blunder. */
+  quality?: string;
+  /** Stockfish's best move from this scene's position (also drawn as a blue arrow). */
+  best?: { san: string; uci: string };
   /**
    * Set by the player while the coach is SPEAKING this scene: only squares the voice has already named should light up
    * (instead of every square in the text at once). `done` = the sentence is finished. Absent = light everything (paused / muted).
@@ -40,7 +53,7 @@ export interface Scene {
   spoken?: { named: Square[]; current: Square[]; done: boolean };
 }
 
-export type CauseId = 'hung-piece' | 'ignored-threat' | 'missed-tactic' | 'allowed-tactic' | 'greedy' | 'positional';
+export type CauseId = 'hung-piece' | 'ignored-threat' | 'missed-tactic' | 'allowed-tactic' | 'greedy' | 'positional' | 'stalemate-trap';
 
 export interface ExplainInput {
   fenBefore: string;
@@ -198,31 +211,6 @@ function movesFor(fen: string, side: 'w' | 'b') {
   }
 }
 
-function material(fen: string): Record<'w' | 'b', Record<string, number>> {
-  const out = { w: { p: 0, n: 0, b: 0, r: 0, q: 0 }, b: { p: 0, n: 0, b: 0, r: 0, q: 0 } } as any;
-  for (const ch of fen.split(' ')[0]) {
-    const l = ch.toLowerCase();
-    if (!(l in VAL) || l === 'k') continue;
-    out[ch === l ? 'b' : 'w'][l]++;
-  }
-  return out;
-}
-
-/** What `side` has won/lost on balance between two positions, e.g. "loses a knight". */
-function netMaterial(fenStart: string, fenEnd: string, side: 'w' | 'b') {
-  const a = material(fenStart), b = material(fenEnd);
-  const o = other(side);
-  let swing = 0;
-  let worst: string | null = null, best: string | null = null;
-  for (const t of ['p', 'n', 'b', 'r', 'q']) {
-    const d = (b[side][t] - a[side][t]) - (b[o][t] - a[o][t]);
-    swing += d * VAL[t];
-    if (d < 0 && (!worst || VAL[t] > VAL[worst])) worst = t;
-    if (d > 0 && (!best || VAL[t] > VAL[best])) best = t;
-  }
-  return { swing, worst, best };
-}
-
 function materialPhrase(n: ReturnType<typeof netMaterial>): string | null {
   if (n.swing <= -1 && n.worst) return `ends up ~~down ${article(NAME[n.worst])} ${NAME[n.worst]}~~`;
   if (n.swing >= 1 && n.best) return `ends up ++up ${article(NAME[n.best])} ${NAME[n.best]}++`;
@@ -247,21 +235,6 @@ function hangingInfo(fenAfter: string, sq: Square, mover: 'w' | 'b') {
     }
   }
   return best;
-}
-
-/**
- * A "tactic" found by the look-ahead search is only real if the piece that makes it can't simply be taken.
- * Example: Qf8+ "skewering" the king and bishop is nonsense when the king just plays Kxf8.
- * `it.fen` is the position AFTER the tactical move, `it.to` the square the piece landed on,
- * `side` the colour that played it. Checkmates are always kept (the search already verified them).
- */
-function hangsItsPiece(it: { fen: string; to: string; kind: string }, side: 'w' | 'b'): boolean {
-  if (it.kind === 'mate') return false;
-  try {
-    return !!hangingInfo(it.fen, it.to as Square, side);
-  } catch {
-    return false;
-  }
 }
 
 /** Enemy pieces the piece on `sq` attacks and could win (bigger piece, or undefended). */
@@ -367,6 +340,278 @@ const moverPawns = (ev: any, c: 'w' | 'b'): number | null => {
   } catch { return null; }
 };
 
+
+// ---------- Stockfish checks, how a line ENDS, and the story of the position ----------
+
+const uciMove = (u: string) => ({ from: u.slice(0, 2), to: u.slice(2, 4), promotion: u.length > 4 ? u[4] : undefined });
+const pvOf = (ev: any): string[] => ((ev?.continuation ?? '') as string).split(/\s+/).filter(Boolean);
+/** The engine's line AFTER its own move `uci`: the rest of the principal variation, or undefined when the line does not start with that move. */
+const restAfter = (ev: any, uci: string): string[] | undefined => {
+  const pv = pvOf(ev);
+  return pv.length && pv[0].slice(0, 4) === uci.slice(0, 4) ? pv.slice(1) : undefined;
+};
+const joinList = (parts: string[]) => (parts.length <= 1 ? parts[0] ?? '' : parts.slice(0, -1).join(', ') + ' and ' + parts[parts.length - 1]);
+
+const evCache = new Map<string, any>();
+/** analyzePosition with a small cache, so the same position is never searched twice. */
+async function engineEval(fen: string, depth: number): Promise<any> {
+  const key = `${fen}|${depth}`;
+  if (evCache.has(key)) return evCache.get(key);
+  const ev = await analyzePosition(fen, depth);
+  evCache.set(key, ev);
+  if (evCache.size > 300) evCache.delete(evCache.keys().next().value as string);
+  return ev;
+}
+
+const END_WORD: Record<LineEnd['kind'], string> = {
+  stalemate: '**stalemate**', insufficient: 'a draw by **insufficient material**', repetition: 'a draw by **repetition**',
+  fifty: 'a draw by the **fifty-move rule**', mate: '**checkmate**',
+};
+
+/** Engine lines are short. If the line stops before the game does, ask the engine to carry on (a few rounds) to see where it ends. */
+async function followToEnd(fen: string, ucis: string[], isCancelled: () => boolean): Promise<{ end: LineEnd | null; line: string[] }> {
+  let line = [...ucis];
+  let end = lineOutcome(fen, line);
+  for (let round = 0; !end && round < 3 && line.length < 40; round++) {
+    if (isCancelled()) break;
+    try {
+      const c = new Chess(fen);
+      for (const u of line) c.move(uciMove(u));
+      if (c.isGameOver()) break;
+      const more = pvOf(await engineEval(c.fen(), 12));
+      if (!more.length) break;
+      line = [...line, ...more];
+    } catch { break; }
+    end = lineOutcome(fen, line);
+  }
+  return { end, line };
+}
+
+/** The player was losing (or clearly worse) and the engine now says the game is a draw. */
+const savesDraw = (before: number | null, after: number | null) =>
+  before != null && after != null && before <= -1.5 && Math.abs(after) <= 0.4;
+/** The player was clearly winning and the game is now a draw. */
+const throwsAwayWin = (before: number | null, after: number | null) =>
+  before != null && after != null && before >= 1.5 && Math.abs(after) <= 0.4;
+
+/** How many pawns `side` is ahead / behind, as a plain number ("9.0"), from that side's point of view. */
+const pawnGap = (ev: any, side: 'w' | 'b') => { const p = moverPawns(ev, side); return p == null ? '?' : Math.abs(p).toFixed(1); };
+
+const pointsOf = (fen: string, side: 'w' | 'b') => {
+  const m = material(fen);
+  return (['p', 'n', 'b', 'r', 'q'] as const).reduce((sum, t) => sum + m[side][t] * VAL[t], 0);
+};
+
+/** "White is up a queen", "Black is up a rook for a bishop": who has more material, in words. */
+function materialLine(fen: string): { text: string; diff: number; lead: 'w' | 'b' | null } {
+  const m = material(fen);
+  const d = pointsOf(fen, 'w') - pointsOf(fen, 'b');
+  if (Math.abs(d) < 1) return { text: 'material is level', diff: 0, lead: null };
+  const lead: 'w' | 'b' = d > 0 ? 'w' : 'b';
+  const low = other(lead);
+  const ups: string[] = [], downs: string[] = [];
+  for (const t of ['q', 'r', 'b', 'n', 'p']) {
+    const n = m[lead][t] - m[low][t];
+    const label = (k: number) => (k === 1 ? `${article(NAME[t])} ${NAME[t]}` : `${k} ${NAME[t]}s`);
+    if (n > 0) ups.push(label(n));
+    else if (n < 0) downs.push(label(-n));
+  }
+  return { text: `${sideName(lead)} is up ${joinList(ups)}${downs.length ? ` for ${joinList(downs)}` : ''}`, diff: d, lead };
+}
+
+const PHASE_WORD: Record<string, string> = { opening: 'the opening', middlegame: 'a middlegame', endgame: 'an endgame' };
+
+/**
+ * "Back to the game": what the game is REALLY about after this move. Built from Stockfish's evaluation and line,
+ * set against the material on the board: who is ahead, whether the numbers and the engine disagree (and why),
+ * whether the line ends in stalemate / mate / a draw, the plan, and what the engine expects next.
+ */
+function gameStory(inp: ExplainInput, lineEnd: LineEnd | null, drawSaved: boolean): string {
+  const mover = inp.color, opp = other(mover);
+  const side = sideName(mover), oppName = sideName(opp);
+  const after = moverPawns(inp.evalAfter, mover);
+  const whiteEval = after == null ? null : mover === 'w' ? after : -after;
+  const mateN = typeof inp.evalAfter?.mate === 'number' ? inp.evalAfter.mate : 0;
+  const mat = materialLine(inp.fenAfter);
+  const parts: string[] = [];
+
+  let phase = '';
+  try { phase = PHASE_WORD[analyzePhase(inp.fenAfter)] ?? ''; } catch { /* ignore */ }
+  parts.push(`Where we stand: ${phase ? `it's ${phase} and ` : ''}${mat.text}.`);
+
+  // 1. What the engine says about the position
+  if (mateN !== 0) {
+    parts.push(`The engine sees **checkmate in ${Math.abs(mateN)}** for ${sideName(mateN > 0 ? 'w' : 'b')}.`);
+  } else if (whiteEval != null) {
+    const a = Math.abs(whiteEval);
+    const lead = whiteEval > 0 ? 'White' : 'Black';
+    parts.push(a < 0.3
+      ? `The engine calls it **equal** (${formatEval(inp.evalAfter)}).`
+      : `The engine says ${lead} is ${a < 1 ? 'slightly better' : a < 2.5 ? 'clearly better' : a < 5 ? '**winning**' : '**completely winning**'} (**${formatEval(inp.evalAfter)}**).`);
+  }
+
+  // 2. What the game is about: compare the engine with the material
+  const engineLead: 'w' | 'b' | null = whiteEval == null || Math.abs(whiteEval) < 0.3 ? null : whiteEval > 0 ? 'w' : 'b';
+  const mismatch = !!mat.lead && Math.abs(mat.diff) >= 3 && mateN === 0 && whiteEval != null
+    && (engineLead !== mat.lead || Math.abs(whiteEval) < Math.abs(mat.diff) / 3);
+  if (lineEnd?.kind === 'stalemate') {
+    parts.push(`The key idea is **stalemate**: ${sideName(lineEnd.stuck)} runs out of legal moves, so ${mat.lead && mat.lead !== lineEnd.stuck ? `${sideName(mat.lead)}'s extra material cannot win the game` : 'the game cannot be won by force'}.`);
+  } else if (lineEnd && lineEnd.kind !== 'mate') {
+    parts.push(`The engine's line ends in ${END_WORD[lineEnd.kind]}, so this is a fight for a draw, not for material.`);
+  } else if (drawSaved) {
+    parts.push(`${side} was losing before this move (about ${pawnGap(inp.evalBefore, mover)} pawns down) and is now holding the draw.`);
+  } else if (mismatch && mat.lead) {
+    parts.push(`${sideName(mat.lead)} has more material, but the engine disagrees with the numbers: ${sideName(other(mat.lead))} has real compensation (active pieces, an attack on the king, or a drawing setup).`);
+  } else if (mateN === 0 && inp.level !== 'beginner') {
+    try {
+      const leader = engineLead ?? mover;
+      const plan = coachPlan(inp.fenAfter, leader, undefined, 1)[0];
+      if (plan) parts.push(`${sideName(leader)}'s plan: ${posMarkup(plan.text, 'neutral')}`);
+    } catch { /* ignore */ }
+  }
+
+  // 3. What Stockfish expects next
+  try {
+    const u = pvOf(inp.evalAfter)[0];
+    if (u) parts.push(`Stockfish expects ${oppName} to play **${new Chess(inp.fenAfter).move(uciMove(u)).san}**.`);
+  } catch { /* ignore */ }
+  return parts.join(' ');
+}
+
+/**
+ * A good move that turns a lost game into a draw (typically a sacrifice that forces stalemate, a perpetual or a fortress).
+ * If the engine's line doesn't reach the end of the game on its own, it is followed further until it does.
+ */
+async function drawIdea(inp: ExplainInput, isCancelled: () => boolean): Promise<{ scenes: Scene[]; end: LineEnd | null }> {
+  const mover = inp.color;
+  const before = moverPawns(inp.evalBefore, mover), after = moverPawns(inp.evalAfter, mover);
+  if (!savesDraw(before, after)) return { scenes: [], end: null };
+  const refu = pvOf(inp.evalAfter);
+  const direct = lineOutcome(inp.fenAfter, refu);
+  if (direct) return { scenes: [], end: direct }; // the core scenes already play it out
+  const { end, line } = await followToEnd(inp.fenAfter, refu, isCancelled);
+  if (!end || end.kind === 'mate' || isCancelled()) return { scenes: [], end: null };
+  try {
+    const c = new Chess(inp.fenAfter);
+    let last: any = null;
+    for (let i = 0; i <= end.ply; i++) last = c.move(uciMove(line[i]));
+    const n = Math.ceil((end.ply + 1) / 2);
+    const txt = end.kind === 'stalemate'
+      ? `Drawing idea: if both sides follow the engine's line (${n} more move${n > 1 ? 's' : ''}), ${sideName(end.stuck)} has no legal move and is not in check. That is **stalemate**, so a lost position (about ${pawnGap(inp.evalBefore, mover)} pawns down) ends in a draw.`
+      : `Drawing idea: the engine's line ends in ${END_WORD[end.kind]} after ${n} more move${n > 1 ? 's' : ''}, so a lost position (about ${pawnGap(inp.evalBefore, mover)} pawns down) ends in a draw.`;
+    return { scenes: [mk(c.fen(), last, txt, [], 'Drawing idea')], end };
+  } catch { return { scenes: [], end }; }
+}
+
+const withSide = (fen: string, side: 'w' | 'b') => {
+  const f = fen.split(' ');
+  f[1] = side;
+  f[3] = '-';
+  return f.join(' ');
+};
+
+interface Narrated {
+  san: string; from: Square; to: Square; promotion?: string;
+  /** Position after the move. */
+  fen: string;
+  /** Verb phrase: "forks the king on e8 and the queen on d8". */
+  does: string;
+  kind: string;
+  arrows: { from: Square; to: Square }[];
+  /** A fork / pin / mate / win of real material (not just "improves the position"). */
+  tactical: boolean;
+}
+const MISSED_KINDS = new Set(['mate', 'double-check', 'greek-gift', 'fork', 'pin', 'skewer', 'discovered', 'remove-defender', 'trapped']);
+
+/**
+ * Puts words to a move that STOCKFISH chose. The tactic detectors only find the vocabulary ("fork", "pin", "wins the queen");
+ * they never decide which move gets shown.
+ */
+function narrateMove(fen: string, uci: string, line?: string[]): Narrated | null {
+  try {
+    const c = new Chess(fen);
+    const m: any = c.move(uciMove(uci));
+    const after = c.fen();
+    const san = (m.san as string).replace(/[+#]/g, '');
+    const mv = { from: m.from as Square, to: m.to as Square };
+    const base = { san, ...mv, promotion: m.promotion as string | undefined, fen: after };
+    let tac = pickTactic(fen, m as PlyMove, after);
+    // A fork only counts when the engine's line (after this move) really collects something.
+    if (tac?.kind === 'fork' && line && !verifyClaim(after, line, { kind: 'fork', side: m.color }).ok) tac = null;
+    if (tac) return { ...base, does: tac.text, kind: tac.kind, arrows: [mv, ...tac.arrows], tactical: true };
+    if (m.captured && m.captured !== 'k') {
+      return { ...base, does: `takes the ${NAME[m.captured]} on ${m.to}`, kind: 'capture', arrows: [mv], tactical: VAL[m.captured] >= 3 };
+    }
+    return { ...base, does: purpose(fen, m as PlyMove, after, m.color, line), kind: 'plan', arrows: [mv], tactical: false };
+  } catch { return null; }
+}
+
+const sceneEvalOf = (ev: any): SceneEval | undefined => {
+  if (!ev) return undefined;
+  try {
+    const p = evalToPawns(ev);
+    return {
+      pawns: Number.isFinite(p) ? p : 0,
+      mate: typeof ev.mate === 'number' && ev.mate !== 0 ? ev.mate : null,
+      label: formatEval(ev),
+    };
+  } catch { return undefined; }
+};
+
+const bestOf = (fen: string, ev: any): { san: string; uci: string } | undefined => {
+  const uci = ev?.bestMove || pvOf(ev)[0];
+  if (!uci || uci.length < 4) return undefined;
+  try { return { san: new Chess(fen).move(uciMove(uci)).san, uci }; } catch { return undefined; }
+};
+
+/**
+ * Gives every scene the engine's evaluation of its position (the eval bar follows it) and Stockfish's best move from there
+ * (shown in the banner and as a blue arrow). Finished games get 1-0 / 0-1 / ½-½ instead of a search.
+ */
+async function withEngineInfo(scenes: Scene[], depth: number, isCancelled: () => boolean): Promise<Scene[]> {
+  const out: Scene[] = [];
+  for (const sc of scenes) {
+    if (sc.evalInfo || isCancelled()) { out.push(sc); continue; }
+    try {
+      const c = new Chess(sc.fen);
+      if (c.isCheckmate()) {
+        const whiteWins = c.turn() === 'b';
+        out.push({ ...sc, evalInfo: { pawns: whiteWins ? 15 : -15, mate: null, label: whiteWins ? '1-0' : '0-1' } });
+      } else if (c.isDraw() || c.isStalemate()) {
+        out.push({ ...sc, evalInfo: { pawns: 0, mate: null, label: '½-½' } });
+      } else {
+        const ev = await engineEval(sc.fen, Math.min(depth, 12));
+        const best = bestOf(sc.fen, ev);
+        const arrows = best && !sc.arrows.some((a) => a.from === best.uci.slice(0, 2) && a.to === best.uci.slice(2, 4))
+          ? [...sc.arrows, { from: best.uci.slice(0, 2) as Square, to: best.uci.slice(2, 4) as Square, color: 'blue' as ArrowColor }]
+          : sc.arrows;
+        out.push({ ...sc, evalInfo: sceneEvalOf(ev), best, arrows });
+      }
+    } catch { out.push(sc); }
+  }
+  return out;
+}
+
+/**
+ * The "Why" of a mistake. Every move it blames comes from Stockfish: the engine's best move before the move (what was missed),
+ * the engine's reply after it (what was allowed), and the engine's best move for the opponent if the player had "passed" (what was ignored).
+ */
+async function buildCause(inp: ExplainInput, isCancelled: () => boolean): Promise<Scene | null> {
+  if (!BAD.includes(inp.quality)) return null;
+  const pre: { threatBefore?: { uci: string; gain: number } | null } = {};
+  try {
+    const opp = other(inp.color);
+    const passFen = withSide(inp.fenBefore, opp);
+    new Chess(passFen);
+    const ev = await engineEval(passFen, Math.min(inp.depth, 12));
+    if (isCancelled()) return null;
+    const uci = ev?.bestMove || pvOf(ev)[0];
+    const now = moverPawns(inp.evalBefore, opp), then = moverPawns(ev, opp);
+    pre.threatBefore = uci && now != null && then != null ? { uci, gain: then - now } : null;
+  } catch { pre.threatBefore = null; }
+  return causeScene(inp, pre);
+}
+
 /** Plays a UCI line and returns one scene per ply, narrated for `mover`. */
 function lineScenes(fenStart: string, ucis: string[], mover: 'w' | 'b', maxPlies: number, intro: 'reply' | 'then'): Scene[] {
   const scenes: Scene[] = [];
@@ -374,7 +619,10 @@ function lineScenes(fenStart: string, ucis: string[], mover: 'w' | 'b', maxPlies
   try { chess = new Chess(fenStart); } catch { return scenes; }
   // Keep going up to 2 plies past `maxPlies` while an exchange is still in progress,
   // so a capture is never left hanging in the middle of a trade.
-  for (let i = 0; i < Math.min(ucis.length, maxPlies + 2); i++) {
+  // If the line ENDS the game (stalemate, mate, repetition...), play it all the way to that point.
+  const end = lineOutcome(fenStart, ucis);
+  const limit = Math.min(ucis.length, Math.max(maxPlies + 2, end ? Math.min(end.ply + 1, 14) : 0));
+  for (let i = 0; i < limit; i++) {
     const uci = ucis[i];
     let m;
     try {
@@ -395,19 +643,30 @@ function lineScenes(fenStart: string, ucis: string[], mover: 'w' | 'b', maxPlies
           ? ` ++${cap(sideName(m.color))} wins the ${NAME[m.captured]}.++`
           : ` ~~${sideName(m.color)} wins the ${NAME[m.captured]}.~~`;
     }
+    if (chess.isStalemate()) text += ` **Stalemate!** ${sideName(chess.turn() as 'w' | 'b')} has no legal move and is not in check, so the game is a **draw**.`;
+    else if (chess.isInsufficientMaterial()) text += ' Neither side has enough pieces left to checkmate: **draw**.';
+    else if (chess.isThreefoldRepetition()) text += ' The position repeats three times: **draw by repetition**.';
     const arrows: SceneArrow[] = [{ from: m.from as Square, to: m.to as Square, color: m.color === mover ? 'green' : 'red' }];
     scenes.push(mk(chess.fen(), m, text, arrows));
 
-    // past the normal length, stop as soon as the last move wasn't a capture
-    if (i + 1 >= maxPlies && !m.captured) break;
+    if (chess.isGameOver()) break;
+    // past the normal length, stop as soon as the last move wasn't a capture (unless the game is about to end)
+    if (i + 1 >= maxPlies && !m.captured && !(end && i < end.ply)) break;
   }
   return scenes;
 }
 
 /** What a move is for (used for good moves and for the "better move"). Tactics are detected on the board first. */
-function purpose(fenBefore: string, m: PlyMove, fenAfter: string, mover: 'w' | 'b'): string {
+/**
+ * `line` = the engine's line from `fenAfter`. When given, "forks" / "wins" / "sacrifice" are only said if the material at the
+ * end of that line agrees; otherwise the plain fact is said instead ("attacks", "takes").
+ */
+function purpose(fenBefore: string, m: PlyMove, fenAfter: string, mover: 'w' | 'b', line?: string[]): string {
   const bits: string[] = [];
-  const tac = pickTactic(fenBefore, m, fenAfter);
+  let tac = pickTactic(fenBefore, m, fenAfter);
+  if (tac && tac.kind === 'fork' && line && !verifyClaim(fenAfter, line, { kind: 'fork', side: mover }).ok) {
+    tac = { ...tac, text: tac.text.replace(/^forks the /, 'attacks the ') };
+  }
   if (tac) bits.push(tac.text);
   if (!bits.length) {
     try {
@@ -427,7 +686,24 @@ function purpose(fenBefore: string, m: PlyMove, fenAfter: string, mover: 'w' | '
       (VAL[top.piece] >= 3 ? (VAL[top.piece] > VAL[m.piece] ? ', forcing it to move' : ', so it needs protection') : ''),
     );
   }
-  if (m.captured) bits.push(`wins ${article(NAME[m.captured])} ${NAME[m.captured]}`);
+  if (m.captured) {
+    // Never say "wins a bishop" when the same move leaves something worth more (e.g. the queen) en prise.
+    const back = winnableCaptures(fenAfter, other(mover))[0];
+    const uci = m.from + m.to + (m.promotion ?? '');
+    const winsOk = !line || verifyClaim(fenBefore, [uci, ...line], { kind: 'wins-material', side: mover }).ok;
+    const sacOk = !line || verifyClaim(fenAfter, line, { kind: 'sacrifice', side: mover }).ok;
+    const take = `${article(NAME[m.captured])} ${NAME[m.captured]}`;
+    const oppN = sideName(other(mover));
+    if (back && back.gain >= 3 && back.gain >= VAL[m.captured]) {
+      if (VAL[back.victim] > VAL[m.captured]) {
+        bits.push(sacOk
+          ? `takes ${take}, but ${oppN} can answer by taking the ${NAME[back.victim]} on ${back.to}. That is a **sacrifice**, not an even trade: follow the line to see what it gets in return`
+          : `takes ${take}, but ${oppN} can answer by taking the ${NAME[back.victim]} on ${back.to}`);
+      } else {
+        bits.push(`takes ${take} and allows ${oppN} to take the ${NAME[back.victim]} on ${back.to}, an even trade`);
+      }
+    } else bits.push(winsOk ? `wins ${take}` : `takes ${take}`);
+  }
   if (m.san.endsWith('+') && !m.san.endsWith('#') && !mateIdea && !bits.some((b) => b.startsWith('forks'))) bits.push('forces the king to react');
   if (m.flags.includes('k') || m.flags.includes('q')) bits.push('tucks the king away and connects the rooks');
   const fullmove = Number(fenBefore.split(' ')[5] ?? 1);
@@ -457,20 +733,22 @@ export function buildCoreScenes(inp: ExplainInput): Scene[] {
   const before = moverPawns(inp.evalBefore, mover);
   const after = moverPawns(inp.evalAfter, mover);
   const refutation = (inp.evalAfter?.continuation ?? '').split(/\s+/).filter(Boolean) as string[];
-  const lineMat = (() => {
-    try {
-      const c = new Chess(inp.fenAfter);
-      for (const u of refutation.slice(0, 6)) c.move({ from: u.slice(0, 2), to: u.slice(2, 4), promotion: u.length > 4 ? u[4] : undefined });
-      return netMaterial(inp.fenAfter, c.fen(), mover);
-    } catch { return { swing: 0, worst: null, best: null }; }
-  })();
+  // Material is counted where the exchange SETTLES (a trade is never cut in half); an unsettled line counts as unknown (0).
+  const lineMat = settleLine(inp.fenAfter, refutation, mover);
+  // How does the engine's line END? (stalemate, mate, repetition...) and did the move save / waste a game?
+  const lineEnd = lineOutcome(inp.fenAfter, refutation);
+  const drawSaved = savesDraw(before, after);
+  const stalemateWaste = !!lineEnd && lineEnd.kind === 'stalemate' && throwsAwayWin(before, after);
+  let drawTold = false;
 
   // ---- Scene 1: the verdict and the reason
   let text = `${describeMove(played)} is ${WORD[inp.quality] ?? 'a move'}`;
   const arrows: SceneArrow[] = [playedArrow];
   if (bad) {
     const hang = hangingInfo(inp.fenAfter, played.to, mover);
-    if (hang) {
+    if (stalemateWaste && lineEnd) {
+      text += ` because the game ends in **stalemate**: ${sideName(lineEnd.stuck)} has no legal move and is not in check, so a won position (about ${pawnGap(inp.evalBefore, mover)} pawns up) becomes a draw.`;
+    } else if (hang && (!refutation.length || verifyClaim(inp.fenAfter, refutation, { kind: 'wins-material', side: opp }).ok)) {
       text += ` because ${oppName} can ${hang.free ? 'win' : 'trade favorably for'} the **${NAME[played.piece]}** on ${played.to}`;
       text += hang.free ? ' for free.' : ` with the ${NAME[hang.attacker]}.`;
       arrows.push({ from: hang.from, to: played.to, color: 'red' });
@@ -482,7 +760,9 @@ export function buildCoreScenes(inp: ExplainInput): Scene[] {
       text += ` — it throws away the advantage: the position drops from **${formatEval(inp.evalBefore)}** to **${formatEval(inp.evalAfter)}**.`;
     } else text += '.';
   } else {
-    const tacG = pickTactic(inp.fenBefore, played, inp.fenAfter);
+    let tacG = pickTactic(inp.fenBefore, played, inp.fenAfter);
+    // "That's a fork" only when the engine's line really collects something afterwards.
+    if (tacG?.kind === 'fork' && !verifyClaim(inp.fenAfter, refutation, { kind: 'fork', side: mover }).ok) tacG = null;
     const opener = pickVar(inp.fenAfter + inp.san, GOOD_OPEN[inp.quality] ?? ['Good move.']);
     if (tacG && tacG.kind === 'mate') {
       const expl = tacG.text.split(': ')[1];
@@ -490,19 +770,35 @@ export function buildCoreScenes(inp: ExplainInput): Scene[] {
     } else if (tacG) {
       text = `${opener} ${describeMove(played)}. That's ${named(tacG.name)}: ${howClause(tacG)}.`;
     } else {
-      text = `${opener} ${describeMove(played)} — it ${purpose(inp.fenBefore, played, inp.fenAfter, mover)}.`;
+      text = `${opener} ${describeMove(played)} — it ${purpose(inp.fenBefore, played, inp.fenAfter, mover, refutation)}.`;
     }
     // A strong move whose piece can simply be taken is a sacrifice: say so, otherwise "brilliant" is unexplained.
     const sac = tacG?.kind === 'mate' ? null : hangingInfo(inp.fenAfter, played.to, mover);
-    if (sac && sac.gain >= 2 && ['brilliant', 'great', 'best'].includes(inp.quality)) {
+    // "Sacrifice" needs material that is really given up in the line AND paid back (mate, material, or an engine eval that stays fine).
+    const sacVerified = !!sac && verifyClaim(inp.fenAfter, refutation, { kind: 'sacrifice', side: mover, evalOk: after != null && after >= -0.3 }).ok;
+    if (sac && sacVerified && sac.gain >= 2 && ['brilliant', 'great', 'best'].includes(inp.quality)) {
       // What does the sacrifice buy? Taken from the engine's line, never guessed.
       const moverMates = typeof inp.evalAfter?.mate === 'number' && (mover === 'w' ? inp.evalAfter.mate > 0 : inp.evalAfter.mate < 0);
       let buys: string;
       if (moverMates) buys = `${side} gets a forced **checkmate**`;
+      else if (drawSaved) {
+        drawTold = true;
+        buys = lineEnd?.kind === 'stalemate'
+          ? `${side} was losing (about ${pawnGap(inp.evalBefore, mover)} pawns down), and after the capture ${sideName(lineEnd.stuck)} has no legal move: **stalemate**, a draw`
+          : `${side} was losing (about ${pawnGap(inp.evalBefore, mover)} pawns down) and this saves the game: the engine now says **${formatEval(inp.evalAfter)}**`;
+      }
       else if (lineMat.swing >= 1 && lineMat.best) buys = `after best play ${side} comes out ++ahead++, winning ${article(NAME[lineMat.best])} ${NAME[lineMat.best]}`;
       else if (after != null && after >= 0.8) buys = `${side} gets a strong attack, and the engine rates it **${formatEval(inp.evalAfter)}**`;
       else buys = `${side} gets more in return than it gives up`;
       text += ` It's a **sacrifice**: ${oppName} can take the ${NAME[played.piece]}, but ${buys}.`;
+    }
+    // A move that turns a lost game into a draw: explain it even when it is not a visible sacrifice.
+    if (drawSaved && !drawTold) {
+      text += lineEnd?.kind === 'stalemate'
+        ? ` This saves the game: the line ends in **stalemate**, so ${side} escapes with a draw from a lost position (about ${pawnGap(inp.evalBefore, mover)} pawns down).`
+        : lineEnd && lineEnd.kind !== 'mate'
+          ? ` This saves the game: the line ends in ${END_WORD[lineEnd.kind]}, a draw from a lost position (about ${pawnGap(inp.evalBefore, mover)} pawns down).`
+          : ` This saves the game: the engine now says **${formatEval(inp.evalAfter)}**, it was about ${pawnGap(inp.evalBefore, mover)} pawns down before the move, so ${side} found a drawing resource.`;
     }
     if (inp.isPlayedBest && inp.quality !== 'book' && tacG?.kind !== 'mate') text += " It's also the engine's top choice.";
   }
@@ -520,7 +816,7 @@ export function buildCoreScenes(inp: ExplainInput): Scene[] {
 
   // ---- What happens next (punishment if bad, follow-up if good)
   // After the best move there is nothing to warn about: explain why it is good and stop (no "the game could go...").
-  const lineSc = !bad && inp.isPlayedBest ? [] : lineScenes(inp.fenAfter, refutation, mover, bad ? 5 : 3, bad ? 'reply' : 'then');
+  const lineSc = !bad && inp.isPlayedBest && !drawSaved ? [] : lineScenes(inp.fenAfter, refutation, mover, bad ? 5 : 3, bad ? 'reply' : 'then');
   scenes.push(...lineSc);
   if (bad && lineSc.length) {
     const phrase = materialPhrase(lineMat);
@@ -529,7 +825,9 @@ export function buildCoreScenes(inp: ExplainInput): Scene[] {
     const mateAgainst = mateN !== 0 && (mover === 'w' ? mateN < 0 : mateN > 0);
     const wasText = before != null ? ` (it was ${formatEval(inp.evalBefore)} before the move)` : '';
     let resultText: string;
-    if (mateAgainst) {
+    if (stalemateWaste) {
+      resultText = `The game ends in **stalemate**: a draw. ${side} was winning (about ${pawnGap(inp.evalBefore, mover)} pawns up) before this move.`;
+    } else if (mateAgainst) {
       // The engine sees a forced mate: this move loses the game, not just "a bit of advantage".
       const n = Math.abs(mateN);
       resultText = `This loses the game: ${oppName} has a forced **checkmate in ${n}**${n === 1 ? ' — it comes on the very next move' : ''}.${before != null ? ` The position was ${formatEval(inp.evalBefore)} before the move.` : ''}`;
@@ -543,7 +841,7 @@ export function buildCoreScenes(inp: ExplainInput): Scene[] {
     scenes.push({
       ...last,
       arrows: [],
-      chip: mateAgainst ? 'Result · Checkmate' : 'Result',
+      chip: stalemateWaste ? 'Result · Stalemate' : mateAgainst ? 'Result · Checkmate' : 'Result',
       text: parseSegs(resultText),
     });
   }
@@ -553,7 +851,7 @@ export function buildCoreScenes(inp: ExplainInput): Scene[] {
     try {
       const c = new Chess(inp.fenBefore);
       const bm: any = c.move({ from: inp.bestUci.slice(0, 2), to: inp.bestUci.slice(2, 4), promotion: inp.bestUci.length > 4 ? inp.bestUci[4] : undefined });
-      const why = purpose(inp.fenBefore, bm, c.fen(), mover);
+      const why = purpose(inp.fenBefore, bm, c.fen(), mover, restAfter(inp.evalBefore, inp.bestUci));
       scenes.push(mk(
         c.fen(), bm,
         bad
@@ -572,7 +870,8 @@ export function buildCoreScenes(inp: ExplainInput): Scene[] {
 const tick = () => new Promise<void>((r) => setTimeout(r, 0));
 
 /**
- * Look-ahead scenes (search over legal moves, so they run after the core scenes are already playable):
+ * Look-ahead scenes. Stockfish PICKS every move shown here; the tactic detectors only find the words for it (narrateMove).
+ * They run after the core scenes are already playable:
  *  - "Threat":  what the mover threatens next (fork / skewer / mate / free piece) if the opponent ignores it
  *  - "Danger":  what the opponent can do to the mover right now
  *  - "Missed":  a fork / skewer / mate the mover had but did not play
@@ -589,76 +888,78 @@ async function ideaScenes(inp: ExplainInput, isCancelled: () => boolean): Promis
   let played: any;
   try { played = new Chess(inp.fenBefore).move(inp.san); } catch { return []; }
   const out: Scene[] = [];
+  const depth = Math.min(inp.depth, 12);
+  const afterNow = moverPawns(inp.evalAfter, mover);
+  const refu = pvOf(inp.evalAfter);
+  const sceneOf = (n: Narrated, text: string, color: ArrowColor, chip: string) =>
+    mk(n.fen, n, text, itemArrows(n, color), chip);
 
-  // What the mover threatens next (only meaningful after a sound move)
+  // Threat: what does STOCKFISH play for the mover if the opponent does nothing? Shown only when it gains a real amount.
   if (!bad && !inp.isPlayedBest && !inp.san.endsWith('#')) {
     await tick();
     if (isCancelled()) return [];
-    // After a check the opponent MUST react, so "if they don't react" makes no sense:
-    // look at what is threatened after their forced (engine) reply instead.
+    // After a check the opponent MUST react, so look at the position after their forced (engine) reply instead.
     let reply = '';
     let fenFrom = inp.fenAfter;
     if (inp.san.includes('+')) {
-      const u = (inp.evalAfter?.continuation ?? '').split(/\s+/).filter(Boolean)[0];
       try {
         const c = new Chess(inp.fenAfter);
-        const r = c.move({ from: u.slice(0, 2), to: u.slice(2, 4), promotion: u.length > 4 ? u[4] : undefined });
-        reply = r.san;
+        reply = c.move(uciMove(refu[0])).san;
         fenFrom = c.fen();
       } catch { fenFrom = ''; }
     }
-    const p = fenFrom ? threats(fenFrom, mover, 2).find((x) => !hangsItsPiece(x, mover)) : undefined;
-    if (p) {
-      const arrows = itemArrows(p, 'green');
-      const sc = mk(
-        p.fen, p,
-        reply
-          ? `${oppName} has to deal with the check first. After that, ${side} threatens **${p.san}**, which ${p.does}.`
-          : `${side} now threatens **${p.san}**, which ${p.does}. ${oppName} has to respond.`,
-        arrows,
-        `Threat · ${KIND_LABEL[p.kind]}`,
-      );
-      sc.threat = { san: p.san, does: p.does, afterCheck: !!reply, arrows };
-      out.push(sc);
+    if (fenFrom) {
+      try {
+        const passFen = withSide(fenFrom, mover);
+        new Chess(passFen);
+        const ev = await engineEval(passFen, depth);
+        const best = ev?.bestMove || pvOf(ev)[0];
+        const mp = moverPawns(ev, mover);
+        const mateFor = typeof ev?.mate === 'number' && ev.mate !== 0 && (mover === 'w') === (ev.mate > 0);
+        const gain = mp != null && afterNow != null ? mp - afterNow : 0;
+        const n = best ? narrateMove(passFen, best, restAfter(ev, best)) : null;
+        if (n && n.tactical && (gain >= 0.7 || mateFor)) {
+          const arrows = itemArrows(n, 'green');
+          const sc = sceneOf(
+            n,
+            reply
+              ? `${oppName} has to deal with the check first. After that, ${side} threatens **${n.san}**, which ${n.does}.`
+              : `${side} now threatens **${n.san}**, which ${n.does}. ${oppName} has to respond.`,
+            'green',
+            `Threat · ${KIND_LABEL[n.kind] ?? 'Idea'}`,
+          );
+          sc.threat = { san: n.san, does: n.does, afterCheck: !!reply, arrows };
+          out.push(sc);
+        }
+      } catch { /* ignore */ }
     }
   }
 
-  // What the opponent can do right now
-  if (!inp.san.endsWith('#')) {
+  // What the opponent can do right now: STOCKFISH's reply (first move of the line after the move that was played).
+  if (!inp.san.endsWith('#') && refu.length) {
     await tick();
     if (isCancelled()) return out;
-    // After a mistake, only show a "danger" that really works: the attacking piece must not be capturable for free.
-    // After a sound move, a hanging attacker is only kept when the engine itself plays it (a real sacrifice, checked below).
-    const dangers = threats(inp.fenAfter, opp, 2);
-    const d = (bad ? dangers.filter((x) => !hangsItsPiece(x, opp)) : dangers)
-      .find((x) => !(x.kind === 'capture' && x.to === played.to && bad));
-    if (d && bad) {
-      out.push(mk(
-        d.fen, d,
-        `Watch out: ${oppName} now threatens **${d.san}**, which ${d.does}.`,
-        itemArrows(d, 'red'),
-        `Danger · ${KIND_LABEL[d.kind]}`,
-      ));
-    } else if (d) {
-      // A sound move that leaves something en prise is a SACRIFICE, not a mistake: check with the engine what it is for.
-      const refu = (inp.evalAfter?.continuation ?? '').split(/\s+/).filter(Boolean) as string[];
-      const engineAgrees = !refu.length || refu[0].slice(0, 4) === d.from + d.to || d.kind === 'mate';
-      if (engineAgrees) {
-        const lm = (() => {
-          try {
-            const c = new Chess(inp.fenAfter);
-            for (const u of refu.slice(0, 6)) c.move({ from: u.slice(0, 2), to: u.slice(2, 4), promotion: u.length > 4 ? u[4] : undefined });
-            return netMaterial(inp.fenAfter, c.fen(), mover);
-          } catch { return { swing: 0, worst: null, best: null }; }
-        })();
+    const d = narrateMove(inp.fenAfter, refu[0], refu.slice(1));
+    if (d && d.tactical && !(bad && d.kind === 'capture' && d.to === played.to)) {
+      if (bad) {
+        out.push(sceneOf(d, `Watch out: ${oppName} now threatens **${d.san}**, which ${d.does}.`, 'red', `Danger · ${KIND_LABEL[d.kind] ?? 'Idea'}`));
+      } else {
+        // A sound move that leaves something en prise is a SACRIFICE, not a mistake. The engine's own line says what it is for.
+        const lm = settleLine(inp.fenAfter, refu, mover);
         const ev = moverPawns(inp.evalAfter, mover);
         const moverMates = typeof inp.evalAfter?.mate === 'number' && (mover === 'w' ? inp.evalAfter.mate > 0 : inp.evalAfter.mate < 0);
+        const end = lineOutcome(inp.fenAfter, refu);
+        // When the line ends the game, the reply is just "takes the piece": its usual tactic label would mislead.
+        if (end && d.to === played.to) d.does = `takes the ${NAME[played.piece]} on ${d.to}`;
         let text: string;
-        let chip = `Danger · ${KIND_LABEL[d.kind]}`;
+        let chip = `Danger · ${KIND_LABEL[d.kind] ?? 'Idea'}`;
         if (moverMates) {
           text = `Sacrifice: ${oppName} can play **${d.san}** (it ${d.does}), but ${side} still has a forced **checkmate**.`;
           chip = 'Sacrifice';
-        } else if (refu.length && lm.swing >= 0) {
+        } else if (end && end.kind !== 'mate') {
+          text = `Sacrifice: ${oppName} can play **${d.san}** (it ${d.does}), but the engine's line ends in ${END_WORD[end.kind]}, so the extra material does not win.`;
+          chip = 'Sacrifice';
+        } else if (lm.settled && lm.swing >= 0) {
           text = `Sacrifice: ${oppName} can play **${d.san}** (it ${d.does}), but it is a trap. After best play ${side} ${materialPhrase(lm) ?? 'wins the material back'}.`;
           chip = 'Sacrifice';
         } else if (ev != null && ev >= 0.8) {
@@ -667,25 +968,18 @@ async function ideaScenes(inp: ExplainInput, isCancelled: () => boolean): Promis
         } else {
           text = `Watch out: ${oppName} threatens **${d.san}**, which ${d.does}.`;
         }
-        out.push(mk(d.fen, d, text, itemArrows(d, 'red'), chip));
+        out.push(sceneOf(d, text, 'red', chip));
       }
-      // If the engine's best reply is something else, that "threat" doesn't actually work, so we don't mention it.
     }
   }
 
-  // A tactic the mover missed
-  if (bad) {
+  // A tactic the mover missed: STOCKFISH's best move before the move, when it was a real tactic.
+  if (bad && inp.bestUci && inp.bestUci.length >= 4) {
     await tick();
     if (isCancelled()) return out;
-    const miss = missedTactic(inp.fenBefore, mover, inp.san);
-    const isBestAlready = !!inp.bestUci && miss && miss.from + miss.to === inp.bestUci.slice(0, 4);
-    if (miss && !isBestAlready && !hangsItsPiece(miss, mover)) {
-      out.push(mk(
-        miss.fen, miss,
-        `${side} missed ${named(KIND_LABEL[miss.kind] ?? 'tactic')}: **${miss.san}** ${miss.does}.`,
-        itemArrows(miss, 'green'),
-        `Missed · ${KIND_LABEL[miss.kind]}`,
-      ));
+    const n = narrateMove(inp.fenBefore, inp.bestUci, restAfter(inp.evalBefore, inp.bestUci));
+    if (n && MISSED_KINDS.has(n.kind)) {
+      out.push(sceneOf(n, `${side} missed ${named(KIND_LABEL[n.kind] ?? 'tactic')}: **${n.san}** ${n.does}.`, 'green', `Missed · ${KIND_LABEL[n.kind] ?? 'Idea'}`));
     }
   }
   return out;
@@ -699,7 +993,7 @@ async function bestLineScenes(inp: ExplainInput): Promise<Scene[]> {
     c.move({ from: inp.bestUci.slice(0, 2), to: inp.bestUci.slice(2, 4), promotion: inp.bestUci.length > 4 ? inp.bestUci[4] : undefined });
     const ev: any = await analyzePosition(c.fen(), Math.min(inp.depth, 14));
     const line = (ev?.continuation ?? '').split(/\s+/).filter(Boolean) as string[];
-    return lineScenes(c.fen(), line, inp.color, 3, 'then').map((s, i) => (i === 0 ? { ...s, chip: 'Main line' } : s));
+    return lineScenes(c.fen(), line, inp.color, 5, 'then').map((s, i) => (i === 0 ? { ...s, chip: 'Main line' } : s));
   } catch { return []; }
 }
 
@@ -746,8 +1040,9 @@ async function alternativeScenes(inp: ExplainInput): Promise<Scene[]> {
       const m: any = c.move({ from: cand.from, to: cand.to, promotion: cand.promotion });
       const ev: any = await analyzePosition(c.fen(), Math.min(inp.depth, 12));
       const alt = moverPawns(ev, mover);
-      if (alt == null || ref - alt > 0.35) continue; // only good / excellent moves
-      const why = purpose(inp.fenBefore, m as PlyMove, c.fen(), mover);
+      const matedL = typeof ev?.mate === 'number' && ev.mate !== 0 && ((mover === 'w') !== (ev.mate > 0));
+      if (alt == null || matedL || ref - alt > 0.35) continue; // only good / excellent moves, confirmed by Stockfish
+      const why = purpose(inp.fenBefore, m as PlyMove, c.fen(), mover, pvOf(ev));
       const line = (ev?.continuation ?? '').split(/\s+/).filter(Boolean) as string[];
       out.push(mk(
         c.fen(), m,
@@ -762,6 +1057,66 @@ async function alternativeScenes(inp: ExplainInput): Promise<Scene[]> {
   return out;
 }
 
+/**
+ * "Continue": the next `plies` moves of the engine's line, starting from the position `fen`.
+ * One search only gives a short line, so the engine is asked again from where the line stops until there are enough
+ * moves (or the game ends). Call it again from the last scene to keep going. Returns [] when the game is over.
+ */
+export async function continuationScenes(
+  fen: string, mover: 'w' | 'b', plies = 10, depth = 12, isCancelled: () => boolean = () => false,
+): Promise<Scene[]> {
+  const line: string[] = [];
+  try {
+    for (let round = 0; round < 6 && line.length < plies; round++) {
+      if (isCancelled()) return [];
+      const c = new Chess(fen);
+      for (const u of line) c.move(uciMove(u));
+      if (c.isGameOver()) break;
+      const more = pvOf(await engineEval(c.fen(), Math.min(depth, 14)));
+      if (!more.length) break;
+      line.push(...more.slice(0, plies - line.length));
+    }
+  } catch { /* use the moves we have */ }
+  if (!line.length || isCancelled()) return [];
+  const scenes = lineScenes(fen, line, mover, plies, 'then');
+  if (!scenes.length) return [];
+  const first = scenes[0];
+  if (first.text[0]?.t.startsWith('The game could go: ')) {
+    first.text = [{ ...first.text[0], t: 'The line continues: ' + first.text[0].t.slice('The game could go: '.length) }, ...first.text.slice(1)];
+  }
+  first.chip = `Continuation · ${scenes.length} more moves`;
+  return withEngineInfo(scenes, depth, isCancelled);
+}
+
+/**
+ * Verdict on the move a scene shows (best / great / brilliant / good / mistake...), judged by the engine like the main review.
+ * The position BEFORE the move is found among the positions we already know (the one before the played move, and every scene's),
+ * so scenes made from hypothetical positions (a "threat" if the opponent passes) simply get no verdict.
+ */
+export async function sceneMoveQuality(scene: Scene, inp: ExplainInput, knownFens: string[]): Promise<string | null> {
+  if (!scene.uci || scene.uci.length < 4) return null;
+  const key4 = (f: string) => f.split(' ').slice(0, 4).join(' ');
+  let before: string | null = null;
+  for (const cand of [inp.fenBefore, ...knownFens]) {
+    try {
+      const c = new Chess(cand);
+      c.move(uciMove(scene.uci));
+      if (key4(c.fen()) === key4(scene.fen)) { before = cand; break; }
+    } catch { /* not this position */ }
+  }
+  if (!before) return null;
+  // The move the player really made keeps the main review's verdict.
+  if (key4(before) === key4(inp.fenBefore) && key4(scene.fen) === key4(inp.fenAfter)) return inp.quality;
+  try {
+    const color: 'w' | 'b' = before.split(' ')[1] === 'b' ? 'b' : 'w';
+    const san = new Chess(before).move(uciMove(scene.uci)).san;
+    if (new Chess(scene.fen).isCheckmate()) return 'best';
+    const d = Math.min(inp.depth, 12);
+    const [evB, evA] = await Promise.all([engineEval(before, d), engineEval(scene.fen, d)]);
+    return (classifyMove(evB, evA, scene.uci, color, false, san, before) as any).quality ?? null;
+  } catch { return null; }
+}
+
 // ---------- why did the player go wrong? ----------
 
 export const CAUSE_LABEL: Record<CauseId, string> = {
@@ -771,6 +1126,7 @@ export const CAUSE_LABEL: Record<CauseId, string> = {
   'allowed-tactic': 'Allowed a tactic',
   greedy: 'Greedy capture',
   positional: 'Gave up the advantage',
+  'stalemate-trap': 'Stalemated a won game',
 };
 const CAUSE_HABIT: Record<CauseId, string> = {
   'hung-piece': 'Habit to build: before you move a piece, check it is still protected on its new square.',
@@ -779,6 +1135,7 @@ const CAUSE_HABIT: Record<CauseId, string> = {
   'allowed-tactic': 'Habit to build: once you pick a move, ask what your opponent can do to you in reply.',
   greedy: 'Habit to build: before grabbing material, check what the capture gives your opponent.',
   positional: 'Habit to build: when nothing is hanging, compare moves by piece activity and king safety.',
+  'stalemate-trap': 'Habit to build: when you are far ahead, always count your opponent\'s legal moves before you take their last piece or box in their king.',
 };
 
 /**
@@ -787,65 +1144,69 @@ const CAUSE_HABIT: Record<CauseId, string> = {
  * a greedy capture, and finally "no single tactic, the advantage just slipped away".
  * Opponent ideas are only used when the engine's own reply is that move (so we never blame a threat that doesn't work).
  */
-function causeScene(inp: ExplainInput): Scene | null {
+function causeScene(inp: ExplainInput, pre: { threatBefore?: { uci: string; gain: number } | null } = {}): Scene | null {
   if (!BAD.includes(inp.quality)) return null;
   const mover = inp.color, opp = other(mover);
   const side = sideName(mover), oppName = sideName(opp);
   let played: any;
   try { played = new Chess(inp.fenBefore).move(inp.san); } catch { return null; }
-  const refu = (inp.evalAfter?.continuation ?? '').split(/\s+/).filter(Boolean) as string[];
-  const mat = (() => {
-    try {
-      const c = new Chess(inp.fenAfter);
-      for (const u of refu.slice(0, 6)) c.move({ from: u.slice(0, 2), to: u.slice(2, 4), promotion: u.length > 4 ? u[4] : undefined });
-      return netMaterial(inp.fenAfter, c.fen(), mover);
-    } catch { return { swing: 0, worst: null, best: null }; }
-  })();
-  const engineUses = (x: { from: string; to: string; kind: string }) =>
-    !refu.length || refu[0].slice(0, 4) === x.from + x.to || x.kind === 'mate';
+  const refu = pvOf(inp.evalAfter);
+  const mat = settleLine(inp.fenAfter, refu, mover);
   const make = (id: CauseId, text: string, arrows: SceneArrow[]): Scene => {
     const sc = mk(inp.fenAfter, played, `${text} ${CAUSE_HABIT[id]}`, arrows, `Why · ${CAUSE_LABEL[id]}`);
     sc.cause = { id, label: CAUSE_LABEL[id] };
     return sc;
   };
+  const b0 = moverPawns(inp.evalBefore, mover), a0 = moverPawns(inp.evalAfter, mover);
 
   try {
-    // 1. The piece that just moved can be won.
+    // 0. The game was won and ends in stalemate.
+    const endL = lineOutcome(inp.fenAfter, refu);
+    if (endL?.kind === 'stalemate' && throwsAwayWin(b0, a0)) {
+      return make('stalemate-trap',
+        `The cause: ${sideName(endL.stuck)} ends up with no legal move and is not in check, so the game is a draw. ${side} was clearly winning (about ${pawnGap(inp.evalBefore, mover)} pawns up) before this move.`,
+        [{ from: played.from, to: played.to, color: 'red' }]);
+    }
+
+    // 1. The piece that just moved can be won, and the engine's reply really does it.
     const hang = hangingInfo(inp.fenAfter, played.to, mover);
-    if (hang && hang.gain >= 2) {
+    if (hang && hang.gain >= 2 && (!refu.length || (refu[0].slice(2, 4) === played.to && verifyClaim(inp.fenAfter, refu, { kind: 'wins-material', side: opp }).ok))) {
       return make('hung-piece',
         `The cause: the ${NAME[played.piece]} on ${played.to} ${hang.free ? 'has no protection there' : 'can be taken by a cheaper piece'}, so ${oppName} simply wins material.`,
         [{ from: hang.from, to: played.to, color: 'red' }]);
     }
 
-    const dangersAfter = threats(inp.fenAfter, opp, 4).filter((x) => !hangsItsPiece(x, opp));
-
-    // 2. The opponent was already threatening something big, and the move did nothing about it.
-    const ignored = threats(inp.fenBefore, opp, 4)
-      .filter((t) => t.score >= 30 && !hangsItsPiece(t, opp))
-      .find((t) => engineUses(t) && dangersAfter.some((x) => x.from === t.from && x.to === t.to));
-    if (ignored) {
-      return make('ignored-threat',
-        `${oppName} was already threatening **${ignored.san}**, which ${ignored.does}. This move didn't deal with it.`,
-        itemArrows(ignored, 'red'));
+    // 2. The opponent had a strong idea (Stockfish's best move for them), and the engine plays it again after this move.
+    const tb = pre.threatBefore;
+    if (tb && tb.gain >= 1.5 && refu[0] && refu[0].slice(0, 4) === tb.uci.slice(0, 4)) {
+      const n = narrateMove(withSide(inp.fenBefore, opp), tb.uci);
+      if (n && n.tactical) {
+        return make('ignored-threat',
+          `${oppName} was already threatening **${n.san}**, which ${n.does}. This move didn't deal with it.`,
+          itemArrows(n, 'red'));
+      }
     }
 
-    // 3. The move created a new opportunity for the opponent.
-    const allowed = dangersAfter.find((x) => x.score >= 30 && engineUses(x));
-    if (allowed) {
-      return make('allowed-tactic',
-        allowed.kind === 'capture'
-          ? `This move lets ${oppName} play **${allowed.san}**, which ${allowed.does}.`
-          : `This move allowed ${named(KIND_LABEL[allowed.kind] ?? 'tactic')}: ${oppName} can play **${allowed.san}**, which ${allowed.does}.`,
-        itemArrows(allowed, 'red'));
+    // 3. The engine's reply is a tactic this move made possible.
+    if (refu[0]) {
+      const n = narrateMove(inp.fenAfter, refu[0], refu.slice(1));
+      if (n && n.tactical && !(n.kind === 'capture' && n.to === played.to) && !(tb && refu[0].slice(0, 4) === tb.uci.slice(0, 4))) {
+        return make('allowed-tactic',
+          n.kind === 'capture'
+            ? `This move lets ${oppName} play **${n.san}**, which ${n.does}.`
+            : `This move allowed ${named(KIND_LABEL[n.kind] ?? 'tactic')}: ${oppName} can play **${n.san}**, which ${n.does}.`,
+          itemArrows(n, 'red'));
+      }
     }
 
-    // 4. The player had a real tactic and played something else.
-    const miss = missedTactic(inp.fenBefore, mover, inp.san);
-    if (miss && miss.score >= 30 && !hangsItsPiece(miss, mover)) {
-      return make('missed-tactic',
-        `${side} had ${named(KIND_LABEL[miss.kind] ?? 'tactic')} available: **${miss.san}** ${miss.does}.`,
-        itemArrows(miss, 'green'));
+    // 4. Stockfish's best move was a real tactic, and the player played something else.
+    if (inp.bestUci && inp.bestUci.length >= 4) {
+      const n = narrateMove(inp.fenBefore, inp.bestUci, restAfter(inp.evalBefore, inp.bestUci));
+      if (n && MISSED_KINDS.has(n.kind)) {
+        return make('missed-tactic',
+          `${side} had ${named(KIND_LABEL[n.kind] ?? 'tactic')} available: **${n.san}** ${n.does}.`,
+          itemArrows(n, 'green'));
+      }
     }
 
     // 5. A small capture that costs more than it wins.
@@ -1046,7 +1407,7 @@ async function positionalScenes(inp: ExplainInput, isCancelled: () => boolean): 
   if (isCancelled()) return out;
   try {
     const side = bad ? opp : mover;
-    const p = coachPlan(inp.fenAfter, side, undefined, 1)[0];
+    const p = lineOutcome(inp.fenAfter, pvOf(inp.evalAfter)) ? undefined : coachPlan(inp.fenAfter, side, undefined, 1)[0];
     if (p && (bad || p.score >= 26)) {
       out.push(mk(inp.fenAfter, played,
         `${sideName(side)}'s plan: ${posMarkup(p.text, 'neutral')}`,
@@ -1068,27 +1429,39 @@ export async function buildAdvancedExplanation(
 ): Promise<Scene[]> {
   const core = buildCoreScenes(inp);
   if (isCancelled() || core.length === 0) return core;
+  const mover = inp.color;
+  const refu = pvOf(inp.evalAfter);
+  const drawSaved = savesDraw(moverPawns(inp.evalBefore, mover), moverPawns(inp.evalAfter, mover));
   // The short version a player sees first: verdict, WHY it went wrong (for mistakes), what happens, the better move.
   // Everything else (structure, threats, main line, other good moves) is marked `extra` for "Show more".
-  const cause = causeScene(inp);
+  // Every "why" / threat / missed tactic is confirmed by Stockfish before it is shown.
+  const cause = await buildCause(inp, isCancelled);
   const head: Scene[] = cause ? [core[0], cause] : [core[0]];
   const ex = (s: Scene[]): Scene[] => s.map((x) => ({ ...x, extra: true }));
-  const ideas = await ideaScenes(inp, isCancelled);
-  if (isCancelled()) return [...head, ...core.slice(1)];
-  const positional = await positionalScenes(inp, isCancelled);
-  if (isCancelled()) return [...head, ...ex(positional), ...ex(ideas), ...core.slice(1)];
+  let ideas: Scene[] = [];
+  let positional: Scene[] = [];
+  let draw: { scenes: Scene[]; end: LineEnd | null } = { scenes: [], end: null };
+  const fallback = () => [...head, ...draw.scenes, ...ex(positional), ...ex(ideas), ...core.slice(1)];
+  ideas = await ideaScenes(inp, isCancelled);
+  if (isCancelled()) return fallback();
+  // A move that turns a lost game into a draw (stalemate trick, perpetual...): follow the engine's line to the end of the game.
+  draw = await drawIdea(inp, isCancelled);
+  if (isCancelled()) return fallback();
+  positional = await positionalScenes(inp, isCancelled);
+  if (isCancelled()) return fallback();
   const bestLine = await bestLineScenes(inp);
-  if (isCancelled()) return [...head, ...ex(positional), ...ex(ideas), ...core.slice(1)];
+  if (isCancelled()) return fallback();
   const alsoGood = await alternativeScenes(inp);
   // The idea scenes move the board to hypothetical positions, so return to the move that was really played
   // before the line continues ("White answers: ...").
   let back: Scene[] = [];
   const oppName = sideName(other(inp.color));
   const wasBad = BAD.includes(inp.quality);
+  const lineEnd = lineOutcome(inp.fenAfter, refu) ?? draw.end;
   // If the look-ahead found something the played move THREATENS, the scenes that follow must know about it:
   // the engine's next move is then the opponent's defence, not "nothing happens".
   const threatScene = wasBad ? undefined : ideas.find((s) => (s.chip ?? '').startsWith('Threat'));
-  if (ideas.length && !inp.isPlayedBest) {
+  if ((ideas.length > 0 || draw.scenes.length > 0) && (!inp.isPlayedBest || drawSaved)) {
     try {
       const pm: any = new Chess(inp.fenBefore).move(inp.san);
       const th = threatScene?.threat;
@@ -1101,17 +1474,24 @@ export async function buildAdvancedExplanation(
         : '';
       const threatArrows: SceneArrow[] = th ? th.arrows : [];
       const lit = [...new Set(threatArrows.flatMap((a) => [a.from, a.to]))] as Square[];
+      // "Back to the game" tells the player what the game is really about now (engine verdict vs material, stalemate / mate / draw ideas, plan).
+      const story = gameStory(inp, lineEnd, drawSaved);
+      // The eval bar goes back to the real position (the engine's eval after the played move) and Stockfish's best reply is drawn in blue.
+      const bestReply = bestOf(inp.fenAfter, inp.evalAfter);
+      const bestArrow: SceneArrow[] = bestReply ? [{ from: bestReply.uci.slice(0, 2) as Square, to: bestReply.uci.slice(2, 4) as Square, color: 'blue' }] : [];
       back = [{
         ...core[0],
+        evalInfo: sceneEvalOf(inp.evalAfter),
+        best: bestReply,
         chip: th ? `Back to the game · Threat ${th.san}` : 'Back to the game',
-        arrows: [{ from: pm.from as Square, to: pm.to as Square, color: wasBad ? 'red' : 'green' }, ...threatArrows],
+        arrows: [{ from: pm.from as Square, to: pm.to as Square, color: wasBad ? 'red' : 'green' }, ...threatArrows, ...bestArrow],
         squares: lit,
-        text: parseSegs(`Back to the game: ${describeMove(pm as PlyMove)} was played.${note} Now let's see how ${oppName} answers.`),
+        text: parseSegs(`Back to the game: ${describeMove(pm as PlyMove)} was played.${note} ${story} Now let's see how ${oppName} answers.`),
       }];
     } catch { /* ignore */ }
   }
   // Reword the first line scene ("The game could go: ...") when it is really the answer to a threat.
-  const rest = core.slice(1).map((s, i) => {
+  const restRaw = core.slice(1).map((s, i) => {
     if (i !== 0 || !threatScene || !s.text.length || !s.text[0].t.startsWith('The game could go: ')) return s;
     const segs = [...s.text];
     segs[0] = {
@@ -1120,16 +1500,62 @@ export async function buildAdvancedExplanation(
     };
     return { ...s, text: segs };
   });
-  // verdict → structure / open lines / weak spots / plan → threats & dangers → back to the game → what happens next
+  // Every scene that follows "Back to the game" carries the engine's eval of ITS position, so the eval bar moves with the moves,
+  // and Stockfish's best move from there.
+  const rest = await withEngineInfo(restRaw, inp.depth, isCancelled);
+  const drawScenes = await withEngineInfo(draw.scenes, inp.depth, isCancelled);
+  // verdict → why → drawing idea → structure / open lines / weak spots / plan → threats & dangers → back to the game → what happens next
   // Beginners get the simple story only: no pawn-structure talk, no side lines, no alternative moves.
   const beginner = inp.level === 'beginner';
+  // When the game is about a draw / stalemate, "Back to the game" is part of the short version, not an optional extra.
+  const backScenes = drawSaved || (lineEnd && lineEnd.kind !== 'mate') ? back : ex(back);
   return [
     ...head,
+    ...drawScenes,
     ...(beginner ? [] : ex(positional)),
     ...ex(ideas),
-    ...ex(back),
+    ...backScenes,
     ...rest,
-    ...(beginner ? [] : ex(bestLine)),
+    ...(beginner ? [] : bestLine),
     ...(beginner ? [] : ex(alsoGood)),
   ];
+}
+
+// ---------- "Why not this move?" ----------
+
+/**
+ * The player drags any move on the position a scene shows. Stockfish rates it against its own best move, then the SAME
+ * machinery that explains a played move (verdict, why, the engine's reply, the result, the better move) explains this one,
+ * so every sentence goes through the same line checks. `fen` is the position on the board, `uci` the move the player tried.
+ * Returns [] when the move is not legal there; throws when the engine cannot be reached.
+ */
+export async function whyNotScenes(
+  inp: ExplainInput, fen: string, uci: string, isCancelled: () => boolean = () => false,
+): Promise<Scene[]> {
+  let c: Chess;
+  try { c = new Chess(fen); } catch { return []; }
+  const color = c.turn() as 'w' | 'b';
+  let m: any;
+  try { m = c.move(uciMove(uci)); } catch { return []; }
+  const after = c.fen();
+  const depth = Math.min(inp.depth, 12);
+  const [evB, evA] = await Promise.all([engineEval(fen, depth), engineEval(after, depth)]);
+  if (isCancelled()) return [];
+  const best: string | null = evB?.bestMove ?? null;
+  const isBest = !!best && best.slice(0, 4) === uci.slice(0, 4);
+  const quality = (classifyMove(evB, evA, uci, color, false, m.san, fen) as any).quality as string;
+  const synth: ExplainInput = {
+    fenBefore: fen, fenAfter: after, san: m.san, color, quality, isPlayedBest: isBest, bestUci: best,
+    evalBefore: evB, evalAfter: evA, depth: inp.depth, level: inp.level,
+  };
+  const core = buildCoreScenes(synth);
+  if (!core.length) return [];
+  const cause = await buildCause(synth, isCancelled);
+  if (isCancelled()) return [];
+  const lead = BAD.includes(quality) ? `Why not ${m.san}? ` : `Nothing wrong with ${m.san}. `;
+  const head: Scene = {
+    ...core[0], quality, chip: `Why not ${m.san}?`,
+    text: [{ t: lead, hl: 'key' }, ...core[0].text],
+  };
+  return withEngineInfo([head, ...(cause ? [cause] : []), ...core.slice(1)], inp.depth, isCancelled);
 }
