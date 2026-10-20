@@ -5,45 +5,47 @@ export default {
     extend: {
       fontFamily: {
         sans: ['Inter', 'system-ui', 'sans-serif'],
+        display: ['"Cormorant Garamond"', 'Cormorant', 'Georgia', 'serif'],
         mono: ['JetBrains Mono', 'ui-monospace', 'monospace'],
       },
       colors: {
+        // "Concierge" palette: deep emerald-black ink, champagne gold brand, copper accent
         ink: {
-          50: '#f5f6f8',
-          100: '#e8eaef',
-          200: '#d1d5dd',
-          300: '#a9b0bd',
-          400: '#7a8294',
-          500: '#565d6e',
-          600: '#3d4351',
-          700: '#2a2e39',
-          800: '#1c1f27',
-          900: '#121419',
-          950: '#0a0b0e',
+          50: '#fbf6ea',
+          100: '#f5ecd9', // cream: primary text
+          200: '#e4dcc8',
+          300: '#b9c4bb',
+          400: '#8fa398', // muted text
+          500: '#5f7a70',
+          600: '#2f453e',
+          700: '#223530', // borders / secondary buttons
+          800: '#172622', // cards
+          900: '#0f1b18', // surfaces
+          950: '#0a1411', // page background
         },
         board: {
-          light: '#f0d9b5',
-          dark: '#b58863',
-          highlight: '#f7ec6b',
-          move: '#88b04b',
+          light: '#e9dcc0',
+          dark: '#2f6b57',
+          highlight: '#c4a574',
+          move: '#c4a574',
           check: '#e54444',
         },
         brand: {
-          50: '#eef9f4',
-          100: '#d6f0e3',
-          200: '#aee0c8',
-          300: '#7fcaa6',
-          400: '#4fb083',
-          500: '#2f9468',
-          600: '#1f7652',
-          700: '#1a5e43',
-          800: '#164a36',
-          900: '#103a2b',
+          50: '#faf5ea',
+          100: '#f1e6cf',
+          200: '#e7d6b2',
+          300: '#dcc49b',
+          400: '#d0b185',
+          500: '#c4a574', // champagne gold
+          600: '#a98a5a',
+          700: '#8a6f45',
+          800: '#6a5435',
+          900: '#4a3b25',
         },
         accent: {
-          400: '#f5a623',
-          500: '#e8900a',
-          600: '#c97706',
+          400: '#d9915f', // copper: warnings / deltas
+          500: '#c27a46',
+          600: '#a8643a',
         },
       },
       animation: {

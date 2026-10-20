@@ -1087,6 +1087,8 @@ export function AnalysisView({ analysis, currentIndex, onIndexChange, onCoachExp
               whiteName={whiteName}
               blackName={blackName}
               interactive={!effectPlaying}
+              coachRun={!bestPreview && !isExploring && !effectPlaying}
+              fenBefore={bestPreview || isExploring ? null : (move?.fenBefore ?? null)}
               edgeToEdge
               onUserMove={handleUserMove}
             />
@@ -1214,7 +1216,7 @@ export function AnalysisView({ analysis, currentIndex, onIndexChange, onCoachExp
             </div>
             <div className="flex-1 flex flex-col items-center">
               <div className="flex items-center gap-2 mb-1">
-                <span className="w-3 h-3 rounded-full bg-[#2a2e39] border border-ink-500" />
+                <span className="w-3 h-3 rounded-full bg-[#16251f] border border-ink-500" />
                 <span className="text-sm font-semibold text-ink-100 truncate max-w-[120px]">{blackName}</span>
               </div>
               <span className="text-3xl font-bold text-ink-100">{Math.round(blackAccuracy)}</span>
@@ -1859,7 +1861,7 @@ function FreeMoveReviewCard({ review }: { review: ExploreReview | null }) {
 function PlayerBar({ name, color, fen }: { name: string; color: 'white' | 'black'; fen?: string }) {
   return (
     <div className="flex items-center gap-2 px-3 lg:px-0.5">
-      <span className="w-2.5 h-2.5 rounded-full border border-ink-600 shrink-0" style={{ backgroundColor: color === 'white' ? '#ebecd0' : '#2a2e39' }} />
+      <span className="w-2.5 h-2.5 rounded-full border border-ink-600 shrink-0" style={{ backgroundColor: color === 'white' ? '#f5ecd9' : '#16251f' }} />
       <span className="text-sm font-medium text-ink-200 truncate">{name}</span>
       {fen && <CapturedPieces fen={fen} color={color} />}
     </div>
@@ -1923,7 +1925,7 @@ function PlayerCard({
     <div className="flex flex-col items-center gap-2 text-center w-full">
       <div
         className={`w-24 h-24 rounded-xl flex items-center justify-center text-4xl font-bold select-none transition-shadow ${active ? 'ring-2 ring-brand-400' : 'ring-1 ring-ink-700'}`}
-        style={{ backgroundColor: isWhite ? '#ebecd0' : '#2a2e39', color: isWhite ? '#2a2e39' : '#ebecd0' }}
+        style={{ backgroundColor: isWhite ? '#f5ecd9' : '#16251f', color: isWhite ? '#16251f' : '#f5ecd9' }}
         title={active ? 'To move' : undefined}
       >
         {name.trim().charAt(0).toUpperCase() || '?'}

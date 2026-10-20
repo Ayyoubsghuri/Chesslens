@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useState, type KeyboardEvent as ReactKeyboardEvent } from 'react';
 import { Star, ThumbsUp, Check, BookOpen, X } from 'lucide-react';
 import type { MoveQuality } from '@/lib/types';
 import type { TbFrame } from '@/lib/tablebase';
@@ -7,7 +7,7 @@ import { AdvancedCoach } from './AdvancedCoach';
 import type { ExplainInput, Scene } from '@/lib/coach-explain';
 
 /** How long each language stays on screen. Tweak freely. */
-const ENGLISH_MS = 800;
+const ENGLISH_MS = 2000;
 const DARIJA_MS = 2000; // the 2-second switch
 
 /** Qualities that make the coach angry. */
@@ -75,12 +75,17 @@ function QualityDot({ quality, color, size }: { quality: MoveQuality; color: str
 }
 
 /** Drawn cartoon coach. Calm and smiling normally; furious on a blunder. */
-function CoachAvatar({ size, angry }: { size: number; angry: boolean }) {
+export function CoachAvatar({ size, angry, flying, onClick }: { size: number; angry: boolean; flying?: boolean; onClick?: () => void }) {
   return (
-    <span className="relative block shrink-0" style={{ width: size, height: size }}>
+    <span
+      className="relative block shrink-0"
+      style={{ width: size, height: size, cursor: onClick ? 'pointer' : undefined }}
+      {...(flying ? {} : { 'data-coach-avatar': '' })}
+      {...(onClick ? { onClick, role: 'button', tabIndex: 0, title: 'Click me to show the best move', onKeyDown: (e: ReactKeyboardEvent) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onClick(); } } } : {})}
+    >
       <span
         className="block h-full w-full overflow-hidden rounded-full"
-        style={{ backgroundColor: angry ? '#5a2620' : '#2f3542' }}
+        style={{ backgroundColor: angry ? '#5a2620' : '#22352f' }}
       >
       <svg
         key={angry ? 'angry' : 'calm'}
@@ -216,17 +221,21 @@ export function CoachBubble({ san, quality, color, evalText, moveKey, compact, f
 
   const bubbleRow = (
     <div className="flex items-end gap-1 rounded-xl bg-ink-900 px-3 pt-3" style={{ minHeight: avatar + 12 }}>
-      <CoachAvatar size={avatar} angry={angry} />
+      <CoachAvatar
+        size={avatar}
+        angry={angry}
+        onClick={angry ? () => window.dispatchEvent(new CustomEvent('coach-blunder-run')) : undefined}
+      />
 
       <div
-        className="relative flex-1 min-w-0 mb-3 ml-2 flex items-center gap-3 rounded-2xl bg-white px-3.5 py-3 h-[3.25rem] sm:h-[3.75rem]"
-        style={{ color: '#262421' }}
+        className="relative flex-1 min-w-0 mb-3 ml-2 flex items-center gap-3 rounded-2xl bg-[#f5ecd9] px-3.5 py-3 h-[3.25rem] sm:h-[3.75rem] lg:h-[5.5rem] lg:py-2"
+        style={{ color: '#1a2a24' }}
         role="status"
         aria-live="polite"
       >
         {/* tail pointing at the coach */}
         <span
-          className="absolute -left-2 bottom-4 w-3 h-4 bg-white"
+          className="absolute -left-2 bottom-4 w-3 h-4 bg-[#f5ecd9]"
           style={{ clipPath: 'polygon(100% 0, 0 50%, 100% 100%)' }}
           aria-hidden="true"
         />
@@ -235,10 +244,10 @@ export function CoachBubble({ san, quality, color, evalText, moveKey, compact, f
 
         <span
           key={lang}
-          className={`flex-1 min-w-0 font-extrabold leading-none text-left coach-swap whitespace-nowrap overflow-hidden text-ellipsis ${compact ? 'text-base' : 'text-xl'}`}
+          className={`flex-1 min-w-0 font-extrabold leading-none text-left coach-swap whitespace-nowrap overflow-hidden text-ellipsis lg:whitespace-normal lg:text-clip lg:break-words lg:leading-tight lg:text-lg ${compact ? 'text-xl' : 'text-2xl'}`}
           dir={lang === 'ar' && !fork ? 'rtl' : 'ltr'}
           lang={lang === 'ar' && !fork ? 'ar' : 'en'}
-          style={lang === 'ar' && !fork ? { fontFamily: '"Segoe UI", Tahoma, system-ui, sans-serif', textAlign: 'left' } : undefined}
+          style={lang === 'ar' && !fork ? { fontFamily: '"Segoe UI", Tahoma, system-ui, sans-serif', textAlign: 'left' } : { fontFamily: 'var(--cl-font-display)', fontStyle: 'italic', fontWeight: 700 }}
         >
           {fork ? FORK_PHRASE : lang === 'ar' ? DARIJA[quality] : `${figurine(san)} ${ENGLISH_TAIL[quality]}`}
         </span>
@@ -246,7 +255,7 @@ export function CoachBubble({ san, quality, color, evalText, moveKey, compact, f
         {evalText && (
           <span
             className={`shrink-0 rounded-lg px-2.5 py-1 font-bold font-mono text-white ${compact ? 'text-sm' : 'text-base'}`}
-            style={{ backgroundColor: '#4b4845' }}
+            style={{ backgroundColor: '#22352f', color: '#d8c196' }}
           >
             {evalText}
           </span>

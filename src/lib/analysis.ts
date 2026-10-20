@@ -76,8 +76,28 @@ export function classifyMove(
         : -evalBefore.mate
       : null;
   const hadForcedWin = playerMate !== null && playerMate > 0;
-  const hadWin = hadForcedWin || winBefore > 88;
-  if (hadWin && !isBest && winPercentLoss > 6) {
+  const hadWin = hadForcedWin || winBefore > 80;
+
+  // Chess.com "Miss": a winning / clearly better position, or a sharp tactical blow
+  // (typically a sacrifice, i.e. a missed brilliant), was available and the player
+  // did not play it, BUT the position is still playable afterwards.
+  // If the move instead leaves the player worse/losing it is a mistake/blunder, not a miss.
+  let missedSacrifice = false;
+  if (!isBest && !hadWin && winBefore >= 55 && evalBefore.bestMove && winPercentLoss > 8) {
+    // evalBefore.continuation starts with the best move itself; the sacrifice check
+    // wants the line AFTER it, so drop the first token.
+    const bestLine = (evalBefore.continuation ?? '').split(/\s+/).filter(Boolean);
+    if (bestLine[0] === evalBefore.bestMove) {
+      missedSacrifice = detectSacrifice(
+        fenBefore,
+        evalBefore.bestMove,
+        bestLine.slice(1).join(' '),
+        color,
+      );
+    }
+  }
+  const stillPlayable = winAfter >= 35;
+  if ((hadWin || missedSacrifice) && !isBest && winPercentLoss > 6 && stillPlayable) {
     return { quality: 'miss', delta, isBest, evalLoss, winPercentLoss };
   }
 
@@ -88,8 +108,11 @@ export function classifyMove(
   //  - the mover wasn't already winning big or had a forced mate (no credit
   //    for sacrificing when everything wins)
   //  - the mover is still OK afterwards (>= 50% win chance)
+  //  - not a promotion, and the played move must not be a plain recapture/trade
+  //    (detectSacrifice requires material to stay down or swing by >= 2)
   const nearBest = isBest || rawWinLoss < 1.5;
-  if (nearBest && !hadForcedWin && winBefore < 85 && winAfter >= 50) {
+  const isPromotion = playedMove.length > 4;
+  if (nearBest && !isPromotion && !hadForcedWin && winBefore < 85 && winAfter >= 50) {
     if (detectSacrifice(fenBefore, playedMove, evalAfter.continuation, color)) {
       return { quality: 'brilliant', delta, isBest, evalLoss, winPercentLoss };
     }

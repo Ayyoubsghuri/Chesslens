@@ -5,9 +5,15 @@ import type { Config } from '@lichess-org/chessground/config';
 import type { Key } from '@lichess-org/chessground/types';
 import { Chess, type Square, type Color } from 'chess.js';
 import type { MoveQuality } from '@/lib/types';
+import { createPortal } from 'react-dom';
 import { BookOpen, ThumbsUp, AlertCircle, AlertTriangle, XCircle, Star, HelpCircle, PartyPopper, X } from 'lucide-react';
+import { CoachAvatar } from './CoachBubble';
 
 interface ChessBoardProps {
+  /** Blunder correction: click the coach on a blunder and he runs onto the board, undoes it and plays the best move. Opt-in (AnalysisView turns it on). */
+  coachRun?: boolean;
+  /** Position BEFORE the blundered move (recommended: restores captures / castling exactly). */
+  fenBefore?: string | null;
   fen: string;
   orientation?: 'white' | 'black';
   highlightSquare?: Square | null;
@@ -95,6 +101,8 @@ function buildDests(fen: string): Map<Key, Key[]> {
 }
 
 export function ChessBoard({
+  coachRun = false,
+  fenBefore = null,
   fen,
   orientation = 'white',
   highlightSquare = null,
@@ -450,6 +458,147 @@ export function ChessBoard({
     interactive,
   ]);
 
+  // Blunder correction: the coach leaves his bubble, runs to the board, grabs the piece that
+  // blundered, puts it back, plays the best move and yells about it, then walks home.
+  const [flyer, setFlyer] = useState<{ x: number; y: number; scale: number; ms: number; grab: boolean } | null>(null);
+  const [shout, setShout] = useState<{ x: number; y: number; size: number } | null>(null);
+  useEffect(() => {
+    if (!coachRun || moveQuality !== 'blunder' || !lastMove || !bestMoveUci || bestMoveUci.length < 4) return;
+    // Runs only when the person clicks the coach (CoachBubble fires 'coach-blunder-run').
+    let stopRun: (() => void) | null = null;
+    const startRun = (): (() => void) | null => {
+    const box = containerRef.current;
+    if (!box) return null;
+    const moved = lastMove;
+    const bFrom = bestMoveUci.slice(0, 2) as Square;
+    const bTo = bestMoveUci.slice(2, 4) as Square;
+    const promo = bestMoveUci.length > 4 ? bestMoveUci[4] : undefined;
+
+    const timers: number[] = [];
+    const at = (ms: number, fn: () => void) => { timers.push(window.setTimeout(fn, ms)); };
+    let boardTouched = false;
+
+    const centerOf = (sq: Square) => {
+      const r = box.getBoundingClientRect();
+      const sz = r.width / 8;
+      const file = sq.charCodeAt(0) - 97;
+      const rank = parseInt(sq[1]) - 1;
+      const col = orientation === 'white' ? file : 7 - file;
+      const row = orientation === 'white' ? 7 - rank : rank;
+      return { x: r.left + (col + 0.5) * sz, y: r.top + (row + 0.5) * sz, sz };
+    };
+    const scaleFor = (sz: number) => (sz * 1.7) / 88;
+    const goTo = (sq: Square, ms: number, grab: boolean) => {
+      const c = centerOf(sq);
+      setFlyer({ x: c.x, y: c.y, scale: scaleFor(c.sz), ms, grab });
+    };
+
+    // Where the coach starts (his real avatar in the bubble); falls back to above the board.
+    const avatarEl = Array.from(document.querySelectorAll<HTMLElement>('[data-coach-avatar]'))
+      .find((e) => e.getBoundingClientRect().width > 0);
+    const br = box.getBoundingClientRect();
+    const ar = avatarEl?.getBoundingClientRect();
+    const home = ar
+      ? { x: ar.left + ar.width / 2, y: ar.bottom, scale: ar.width / 88 }
+      : { x: br.left + br.width / 2, y: br.top - 20, scale: 0.6 };
+
+    // Board positions for each step.
+    let afterBestFen: string | null = null;
+    if (fenBefore) {
+      try {
+        const c = new Chess(fenBefore);
+        if (c.move({ from: bFrom, to: bTo, promotion: promo })) afterBestFen = c.fen();
+      } catch { /* fall back to api.move */ }
+    }
+    const setSlow = (ms: number) => apiRef.current?.set({ animation: { enabled: true, duration: ms } });
+    const showBefore = () => {
+      const api = apiRef.current;
+      if (!api) return;
+      boardTouched = true;
+      setSlow(650);
+      if (fenBefore) api.set({ fen: fenBefore, lastMove: undefined, check: false });
+      else api.move(moved.to as Key, moved.from as Key);
+    };
+    const showBest = () => {
+      const api = apiRef.current;
+      if (!api) return;
+      boardTouched = true;
+      setSlow(650);
+      if (afterBestFen) api.set({ fen: afterBestFen, lastMove: [bFrom as Key, bTo as Key] });
+      else { try { api.move(bFrom as Key, bTo as Key); } catch { /* ignore */ } }
+    };
+    const restore = () => {
+      const api = apiRef.current;
+      if (!api || !boardTouched) return;
+      try {
+        api.set({
+          fen,
+          animation: { enabled: true, duration: 200 },
+          lastMove: [moved.from as Key, moved.to as Key],
+        });
+      } catch { /* board may be gone */ }
+    };
+
+    const T0 = 50;
+    at(T0, () => {
+      document.documentElement.classList.add('coach-away');
+      setFlyer({ x: home.x, y: home.y, scale: home.scale, ms: 0, grab: false });
+    });
+    at(T0 + 60, () => goTo(moved.to, 900, false));            // run to the blundered piece
+    at(T0 + 1000, () => goTo(moved.to, 0, true));             // grab it
+    at(T0 + 1300, () => { showBefore(); goTo(moved.from, 650, true); }); // carry it back
+    at(T0 + 2200, () => goTo(bFrom, 700, false));             // let go, walk to the right piece
+    at(T0 + 3000, () => goTo(bFrom, 0, true));                // grab it
+    at(T0 + 3200, () => { showBest(); goTo(bTo, 650, true); }); // play the best move
+    at(T0 + 4100, () => {
+      const c = centerOf(bTo);
+      setFlyer({ x: c.x, y: c.y, scale: scaleFor(c.sz), ms: 0, grab: false });
+      setShout({
+        x: Math.min(Math.max(c.x, 110), window.innerWidth - 110),
+        y: Math.max(c.y - c.sz * 2.3, 36),
+        size: Math.min(Math.max(c.sz * 0.4, 14), 28),
+      });
+      try {
+        const u = new SpeechSynthesisUtterance('This is the best move!');
+        u.pitch = 1.6; u.rate = 1.05; u.volume = 1;
+        window.speechSynthesis.cancel();
+        window.speechSynthesis.speak(u);
+      } catch { /* no speech available */ }
+    });
+    at(T0 + 5700, () => {
+      setShout(null);
+      restore();
+      setFlyer((f) => (f ? { x: home.x, y: home.y, scale: home.scale, ms: 900, grab: false } : f));
+    });
+    at(T0 + 6700, () => {
+      setFlyer(null);
+      document.documentElement.classList.remove('coach-away');
+      stopRun = null; // finished: the coach can be clicked again
+    });
+
+    return () => {
+      timers.forEach((t) => window.clearTimeout(t));
+      try { window.speechSynthesis.cancel(); } catch { /* ignore */ }
+      restore();
+      setFlyer(null);
+      setShout(null);
+      document.documentElement.classList.remove('coach-away');
+    };
+    };
+
+    const onCoachClick = () => {
+      if (stopRun) return; // already running
+      stopRun = startRun();
+    };
+    window.addEventListener('coach-blunder-run', onCoachClick);
+    return () => {
+      window.removeEventListener('coach-blunder-run', onCoachClick);
+      stopRun?.();
+      stopRun = null;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [fen, fenBefore, lastMove?.from, lastMove?.to, bestMoveUci, moveQuality, coachRun, orientation]);
+
 
   const winnerName = gameState.turnColor === 'w' ? blackName : whiteName;
   const showCheckmateOverlay = SHOW_MATE_CARD && showCelebration && gameState.isCheckmate && !celebrationDismissed;
@@ -519,6 +668,61 @@ export function ChessBoard({
           onDismiss={() => setCelebrationDismissed(true)}
         />
       )}
+      {flyer &&
+        createPortal(
+          <div
+            style={{
+              position: 'fixed',
+              left: flyer.x,
+              top: flyer.y,
+              width: 88,
+              height: 88,
+              transformOrigin: '50% 100%',
+              transform: `translate(-50%, -100%) scale(${flyer.scale})`,
+              transition: flyer.ms
+                ? `left ${flyer.ms}ms ease-in-out, top ${flyer.ms}ms ease-in-out, transform ${flyer.ms}ms ease-in-out`
+                : 'none',
+              zIndex: 100,
+              pointerEvents: 'none',
+            }}
+            aria-hidden="true"
+          >
+            <CoachAvatar size={88} angry flying />
+            <span
+              style={{ position: 'absolute', left: '50%', bottom: -22, transform: 'translateX(-50%)', fontSize: 44, lineHeight: 1 }}
+            >
+              {flyer.grab ? '\u270A' : '\u270B'}
+            </span>
+          </div>,
+          document.body
+        )}
+      {shout &&
+        createPortal(
+          <div
+            style={{
+              position: 'fixed',
+              left: shout.x,
+              top: shout.y,
+              transform: 'translate(-50%, -100%)',
+              zIndex: 101,
+              pointerEvents: 'none',
+              animation: 'cb-shah-pop 0.35s ease-out both',
+              background: '#fff',
+              color: '#d11a1a',
+              border: '3px solid #d11a1a',
+              fontWeight: 900,
+              fontSize: shout.size,
+              padding: '0.25em 0.7em',
+              borderRadius: 999,
+              whiteSpace: 'nowrap',
+              boxShadow: '0 4px 14px rgba(0,0,0,0.45)',
+            }}
+            aria-hidden="true"
+          >
+            THIS IS THE BEST MOVE!
+          </div>,
+          document.body
+        )}
       {boardFx?.kind === 'smash' && <SmashFx key={boardFx.id} />}
       {boardFx?.kind === 'burn' && <BurnFx key={boardFx.id} flames={flames} />}
       <style>{`
@@ -561,6 +765,8 @@ export function ChessBoard({
           0% { opacity: 0; visibility: hidden; }
           100% { opacity: 1; visibility: visible; }
         }
+        /* Blunder run: the real coach avatar disappears while his double is on the board */
+        html.coach-away [data-coach-avatar] { visibility: hidden; }
         /* Tint the last-move squares while a brilliant / great move is shown */
         .cb-spotlight .cg-wrap cg-board square.last-move {
           background-color: var(--cb-tint);
@@ -623,10 +829,12 @@ export function ChessBoard({
         /* uses the independent translate/rotate/scale properties so it stacks on chessground's inline transform */
         /* Board theme: green and white (a1 dark, top-left light), like Chess.com */
         .cb-green-board .cg-wrap cg-board {
-          background-color: #ebecd0 !important;
-          background-image: repeating-conic-gradient(#779556 0 25%, #ebecd0 0 50%) !important;
+          background-color: #e9dcc0 !important;
+          background-image: repeating-conic-gradient(#2f6b57 0 25%, #e9dcc0 0 50%) !important;
           background-size: 25% 25% !important;
         }
+        /* Last-move highlight in champagne gold */
+        .cb-green-board:not(.cb-spotlight) .cg-wrap cg-board square.last-move { background-color: rgba(196, 165, 116, 0.5); }
         /* Checkmate: red & black fills the 32 squares nearest the king, one square at a time (generated in mateWaveCss) */
         ${mateWaveCss}
         /* the shards burst out a little further, then settle where they stay */
