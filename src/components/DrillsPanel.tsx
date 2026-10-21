@@ -1,13 +1,11 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { type Square } from 'chess.js';
 import { ChessBoard } from './ChessBoard';
-import { MoveText, type MovePreview } from './MoveText';
 import { FeedbackBanner } from './PracticeBits';
 import type { AnalyzedMove, Drill, Settings } from '@/lib/types';
 import { generateDrills } from '@/lib/drills';
-import { getCoachExplanation } from '@/lib/coach';
 import { ACCEPTABLE, applyUci, colorOfFen, judgeMove, sleep } from '@/lib/practice';
-import { Target, Loader2, Check, X, RefreshCw, Sparkles, ChevronRight, Lightbulb, Eye, ArrowLeft } from 'lucide-react';
+import { Target, Loader2, Check, RefreshCw, ChevronRight, Lightbulb, Eye, ArrowLeft } from 'lucide-react';
 
 interface DrillsPanelProps {
   moves: AnalyzedMove[];
@@ -39,9 +37,6 @@ export function DrillsPanel({ moves, settings }: DrillsPanelProps) {
   const [hint, setHint] = useState<0 | 1 | 2>(0);
   const [usedSolution, setUsedSolution] = useState(false);
   const [tries, setTries] = useState(0);
-  const [explanation, setExplanation] = useState('');
-  const [loadingExplain, setLoadingExplain] = useState(false);
-  const [preview, setPreview] = useState<MovePreview | null>(null);
   const run = useRef(0); // bumps whenever the drill resets, cancelling any running animation
   useEffect(() => () => { run.current++; }, []);
 
@@ -56,8 +51,6 @@ export function DrillsPanel({ moves, settings }: DrillsPanelProps) {
     setHint(0);
     setUsedSolution(false);
     setTries(0);
-    setExplanation('');
-    setPreview(null);
   }
 
   function markDone(id: string) {
@@ -150,17 +143,6 @@ export function DrillsPanel({ moves, settings }: DrillsPanelProps) {
     setFeedback({ tone: 'info', text: 'Solution shown. Hit Retry to solve it yourself.' });
   }
 
-  async function handleExplain() {
-    if (!activeDrill || !settings.openaiApiKey) return;
-    setLoadingExplain(true);
-    try {
-      const move = moves[activeDrill.sourceMoveIndex];
-      if (move) setExplanation(await getCoachExplanation(move, settings));
-    } finally {
-      setLoadingExplain(false);
-    }
-  }
-
   const doneCount = drills.filter((d) => doneIds.has(d.id)).length;
 
   if (drills.length === 0) {
@@ -241,7 +223,7 @@ export function DrillsPanel({ moves, settings }: DrillsPanelProps) {
   const myIndex = Math.floor(step / 2) + 1;
 
   return (
-    <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+    <div className="grid grid-cols-1 gap-6 max-w-[520px] mx-auto">
       <div className="flex flex-col gap-4 min-w-0">
         <button onClick={() => { run.current++; setActiveDrill(null); }} className="btn-ghost text-xs self-start -mb-2">
           <ArrowLeft size={12} /> All drills
@@ -250,25 +232,18 @@ export function DrillsPanel({ moves, settings }: DrillsPanelProps) {
         <div className="flex justify-center w-full">
           <div className="w-full max-w-[480px]">
             <ChessBoard
-              fen={preview ? preview.fen : boardFen}
+              fen={boardFen}
               orientation={orientation}
-              lastMove={preview ? { from: preview.from, to: preview.to } : lastMove}
-              highlightSquare={!preview && hint === 1 && nextBest ? (nextBest.slice(0, 2) as Square) : null}
-              bestMoveUci={!preview && hint === 2 ? nextBest : null}
-              interactive={!preview && status === 'solving'}
+              lastMove={lastMove}
+              highlightSquare={hint === 1 && nextBest ? (nextBest.slice(0, 2) as Square) : null}
+              bestMoveUci={hint === 2 ? nextBest : null}
+              interactive={status === 'solving'}
               onUserMove={handleUserMove}
               showCelebration={false}
               size={480}
             />
           </div>
         </div>
-
-        {preview && (
-          <div className="flex items-center justify-between gap-2 rounded-lg bg-brand-500/10 border border-brand-500/30 px-3 py-2 text-sm text-brand-300">
-            <span>Previewing <span className="font-mono font-semibold">{preview.san}</span> <span className="text-brand-400/70">({preview.uci})</span></span>
-            <button onClick={() => setPreview(null)} className="btn-ghost text-xs px-2 py-1 shrink-0"><X size={12} /> Back to drill</button>
-          </div>
-        )}
 
         <div className="card p-4 space-y-3">
           <div className="flex items-center justify-between">
@@ -293,9 +268,6 @@ export function DrillsPanel({ moves, settings }: DrillsPanelProps) {
             <button onClick={handleShowSolution} disabled={status === 'showing' || status === 'done' || status === 'revealed' || status === 'opponent'} className="btn-secondary text-xs">
               <Eye size={12} /> Show Solution
             </button>
-            <button onClick={handleExplain} disabled={loadingExplain || !settings.openaiApiKey} className="btn-ghost text-xs">
-              {loadingExplain ? <Loader2 size={12} className="animate-spin" /> : <Sparkles size={12} />} Explain
-            </button>
             {(status === 'done' || status === 'revealed') && nextDrill && (
               <button onClick={() => startDrill(nextDrill)} className="btn-primary text-xs ml-auto">Next drill <ChevronRight size={12} /></button>
             )}
@@ -304,18 +276,6 @@ export function DrillsPanel({ moves, settings }: DrillsPanelProps) {
         </div>
       </div>
 
-      <div className="card p-4 self-start">
-        <h3 className="text-sm font-semibold text-ink-200 mb-3">Coach Explanation</h3>
-        {explanation ? (
-          <p className="text-sm text-ink-100 leading-relaxed">
-            <MoveText text={explanation} fen={moves[activeDrill.sourceMoveIndex]?.fenBefore || activeDrill.fen} onPreview={setPreview} activeUci={preview?.uci} />
-          </p>
-        ) : (
-          <p className="text-sm text-ink-500">
-            {settings.openaiApiKey ? 'Click "Explain" to understand why this is the best move.' : 'Add your OpenAI API key in Settings for drill explanations.'}
-          </p>
-        )}
-      </div>
     </div>
   );
 }

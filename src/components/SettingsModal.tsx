@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { X, Key, Eye, EyeOff, Settings as SettingsIcon, Cpu, Sparkles, Volume2 } from 'lucide-react';
+import { X, Settings as SettingsIcon, Cpu, Sparkles, Volume2 } from 'lucide-react';
 import type { Settings } from '@/lib/types';
 import { COACH_VOICES, DEFAULT_COACH_VOICE } from '@/lib/tts';
 
@@ -30,7 +30,6 @@ export function SettingsModal({ settings, onSave, onClose }: SettingsModalProps)
     ...settings,
     analysisDepth: safeDepth,
   });
-  const [showKey, setShowKey] = useState(false);
 
   const handleSave = () => {
     onSave({
@@ -54,44 +53,6 @@ export function SettingsModal({ settings, onSave, onClose }: SettingsModalProps)
         </div>
 
         <div className="p-5 space-y-5">
-          <div>
-            <label className="flex items-center gap-2 text-sm font-medium text-ink-200 mb-1.5">
-              <Key size={14} /> OpenAI API Key
-            </label>
-            <div className="relative">
-              <input
-                type={showKey ? 'text' : 'password'}
-                value={local.openaiApiKey}
-                onChange={(e) => setLocal({ ...local, openaiApiKey: e.target.value })}
-                placeholder="sk-..."
-                className="input pr-10"
-              />
-              <button
-                onClick={() => setShowKey(!showKey)}
-                className="absolute right-2 top-1/2 -translate-y-1/2 text-ink-400 hover:text-ink-200"
-              >
-                {showKey ? <EyeOff size={16} /> : <Eye size={16} />}
-              </button>
-            </div>
-            <p className="text-xs text-ink-400 mt-1.5">
-              Used for the AI coach explanations. Your key is stored locally in your browser only.
-            </p>
-          </div>
-
-          <div>
-            <label className="text-sm font-medium text-ink-200 mb-1.5 block">Coach Model</label>
-            <select
-              value={local.coachModel}
-              onChange={(e) => setLocal({ ...local, coachModel: e.target.value })}
-              className="input"
-            >
-              <option value="gpt-4o-mini">GPT-4o Mini (faster)</option>
-              <option value="gpt-4o">GPT-4o (smarter)</option>
-              <option value="gpt-4-turbo">GPT-4 Turbo</option>
-              <option value="gpt-3.5-turbo">GPT-3.5 Turbo (budget)</option>
-            </select>
-          </div>
-
           <div>
             <label className="flex items-center gap-2 text-sm font-medium text-ink-200 mb-1.5">
               <Cpu size={14} /> Engine Depth: {local.analysisDepth}

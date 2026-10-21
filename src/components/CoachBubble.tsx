@@ -244,7 +244,7 @@ export function CoachBubble({ san, quality, color, evalText, moveKey, compact, f
 
         <span
           key={lang}
-          className={`flex-1 min-w-0 font-extrabold leading-none text-left coach-swap whitespace-nowrap overflow-hidden text-ellipsis lg:whitespace-normal lg:text-clip lg:break-words lg:leading-tight lg:text-lg ${compact ? 'text-xl' : 'text-2xl'}`}
+          className={`flex-1 min-w-0 font-extrabold leading-none text-left coach-swap whitespace-nowrap overflow-hidden text-ellipsis lg:whitespace-normal lg:text-clip lg:break-words ${lang === 'ar' && !fork ? 'lg:leading-snug text-base lg:text-sm' : `lg:leading-tight lg:text-lg ${compact ? 'text-xl' : 'text-2xl'}`}`}
           dir={lang === 'ar' && !fork ? 'rtl' : 'ltr'}
           lang={lang === 'ar' && !fork ? 'ar' : 'en'}
           style={lang === 'ar' && !fork ? { fontFamily: '"Segoe UI", Tahoma, system-ui, sans-serif', textAlign: 'left' } : { fontFamily: 'var(--cl-font-display)', fontStyle: 'italic', fontWeight: 700 }}

@@ -2,14 +2,12 @@ import { useState, useEffect, useRef, useCallback } from 'react';
 import { Chess, type Square } from 'chess.js';
 import { ChessBoard } from './ChessBoard';
 import { EvalBar } from './Evalbar';
-import { MoveText, type MovePreview } from './MoveText';
-import { getCoachExplanation, getBestLineExplanation } from '@/lib/coach';
 import { formatEval } from '@/lib/engine';
 import { useElementSize } from '@/lib/useElementSize';
 import { PlayVsComputer } from './PlayVsComputer';
 import { GuessGamePanel } from './GuessGamePanel';
 import type { AnalyzedMove, Settings, CoachMessage } from '@/lib/types';
-import { Play, Pause, Loader2, Sparkles, FastForward, RotateCcw, MessageSquare, X, AlertTriangle, ChevronLeft, ChevronRight, ChevronsLeft, ChevronsRight } from 'lucide-react';
+import { Play, Pause, Sparkles, FastForward, RotateCcw, MessageSquare, AlertTriangle, ChevronLeft, ChevronRight, ChevronsLeft, ChevronsRight } from 'lucide-react';
 
 interface CoachPanelProps {
   move: AnalyzedMove | null;
@@ -20,29 +18,21 @@ interface CoachPanelProps {
   onNavigate?: (index: number) => void;
 }
 
-function ExplainView({ move, settings, total, onNavigate }: CoachPanelProps & { total: number }) {
-  const [explanation, setExplanation] = useState('');
-  const [loadingExplain, setLoadingExplain] = useState(false);
+function ExplainView({ move, total, onNavigate }: CoachPanelProps & { total: number }) {
   const [lineMessages, setLineMessages] = useState<CoachMessage[]>([]);
   const [lineFen, setLineFen] = useState('');
   const [lineIndex, setLineIndex] = useState(0);
   const [playing, setPlaying] = useState(false);
-  const [lineExplanation, setLineExplanation] = useState('');
-  const [loadingLineExplain, setLoadingLineExplain] = useState(false);
-  const [preview, setPreview] = useState<MovePreview | null>(null);
   // Chosen once (from the first move shown) and then left alone, so Back/Next never flips the board.
   const [orientation, setOrientation] = useState<'white' | 'black'>(move?.color === 'b' ? 'black' : 'white');
   const playTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // Reset when move changes — start from the position AFTER the move was played
   useEffect(() => {
-    setExplanation('');
     setLineMessages([]);
     setLineFen(move?.fenAfter || new Chess().fen());
     setLineIndex(0);
     setPlaying(false);
-    setLineExplanation('');
-    setPreview(null);
     if (playTimer.current) clearTimeout(playTimer.current);
   }, [move?.index]);
 
@@ -80,28 +70,6 @@ function ExplainView({ move, settings, total, onNavigate }: CoachPanelProps & { 
       setPlaying(false);
     }
   }, [move, lineFen, lineIndex]);
-
-  async function handleExplain() {
-    if (!move) return;
-    setLoadingExplain(true);
-    try {
-      const text = await getCoachExplanation(move, settings);
-      setExplanation(text);
-    } finally {
-      setLoadingExplain(false);
-    }
-  }
-
-  async function handleExplainLine() {
-    if (!move) return;
-    setLoadingLineExplain(true);
-    try {
-      const text = await getBestLineExplanation(move.fenAfter, move.evalAfter?.continuation || '', settings);
-      setLineExplanation(text);
-    } finally {
-      setLoadingLineExplain(false);
-    }
-  }
 
   function handlePlayPause() {
     if (playing) {
@@ -181,8 +149,8 @@ function ExplainView({ move, settings, total, onNavigate }: CoachPanelProps & { 
       })()
     : null;
 
-  const boardFenToShow = preview ? preview.fen : lineFen;
-  const boardLastMove = preview ? { from: preview.from, to: preview.to } : lastMoveCoords;
+  const boardFenToShow = lineFen;
+  const boardLastMove = lastMoveCoords;
 
   return (
     <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 sm:gap-6">
@@ -228,18 +196,6 @@ function ExplainView({ move, settings, total, onNavigate }: CoachPanelProps & { 
           <button onClick={() => go(total - 1)} disabled={!canNext} className="btn-secondary px-2.5 py-2" title="Last move"><ChevronsRight size={16} /></button>
         </div>
 
-        {preview && (
-          <div className="flex items-center justify-between gap-2 rounded-lg bg-brand-500/10 border border-brand-500/30 px-3 py-2 text-sm text-brand-300">
-            <span>
-              Previewing <span className="font-mono font-semibold">{preview.san}</span>{' '}
-              <span className="text-brand-400/70">({preview.uci})</span>
-            </span>
-            <button onClick={() => setPreview(null)} className="btn-ghost text-xs px-2 py-1 shrink-0">
-              <X size={12} /> Back
-            </button>
-          </div>
-        )}
-
         {/* Mate warning for the resulting position */}
         {mateIn != null && (
           <div className={`flex items-center gap-2 rounded-lg border px-3 py-2 text-sm ${
@@ -278,25 +234,6 @@ function ExplainView({ move, settings, total, onNavigate }: CoachPanelProps & { 
           </p>
         </div>
 
-        {/* Line explanation */}
-        <div className="card p-4">
-          <div className="flex items-center justify-between mb-2">
-            <h3 className="text-sm font-semibold text-ink-300">Line Strategy</h3>
-            <button onClick={handleExplainLine} disabled={loadingLineExplain || !settings.openaiApiKey} className="btn-ghost text-xs px-2 py-1">
-              {loadingLineExplain ? <Loader2 size={12} className="animate-spin" /> : <Sparkles size={12} />}
-              Explain
-            </button>
-          </div>
-          {lineExplanation ? (
-            <p className="text-sm text-ink-200 leading-relaxed">
-              <MoveText text={lineExplanation} fen={move.fenAfter} onPreview={setPreview} activeUci={preview?.uci} line />
-            </p>
-          ) : (
-            <p className="text-sm text-ink-500">
-              {settings.openaiApiKey ? 'Click "Explain" to get the strategic ideas behind this line.' : 'Add your OpenAI API key in Settings to get line explanations.'}
-            </p>
-          )}
-        </div>
       </div>
 
       {/* Coach explanation */}
@@ -307,10 +244,6 @@ function ExplainView({ move, settings, total, onNavigate }: CoachPanelProps & { 
               <MessageSquare size={16} className="text-brand-400" />
               <h3 className="text-sm font-semibold text-ink-200">Coach's Take</h3>
             </div>
-            <button onClick={handleExplain} disabled={loadingExplain} className="btn-primary text-xs px-3 py-1.5">
-              {loadingExplain ? <Loader2 size={12} className="animate-spin" /> : <Sparkles size={12} />}
-              {explanation ? 'Re-explain' : 'Explain Why'}
-            </button>
           </div>
 
           <div className="rounded-lg bg-ink-900/40 p-3 mb-3">
@@ -335,17 +268,6 @@ function ExplainView({ move, settings, total, onNavigate }: CoachPanelProps & { 
             )}
           </div>
 
-          {explanation ? (
-            <div className="text-sm text-ink-100 leading-relaxed animate-fade-in">
-              <MoveText text={explanation} fen={move.fenBefore} onPreview={setPreview} activeUci={preview?.uci} />
-            </div>
-          ) : (
-            <p className="text-sm text-ink-500">
-              {settings.openaiApiKey
-                ? 'Click "Explain Why" to hear the coach break down this move.'
-                : 'Add your OpenAI API key in Settings to get personalized explanations.'}
-            </p>
-          )}
         </div>
 
         {/* Move history of line */}
@@ -388,7 +310,7 @@ export function CoachPanel({ move, settings, moves = [], onNavigate }: CoachPane
           </button>
         ))}
       </div>
-      {mode === 'explain' && <ExplainView move={move} settings={settings} total={moves.length} onNavigate={onNavigate} />}
+      {mode === 'explain' && <ExplainView move={move} total={moves.length} onNavigate={onNavigate} />}
       {mode === 'guess' && <GuessGamePanel moves={moves} settings={settings} />}
       {mode === 'vs' && <PlayVsComputer settings={settings} />}
     </div>

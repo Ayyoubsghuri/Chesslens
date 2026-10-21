@@ -18,13 +18,13 @@ import { getMoveHistory } from '@/lib/pgn';
 import { getGameOutcome } from '@/lib/outcome';
 import { logEvent } from '@/lib/activity';
 import { loadGames, saveGames, loadAnalyses, saveAnalysis, deleteAnalysis, loadSettings, saveSettings } from '@/lib/storage';
-import type { ImportedGame, AnalysisResult, AnalyzedMove, Settings as SettingsType, View } from '@/lib/types';
+import type { ImportedGame, AnalysisResult, Settings as SettingsType, View } from '@/lib/types';
 import { Loader2, Plus, Settings as SettingsIcon, BarChart3, GraduationCap, Target, Crown as ChessIcon, Upload, Swords, Home, Trash2, ChevronLeft, ChevronRight, Search, X, BookOpen } from 'lucide-react';
 
 function App() {
   const [games, setGames] = useState<ImportedGame[]>([]);
   const [analyses, setAnalyses] = useState<Record<string, AnalysisResult>>({});
-  const [settings, setSettings] = useState<SettingsType>({ openaiApiKey: '', analysisDepth: 12, coachModel: 'gpt-4o-mini', advancedCoach: false });
+  const [settings, setSettings] = useState<SettingsType>({ analysisDepth: 12, advancedCoach: false } as SettingsType);
   const [selectedGameId, setSelectedGameId] = useState<string | null>(null);
   const [currentMoveIndex, setCurrentMoveIndex] = useState(0);
   const [view, setView] = useState<View>('analysis');
@@ -34,7 +34,6 @@ function App() {
   const [showSettings, setShowSettings] = useState(false);
   const [analyzing, setAnalyzing] = useState(false);
   const [analysisProgress, setAnalysisProgress] = useState({ current: 0, total: 0 });
-  const [coachMove, setCoachMove] = useState<AnalyzedMove | null>(null);
   const [pendingAnalyzeId, setPendingAnalyzeId] = useState<string | null>(null);
   const [missionCtx, setMissionCtx] = useState<{ mission: Mission; page: 'puzzles' | 'play' | 'openings' | 'home' } | null>(null);
 
@@ -48,7 +47,6 @@ function App() {
       setPage(target.page);
       if (target.page === 'home') {
         setSelectedGameId(null);
-        setCoachMove(null);
       }
     }
   }, []);
@@ -159,7 +157,7 @@ function App() {
       const { [id]: _removed, ...rest } = prev;
       return rest;
     });
-    if (selectedGameId === id) { setSelectedGameId(null); setCoachMove(null); }
+    if (selectedGameId === id) setSelectedGameId(null);
   };
 
   const handleDeleteMany = (ids: string[], label: string) => {
@@ -173,7 +171,7 @@ function App() {
       return updated;
     });
     setAnalyses(prev => Object.fromEntries(Object.entries(prev).filter(([id]) => !set.has(id))));
-    if (selectedGameId && set.has(selectedGameId)) { setSelectedGameId(null); setCoachMove(null); }
+    if (selectedGameId && set.has(selectedGameId)) setSelectedGameId(null);
   };
 
   const handleSelectGame = (id: string) => {
@@ -181,17 +179,10 @@ function App() {
     setSelectedGameId(id);
     setCurrentMoveIndex(0);
     setView('analysis');
-    setCoachMove(null);
-  };
-
-  const handleCoachExplain = (move: AnalyzedMove) => {
-    setCoachMove(move);
-    setView('coach');
   };
 
   const handleCoachNavigate = (index: number) => {
     setCurrentMoveIndex(index);
-    setCoachMove(null);
   };
 
   const handleSaveSettings = (s: SettingsType) => {
@@ -264,7 +255,7 @@ function App() {
                 </div>
                 <h2 className="text-2xl font-bold mb-2">Welcome to ChessLens</h2>
                 <p className="text-ink-400 max-w-md mb-6">
-                  Import games from Chess.com or paste PGN to get engine evaluations, blunder detection, and AI-powered coaching for every move.
+                  Import games from Chess.com or paste PGN to get engine evaluations, blunder detection, and a coach for every move.
                 </p>
                 <button onClick={() => setShowImport(true)} className="btn-primary">
                   <Upload size={18} /> Import Your First Game
@@ -280,7 +271,7 @@ function App() {
             <div className="mb-6">
               <div className="flex flex-wrap items-center justify-between gap-3 mb-4">
                 <div>
-                  <button onClick={() => { setSelectedGameId(null); setCoachMove(null); }} className="text-xs text-ink-400 hover:text-ink-200 mb-1 flex items-center gap-1">
+                  <button onClick={() => setSelectedGameId(null)} className="text-xs text-ink-400 hover:text-ink-200 mb-1 flex items-center gap-1">
                     ← Back to games
                   </button>
                   <h2 className="text-xl font-bold">{selectedGame.white} vs {selectedGame.black}</h2>
@@ -356,14 +347,13 @@ function App() {
                 analysis={selectedAnalysis}
                 currentIndex={currentMoveIndex}
                 onIndexChange={setCurrentMoveIndex}
-                onCoachExplain={handleCoachExplain}
                 depth={settings.analysisDepth}
                 advancedCoach={!!settings.advancedCoach}
                 coachVoice={!!settings.coachVoice}
                 coachVoiceName={settings.coachVoiceName}
               />
             ) : view === 'coach' ? (
-              <CoachPanel move={coachMove || currentMove} settings={settings} moves={selectedAnalysis.moves} onNavigate={handleCoachNavigate} />
+              <CoachPanel move={currentMove} settings={settings} moves={selectedAnalysis.moves} onNavigate={handleCoachNavigate} />
             ) : (
               <DrillsPanel moves={selectedAnalysis.moves} settings={settings} />
             )}

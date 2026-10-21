@@ -19,7 +19,7 @@ import type { AnalysisResult, AnalyzedMove, MoveQuality, PieceColor } from '@/li
 import {
   ChevronLeft, ChevronRight, AlertTriangle, Target, TrendingUp, Award,
   CheckCircle2, ThumbsUp, Minus, BookOpen, AlertCircle, XCircle, RotateCcw,
-  Info, X, Star, HelpCircle, MessageSquare, Sparkles, Zap, Maximize2, ChevronsLeft, ChevronsRight, Play, Pause,
+  Info, X, Star, HelpCircle, Sparkles, Zap, Maximize2, ChevronsLeft, ChevronsRight, Play, Pause,
 } from 'lucide-react';
 
 const QUALITY_META: Record<MoveQuality, { color: string; bg: string; icon: any; label: string }> = {
@@ -533,7 +533,6 @@ interface AnalysisViewProps {
   analysis: AnalysisResult;
   currentIndex: number;
   onIndexChange: (index: number) => void;
-  onCoachExplain: (move: AnalyzedMove) => void;
   /** Engine depth used to review free/explore moves. Defaults to 12 if not provided. */
   depth?: number;
   /** Settings → Advanced coach mode. */
@@ -543,7 +542,7 @@ interface AnalysisViewProps {
   coachVoiceName?: string;
 }
 
-export function AnalysisView({ analysis, currentIndex, onIndexChange, onCoachExplain, depth = 12, advancedCoach = false, coachVoice = false, coachVoiceName }: AnalysisViewProps) {
+export function AnalysisView({ analysis, currentIndex, onIndexChange, depth = 12, advancedCoach = false, coachVoice = false, coachVoiceName }: AnalysisViewProps) {
   const moves = analysis.moves;
   const move = moves[currentIndex] || null;
   const displayQuality: MoveQuality | null = move ? correctedQuality(move) : null;
@@ -1505,18 +1504,6 @@ export function AnalysisView({ analysis, currentIndex, onIndexChange, onCoachExp
 
               {theaterCoach}
 
-              <button
-                onClick={() => move && onCoachExplain(move)}
-                disabled={!move || isExploring}
-                className="btn-primary w-full justify-center py-3 text-base font-bold disabled:opacity-50"
-                title={isExploring ? 'Return to the game to ask the coach about a move' : 'Ask the coach to explain this move'}
-              >
-                <span className="w-6 h-6 rounded-full bg-white flex items-center justify-center">
-                  <Star size={14} className="text-brand-600" fill="currentColor" />
-                </span>
-                Explain this move
-              </button>
-
               <div className="grid grid-cols-2 gap-2">
                 <button
                   onClick={() => move && playBestLine()}
@@ -1680,10 +1667,7 @@ export function AnalysisView({ analysis, currentIndex, onIndexChange, onCoachExp
             </div>
             <p className="px-4 py-3 text-sm text-ink-400">{blurbText}</p>
             {(displayQuality === 'brilliant' || displayQuality === 'great') && <BrilliantLineButton onClick={playBrilliantLine} />}
-            <div className="grid grid-cols-3 gap-px bg-ink-700/50 border-t border-ink-700/50">
-              <button onClick={() => onCoachExplain(move)} className="flex items-center justify-center gap-2 py-2.5 text-sm text-ink-200 hover:bg-ink-700/50 transition-colors">
-                <MessageSquare size={14} className="text-brand-400" /> Explain
-              </button>
+            <div className="grid grid-cols-2 gap-px bg-ink-700/50 border-t border-ink-700/50">
               <button
                 onClick={() => playBestLine()}
                 disabled={!engineBestUci}
@@ -1754,10 +1738,7 @@ export function AnalysisView({ analysis, currentIndex, onIndexChange, onCoachExp
             </div>
             <p className="px-4 py-3 text-sm text-ink-400">{blurbText}</p>
             {(displayQuality === 'brilliant' || displayQuality === 'great') && <BrilliantLineButton onClick={playBrilliantLine} />}
-            <div className="grid grid-cols-3 gap-px bg-ink-700/50 border-t border-ink-700/50">
-              <button onClick={() => onCoachExplain(move)} className="flex items-center justify-center gap-2 py-2.5 text-sm text-ink-200 hover:bg-ink-700/50 transition-colors">
-                <MessageSquare size={14} className="text-brand-400" /> Explain
-              </button>
+            <div className="grid grid-cols-2 gap-px bg-ink-700/50 border-t border-ink-700/50">
               <button
                 onClick={() => playBestLine()}
                 disabled={!engineBestUci}
