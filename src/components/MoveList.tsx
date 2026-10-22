@@ -1,3 +1,4 @@
+import { useEffect, useRef } from 'react';
 import type { AnalyzedMove, MoveQuality } from '@/lib/types';
 import { formatEval } from '@/lib/engine';
 import { CheckCircle2, ThumbsUp, Minus, BookOpen, AlertCircle, AlertTriangle, XCircle, Star, HelpCircle, Sparkles } from 'lucide-react';
@@ -22,22 +23,34 @@ const QUALITY_META: Record<MoveQuality, { color: string; bg: string; icon: any; 
 };
 
 export function MoveList({ moves, currentIndex, onSelect }: MoveListProps) {
+  const ref = useRef<HTMLDivElement>(null);
   const pairs: { white?: AnalyzedMove; black?: AnalyzedMove }[] = [];
   for (let i = 0; i < moves.length; i += 2) {
     pairs.push({ white: moves[i], black: moves[i + 1] });
   }
 
+  // Keep the current move visible inside the list (scrolls only the list, never the page).
+  useEffect(() => {
+    const el = ref.current?.querySelector<HTMLElement>('[data-current]');
+    const box = el?.closest<HTMLElement>('.overflow-y-auto');
+    if (!el || !box) return;
+    const top = el.getBoundingClientRect().top - box.getBoundingClientRect().top + box.scrollTop;
+    if (top < box.scrollTop + 8 || top + el.offsetHeight > box.scrollTop + box.clientHeight - 8) {
+      box.scrollTo({ top: Math.max(0, top - box.clientHeight / 2), behavior: 'smooth' });
+    }
+  }, [currentIndex]);
+
   return (
-    <div className="space-y-0.5">
+    <div ref={ref} className="w-full min-w-0 overflow-x-hidden space-y-0.5">
       {pairs.map((pair, i) => (
-        <div key={i} className="flex items-center gap-1 rounded-lg hover:bg-ink-800/40 transition-colors">
-          <span className="w-7 text-right text-xs text-ink-400 pr-1 shrink-0">{i + 1}.</span>
-          {pair.white && (
-            <MoveButton move={pair.white} isCurrent={pair.white.index === currentIndex} onSelect={onSelect} />
-          )}
-          {pair.black && (
-            <MoveButton move={pair.black} isCurrent={pair.black.index === currentIndex} onSelect={onSelect} />
-          )}
+        // Fixed number column + two equal columns: white and black line up on every row and nothing can overflow.
+        <div
+          key={i}
+          className={`grid grid-cols-[1.75rem_minmax(0,1fr)_minmax(0,1fr)] items-center gap-x-1 rounded-lg transition-colors hover:bg-ink-800/40 ${i % 2 ? 'bg-ink-800/25' : ''}`}
+        >
+          <span className="text-right text-xs text-ink-400 pr-1">{i + 1}.</span>
+          {pair.white ? <MoveButton move={pair.white} isCurrent={pair.white.index === currentIndex} onSelect={onSelect} /> : <span />}
+          {pair.black ? <MoveButton move={pair.black} isCurrent={pair.black.index === currentIndex} onSelect={onSelect} /> : <span />}
         </div>
       ))}
     </div>
@@ -51,8 +64,9 @@ function MoveButton({ move, isCurrent, onSelect }: { move: AnalyzedMove; isCurre
 
   return (
     <button
+      data-current={isCurrent || undefined}
       onClick={() => onSelect(move.index)}
-      className={`flex items-center gap-1.5 flex-1 rounded-md px-2 py-1 text-sm transition-all ${isCurrent ? 'bg-brand-500/20 ring-1 ring-brand-400/40' : 'hover:bg-ink-700/50'}`}
+      className={`flex min-w-0 items-center gap-1.5 rounded-md px-2 py-1.5 text-left text-sm transition-all ${isCurrent ? 'bg-brand-500/20 ring-1 ring-brand-400/40' : 'hover:bg-ink-700/50'}`}
     >
       <span
         className="w-4 h-4 rounded-full flex items-center justify-center shrink-0"
@@ -69,9 +83,9 @@ function MoveButton({ move, isCurrent, onSelect }: { move: AnalyzedMove; isCurre
           <Icon size={10} style={{ color: meta.color }} />
         )}
       </span>
-      <span className="font-mono">{move.san}</span>
+      <span className={`min-w-0 truncate font-mono ${isCurrent ? 'font-semibold text-white' : ''}`}>{move.san}</span>
       {move.evalAfter && (
-        <span className="ml-auto text-xs text-ink-400 font-mono">{formatEval(move.evalAfter)}</span>
+        <span className="ml-auto shrink-0 pl-1 text-[11px] text-ink-400 font-mono">{formatEval(move.evalAfter)}</span>
       )}
     </button>
   );
