@@ -210,6 +210,8 @@ interface Run {
   recent: number[]; // student's eval, last 8 plies
   comebackShown: boolean;
   bookEnded: boolean;
+  /** Moves already explained inside an earlier beat (the student's punishment of an opponent's blunder): not explained twice. */
+  covered: Set<number>;
 }
 
 // ===========================================================================
@@ -301,6 +303,16 @@ function buildGood(m: AnalyzedMove, c: Ctx, run: Run, prev: AnalyzedMove | null,
   const doing = whatItDoes(m, c, seed);
   parts.push(doing.text);
 
+  // Checkmate ends the game: say it is checkmate and stop. No "+100.00", no "winning position", no advice about trading pieces
+  // (the closing "end" beat of the review says who won).
+  if (m.san.includes('#')) {
+    const mateHead = scene(m, parts.join(' '), {
+      arrows: doing.arrows, chip: `${label(m)} · Checkmate`, quality: q, plain: false, withEval: false,
+    });
+    run.bookEnded = true;
+    return { id: `m${m.index}`, moveIndex: m.index, kind: 'good', quality: q, byStudent, head: [mateHead], body: [], tail: [] };
+  }
+
   const bs = bestSan(m);
   if (!m.isBestMove && bs && (q === 'good' || q === 'excellent') && (m.winPercentLoss ?? 0) > 0.8) {
     parts.push(`The engine would have picked **${bs}** by a hair, but this is close enough.`);
@@ -318,7 +330,9 @@ function buildGood(m: AnalyzedMove, c: Ctx, run: Run, prev: AnalyzedMove | null,
   if (byStudent && !run.comebackShown && mp != null && run.recent.length >= 4 && Math.min(...run.recent) <= -1 && mp >= Math.min(...run.recent) + 2.5) {
     parts.push(vary(seed, COMEBACK, 'comeback')); run.comebackShown = true;
   }
-  if (band && band !== run.lastBand && mp != null && (m.evalAfter) && (m.index % 4 === 3 || Math.abs((mp ?? 0)) >= 2.5)) {
+  // Never read out a mate score as pawns ("+100.00"): forced mates are told as mates, not as an evaluation.
+  const mateScore = typeof m.evalAfter?.mate === 'number' && m.evalAfter.mate !== 0;
+  if (band && band !== run.lastBand && mp != null && m.evalAfter && !mateScore && Math.abs(mp) < 50 && (m.index % 4 === 3 || Math.abs((mp ?? 0)) >= 2.5)) {
     parts.push(evalTalk(seed, mp, formatEval(m.evalAfter)));
   } else if (!scan.text && hash(seed + 'plan') % 4 === 1 && byStudent) {
     parts.push(planFor(seed, phase, standingOf(mp)));
@@ -344,7 +358,7 @@ function buildGood(m: AnalyzedMove, c: Ctx, run: Run, prev: AnalyzedMove | null,
   return { id: `m${m.index}`, moveIndex: m.index, kind: 'good', quality: q, byStudent, head: [head], body, tail: [] };
 }
 
-function buildBad(m: AnalyzedMove, c: Ctx, run: Run, prev: AnalyzedMove | null, prev2: AnalyzedMove | null): GameBeat {
+function buildBad(m: AnalyzedMove, c: Ctx, run: Run, prev: AnalyzedMove | null, prev2: AnalyzedMove | null, next: AnalyzedMove | null = null): GameBeat {
   const seed = `${m.index}:${m.san}`;
   const byStudent = isStudent(c, m.color);
   const q = m.quality;
@@ -396,6 +410,19 @@ function buildBad(m: AnalyzedMove, c: Ctx, run: Run, prev: AnalyzedMove | null, 
   // Draw the opponent's options the text names ("Right now, they can play ...").
   const closingArrows = dangerNow.length && byStudent ? threatArrows(dangerNow.slice(0, 2) as any) : [];
   tail.push(scene(m, closing.join(' '), { arrows: closingArrows, chip: 'Takeaway', plain: false, withEval: true }));
+
+  // The opponent slipped and the student's very next move punished it: say what was played, praise it,
+  // and remember it, so that move is not explained a second time when the review reaches it.
+  const punished = !byStudent && c.you !== null && q !== 'inaccuracy' && !!next && isStudent(c, next.color)
+    && !isBad(next.quality) && (next.isBestMove || next.quality === 'best' || STRONG.includes(next.quality));
+  if (punished && next) {
+    const nd = whatItDoes(next, c, seed + ':n');
+    const praise = say(seed, ['Well spotted.', 'Sharp eyes.', 'That is exactly how you punish a mistake.', 'Nicely done.'], {}, 'praise');
+    tail.push(scene(next, `You answered with **${next.san}**. ${nd.text} That is exactly the punishment the engine was looking for. ${praise}`, {
+      arrows: nd.arrows, chip: 'You found it', quality: next.quality, plain: false,
+    }));
+    run.covered.add(next.index);
+  }
 
   return { id: `m${m.index}`, moveIndex: m.index, kind: 'bad', quality: q, byStudent, head: [headScene], body, tail, deepInput: inp };
 }
@@ -466,7 +493,7 @@ function* beatSteps(moves: AnalyzedMove[], opt: GameCoachOptions): Generator<num
   if (!moves.length) return [];
   const c: Ctx = { you: opt.you, depth: opt.depth, level: opt.level };
   const beats: GameBeat[] = [];
-  const run: Run = { studentGoodStreak: 0, streakShown: false, lastBand: null, recent: [], comebackShown: false, bookEnded: false };
+  const run: Run = { studentGoodStreak: 0, streakShown: false, lastBand: null, recent: [], comebackShown: false, bookEnded: false, covered: new Set<number>() };
   const first = moves[0];
 
   // intro
@@ -497,11 +524,18 @@ function* beatSteps(moves: AnalyzedMove[], opt: GameCoachOptions): Generator<num
       // a stray book move after the collapsed run: keep it silent, it is theory
       continue;
     }
+    // Already explained (and praised) inside the opponent's blunder beat: do not say it all again.
+    if (run.covered.has(i)) {
+      if (student) run.studentGoodStreak += 1;
+      if (!m.opening) run.bookEnded = true;
+      continue;
+    }
     const bad = isBad(m.quality);
     const strong = STRONG.includes(m.quality);
     if (opt.detail === 'highlights' && !bad && !strong) { if (!m.opening) run.bookEnded = true; continue; }
 
-    beats.push(bad ? buildBad(m, c, run, prev, prev2) : buildGood(m, c, run, prev, prev2));
+    const next = i + 1 < moves.length ? moves[i + 1] : null;
+    beats.push(bad ? buildBad(m, c, run, prev, prev2, next) : buildGood(m, c, run, prev, prev2));
     if (!m.opening) run.bookEnded = true;
   }
 

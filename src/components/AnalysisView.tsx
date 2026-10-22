@@ -13,6 +13,7 @@ import { detectKnightFork } from '@/lib/knight-fork';
 import { formatEval, evalToPawns, analyzePosition } from '@/lib/engine';
 import { classifyMove } from '@/lib/analysis';
 import { useElementSize } from '@/lib/useElementSize';
+import { getUsername, setUsername, youSide as sideOfUser } from '@/lib/player';
 import { offerCoachMove } from '@/lib/coach-bus';
 import { GameCoach, CoachModeTabs, type CoachMode } from '@/components/GameCoach';
 import { sceneSquares, sceneLines, type SceneLine, type ExplainInput, type Scene, type SceneArrow, type SceneEval } from '@/lib/coach-explain';
@@ -548,7 +549,21 @@ export function AnalysisView({ analysis, currentIndex, onIndexChange, depth = 12
   const move = moves[currentIndex] || null;
   const displayQuality: MoveQuality | null = move ? correctedQuality(move) : null;
 
-  const [orientation, setOrientation] = useState<'white' | 'black'>('white');
+  // Who the user is: saved username, matched against the two players of this game.
+  const [username, setUsernameState] = useState<string>(() => getUsername());
+  const youSide = useMemo(() => sideOfUser(analysis.game, username), [analysis.game, username]);
+  function pickYou(side: 'w' | 'b') {
+    const name = (side === 'w' ? analysis.game.white : analysis.game.black) || '';
+    setUsername(name);
+    setUsernameState(name);
+  }
+  const gameNames = { white: analysis.game.white || 'White', black: analysis.game.black || 'Black' };
+
+  const [orientation, setOrientation] = useState<'white' | 'black'>(() => (sideOfUser(analysis.game, getUsername()) === 'b' ? 'black' : 'white'));
+  // Opening a game (or picking who you are): you are at the bottom of the board, the opponent on top.
+  useEffect(() => {
+    if (youSide) setOrientation(youSide === 'b' ? 'black' : 'white');
+  }, [analysis.game.id, youSide]);
   const handleFlip = () => setOrientation((prev) => (prev === 'white' ? 'black' : 'white'));
 
   const [theaterMode, setTheaterMode] = useState(false);
@@ -1516,7 +1531,9 @@ export function AnalysisView({ analysis, currentIndex, onIndexChange, depth = 12
                   previewActive={!!bestPreview}
                   onScene={showCoachScene}
                   depth={depth}
-                  you={null}
+                  you={youSide}
+                  names={gameNames}
+                  onPickYou={pickYou}
                   voice={coachVoice}
                   voiceName={coachVoiceName}
                   compact
@@ -1721,7 +1738,9 @@ export function AnalysisView({ analysis, currentIndex, onIndexChange, depth = 12
             previewActive={!!bestPreview}
             onScene={showCoachScene}
             depth={depth}
-            you={null /* pass 'w' | 'b' when you know which side the user played */}
+            you={youSide}
+            names={gameNames}
+            onPickYou={pickYou}
             voice={coachVoice}
             voiceName={coachVoiceName}
             compact
@@ -1807,7 +1826,9 @@ export function AnalysisView({ analysis, currentIndex, onIndexChange, depth = 12
             previewActive={!!bestPreview}
             onScene={showCoachScene}
             depth={depth}
-            you={null /* pass 'w' | 'b' when you know which side the user played */}
+            you={youSide}
+            names={gameNames}
+            onPickYou={pickYou}
             voice={coachVoice}
             voiceName={coachVoiceName}
           />

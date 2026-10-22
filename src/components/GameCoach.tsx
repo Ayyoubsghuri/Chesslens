@@ -81,6 +81,10 @@ interface Props {
   compact?: boolean;
   voice?: boolean;
   voiceName?: string;
+  /** Player names, so the coach can ask "which one are you?" while `you` is still unknown. */
+  names?: { white: string; black: string };
+  /** The student picked their side: the app saves that name as the user. */
+  onPickYou?: (side: 'w' | 'b') => void;
 }
 
 /**
@@ -90,7 +94,7 @@ interface Props {
  *  - "Highlights" skips the good moves, "Next mistake" jumps straight to the next one
  */
 export function GameCoach({
-  moves, currentIndex, onIndexChange, previewActive, onScene, you = null, level, depth, compact, voice = false, voiceName,
+  moves, currentIndex, onIndexChange, previewActive, onScene, you = null, level, depth, compact, voice = false, voiceName, names, onPickYou,
 }: Props) {
   const [detail, setDetail] = useState<GameDetail>('every');
   // The review is built in small slices (not in one blocking pass), so the page stays alive and shows a loading bar.
@@ -325,6 +329,17 @@ export function GameCoach({
 
   return (
     <div className="mt-2 w-full min-w-0 max-w-full overflow-hidden rounded-xl bg-ink-800/70 border border-ink-700/60 p-3">
+      {you === null && names && onPickYou && (
+        <div className="mb-2 flex flex-wrap items-center gap-1.5 rounded-lg bg-ink-700/40 px-2 py-1.5 text-xs text-ink-300">
+          <span>Which player are you?</span>
+          <button onClick={() => onPickYou('w')} className="max-w-[9rem] truncate rounded-md bg-ink-700/70 px-2 py-1 text-ink-100 hover:bg-ink-600/70">
+            {names.white}
+          </button>
+          <button onClick={() => onPickYou('b')} className="max-w-[9rem] truncate rounded-md bg-ink-700/70 px-2 py-1 text-ink-100 hover:bg-ink-600/70">
+            {names.black}
+          </button>
+        </div>
+      )}
       <div className="flex min-w-0 items-center gap-2 mb-2 text-xs text-ink-400">
         <Sparkles size={13} className="shrink-0 text-brand-400" />
         <span className="shrink-0 font-semibold text-ink-300">Game coach</span>

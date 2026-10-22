@@ -17,6 +17,7 @@ import { analyzeGame, computeAccuracy, countByQuality } from '@/lib/analysis';
 import { getMoveHistory } from '@/lib/pgn';
 import { getGameOutcome } from '@/lib/outcome';
 import { logEvent } from '@/lib/activity';
+import { getUsername, setUsername, guessUsername } from '@/lib/player';
 import { loadGames, saveGames, loadAnalyses, saveAnalysis, deleteAnalysis, loadSettings, saveSettings } from '@/lib/storage';
 import type { ImportedGame, AnalysisResult, Settings as SettingsType, View } from '@/lib/types';
 import { Loader2, Plus, Settings as SettingsIcon, BarChart3, GraduationCap, Target, Crown as ChessIcon, Upload, Swords, Home, Trash2, ChevronLeft, ChevronRight, Search, X, BookOpen } from 'lucide-react';
@@ -68,6 +69,11 @@ function App() {
   const inGame = page === 'home' && !!selectedGame && !!selectedAnalysis;
 
   const handleImport = useCallback((imported: ImportedGame[]) => {
+    // First import: the name that appears in every game is the user, the other player is the opponent.
+    if (!getUsername()) {
+      const guess = guessUsername(imported);
+      if (guess) setUsername(guess);
+    }
     setGames(prev => {
       const updated = [...imported, ...prev];
       saveGames(updated);
