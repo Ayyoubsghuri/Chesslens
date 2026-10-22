@@ -38,7 +38,7 @@ export const goodOpen = (q: string, seed: string): string =>
 const BAD_EXTRA: Record<string, string[]> = {
   inaccuracy: ['You already had two windows, why build a third?', 'Finish your development first.', 'Look at what this move stops guarding.'],
   mistake: ['Every pawn move stops guarding something.', 'Looks natural, and that is why it is so common.', 'Careful, your opponent gets what they wanted.'],
-  miss: ['Checks, captures, attacks. Every single move.', 'Free material was on the board.', 'Loose pieces drop off, and you walked past one.'],
+  miss: ['There was a way to win material here.', 'Free material was on the board.', 'Loose pieces drop off, and you walked past one.'],
   blunder: ['Folks, stay calm.', 'Not ideal.', 'Three seconds on that move was too fast.', 'I would grab the board and shout if I could.'],
 };
 
@@ -107,12 +107,12 @@ const HABITS: Record<string, string[]> = {
     'Look at what just changed in the position. A threat does not go away because you ignored it.',
   ],
   'missed-tactic': [
-    'Habit to build: checks, captures, attacks, for both sides. That is where tactics hide.',
-    'The shot was there. Next time run through checks, captures and attacks before you decide.',
+    'Habit to build: look for forcing moves for both sides first. That is where tactics hide.',
+    'The shot was there. Next time look at the forcing moves before you decide.',
   ],
   'allowed-tactic': [
     'Habit to build: once you pick a move, ask what your opponent can do in reply. It is not checkers.',
-    'Before you click, look at their checks and captures after your move.',
+    'Before you click, look at what your opponent can do in reply.',
   ],
   greedy: [
     'Habit to build: it is not checkers. Before you grab material, ask what the capture lets them do.',

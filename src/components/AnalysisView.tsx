@@ -14,6 +14,7 @@ import { formatEval, evalToPawns, analyzePosition } from '@/lib/engine';
 import { classifyMove } from '@/lib/analysis';
 import { useElementSize } from '@/lib/useElementSize';
 import { offerCoachMove } from '@/lib/coach-bus';
+import { GameCoach, CoachModeTabs, type CoachMode } from '@/components/GameCoach';
 import { sceneSquares, sceneLines, type SceneLine, type ExplainInput, type Scene, type SceneArrow, type SceneEval } from '@/lib/coach-explain';
 import type { AnalysisResult, AnalyzedMove, MoveQuality, PieceColor } from '@/lib/types';
 import {
@@ -553,6 +554,8 @@ export function AnalysisView({ analysis, currentIndex, onIndexChange, depth = 12
   const [theaterMode, setTheaterMode] = useState(false);
   const [theaterTab, setTheaterTab] = useState<'moves' | 'details' | 'summary'>('moves');
   const [playing, setPlaying] = useState(false);
+  /** 'move' = the per-move advanced coach, 'game' = the whole-game review. */
+  const [coachMode, setCoachMode] = useState<CoachMode>('move');
   const [viewport, setViewport] = useState(() => ({
     w: typeof window !== 'undefined' ? window.innerWidth : 1280,
     h: typeof window !== 'undefined' ? window.innerHeight : 800,
@@ -951,7 +954,7 @@ export function AnalysisView({ analysis, currentIndex, onIndexChange, depth = 12
 
   /** Everything the advanced coach needs to explain the current move. */
   const explainInput = useMemo<ExplainInput | null>(() => {
-    if (!advancedCoach || !move || !displayQuality) return null;
+    if (!advancedCoach || coachMode !== 'move' || !move || !displayQuality) return null;
     return {
       fenBefore: move.fenBefore,
       fenAfter: move.fenAfter,
@@ -964,7 +967,7 @@ export function AnalysisView({ analysis, currentIndex, onIndexChange, depth = 12
       evalAfter: move.evalAfter,
       depth,
     };
-  }, [advancedCoach, move, displayQuality, isPlayedBest, engineBestUci, depth]);
+  }, [advancedCoach, coachMode, move, displayQuality, isPlayedBest, engineBestUci, depth]);
 
   /** The advanced coach puts a scene (position + arrows) on the board, or null to go back to the game. */
   function showCoachScene(scene: Scene | null) {
@@ -1350,7 +1353,7 @@ export function AnalysisView({ analysis, currentIndex, onIndexChange, depth = 12
                 fork={!!forkTargets}
                 fen={move.fenAfter}
                 onPlayTablebase={playFrames}
-                advanced={advancedCoach}
+                advanced={advancedCoach && coachMode === 'move'}
                 voice={coachVoice}
                 voiceName={coachVoiceName}
                 explainInput={explainInput}
@@ -1483,7 +1486,9 @@ export function AnalysisView({ analysis, currentIndex, onIndexChange, depth = 12
               )}
             </div>
 
-            <div className="shrink-0 border-t border-ink-700/60 bg-ink-900/40 p-3 space-y-3">
+            <div className={`shrink-0 min-h-0 flex flex-col border-t border-ink-700/60 bg-ink-900/40 ${isWide ? 'max-h-[72%]' : ''}`}>
+             {/* Everything about the current move scrolls here, so the advanced coach is never squeezed out of the panel; the buttons below stay pinned. */}
+             <div className="min-h-0 overflow-y-auto p-3 space-y-3">
               {exploreBanner}
               {bestPreviewBanner}
 
@@ -1502,8 +1507,26 @@ export function AnalysisView({ analysis, currentIndex, onIndexChange, depth = 12
                 </div>
               )}
 
-              {theaterCoach}
+              <CoachModeTabs mode={coachMode} onChange={setCoachMode} />
+              {coachMode === 'game' ? (
+                <GameCoach
+                  moves={moves}
+                  currentIndex={currentIndex}
+                  onIndexChange={onIndexChange}
+                  previewActive={!!bestPreview}
+                  onScene={showCoachScene}
+                  depth={depth}
+                  you={null}
+                  voice={coachVoice}
+                  voiceName={coachVoiceName}
+                  compact
+                />
+              ) : (
+                theaterCoach
+              )}
+             </div>
 
+             <div className="shrink-0 p-3 pt-0 space-y-3">
               <div className="grid grid-cols-2 gap-2">
                 <button
                   onClick={() => move && playBestLine()}
@@ -1540,6 +1563,7 @@ export function AnalysisView({ analysis, currentIndex, onIndexChange, depth = 12
                   <ChevronsRight size={20} />
                 </button>
               </div>
+             </div>
             </div>
           </div>
         </div>
@@ -1657,7 +1681,7 @@ export function AnalysisView({ analysis, currentIndex, onIndexChange, depth = 12
                 fork={!!forkTargets}
                 fen={move.fenAfter}
                 onPlayTablebase={playFrames}
-                advanced={advancedCoach}
+                advanced={advancedCoach && coachMode === 'move'}
                 voice={coachVoice}
                 voiceName={coachVoiceName}
                 explainInput={explainInput}
@@ -1688,6 +1712,21 @@ export function AnalysisView({ analysis, currentIndex, onIndexChange, depth = 12
           </div>
         )}
 
+        <CoachModeTabs mode={coachMode} onChange={setCoachMode} />
+        {coachMode === 'game' && viewport.w < 1024 && (
+          <GameCoach
+            moves={moves}
+            currentIndex={currentIndex}
+            onIndexChange={onIndexChange}
+            previewActive={!!bestPreview}
+            onScene={showCoachScene}
+            depth={depth}
+            you={null /* pass 'w' | 'b' when you know which side the user played */}
+            voice={coachVoice}
+            voiceName={coachVoiceName}
+            compact
+          />
+        )}
         </div>
 
         {exploreBanner}
@@ -1728,7 +1767,7 @@ export function AnalysisView({ analysis, currentIndex, onIndexChange, depth = 12
                 fork={!!forkTargets}
                 fen={move.fenAfter}
                 onPlayTablebase={playFrames}
-                advanced={advancedCoach}
+                advanced={advancedCoach && coachMode === 'move'}
                 voice={coachVoice}
                 voiceName={coachVoiceName}
                 explainInput={explainInput}
@@ -1759,6 +1798,20 @@ export function AnalysisView({ analysis, currentIndex, onIndexChange, depth = 12
           </div>
         )}
 
+        <CoachModeTabs mode={coachMode} onChange={setCoachMode} />
+        {coachMode === 'game' && viewport.w >= 1024 && (
+          <GameCoach
+            moves={moves}
+            currentIndex={currentIndex}
+            onIndexChange={onIndexChange}
+            previewActive={!!bestPreview}
+            onScene={showCoachScene}
+            depth={depth}
+            you={null /* pass 'w' | 'b' when you know which side the user played */}
+            voice={coachVoice}
+            voiceName={coachVoiceName}
+          />
+        )}
         </div>
 
         {moveDetailsCard}

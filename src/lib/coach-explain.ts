@@ -17,8 +17,8 @@ import {
   goodOpen, badOpen, topChoice, answerVerb, thenLead, resultLead, blunderAnalogy, betterText,
   causeLead, habitFor, missedVerb, whereLead, retryPrompt, retryOk, whyNotLead,
 } from '@/lib/coach-voice';
-// HOW the coach explains: the order of thought (react, read, sweep, compare, if-then, score, translate, rule).
-import { ccaText, criteriaIntro, criteriaClose, wantsText, watchLead, principleTail } from '@/lib/coach-method';
+// HOW the coach explains: the four criteria and the closing rule of thumb.
+import { criteriaIntro, criteriaClose, principleTail } from '@/lib/coach-method';
 // The line checks live in claim-check.ts (pure chess.js, unit-tested); re-exported so existing imports keep working.
 export { lineOutcome };
 export type { LineEnd };
@@ -73,6 +73,11 @@ export interface ExplainInput {
   evalBefore?: any;
   evalAfter?: any;
   depth: number;
+  /**
+   * 'forcing': after an inaccuracy, mistake, miss or blunder the move-by-move line is only shown when it leads to a fork, the loss of a
+   * valuable piece or checkmate (otherwise the "Why" already says everything). Default 'full'.
+   */
+  sequence?: 'full' | 'forcing';
   /** Who is learning: beginners get the short, simple version; advanced players get everything. Default: intermediate. */
   level?: CoachLevel;
 }
@@ -419,7 +424,7 @@ const PHASE_WORD: Record<string, string> = { opening: 'the opening', middlegame:
  * set against the material on the board: who is ahead, whether the numbers and the engine disagree (and why),
  * whether the line ends in stalemate / mate / a draw, the plan, and what the engine expects next.
  */
-function gameStory(inp: ExplainInput, lineEnd: LineEnd | null, drawSaved: boolean): string {
+export function gameStory(inp: ExplainInput, lineEnd: LineEnd | null, drawSaved: boolean): string {
   const mover = inp.color, opp = other(mover);
   const side = sideName(mover), oppName = sideName(opp);
   const after = moverPawns(inp.evalAfter, mover);
@@ -602,7 +607,150 @@ async function buildCause(inp: ExplainInput, isCancelled: () => boolean): Promis
     const now = moverPawns(inp.evalBefore, opp), then = moverPawns(ev, opp);
     pre.threatBefore = uci && now != null && then != null ? { uci, gain: then - now } : null;
   } catch { pre.threatBefore = null; }
-  return causeScene(inp, pre);
+  const base = causeScene(inp, pre);
+  // Concrete tactics are already explained directly. Everything else (no tactic on the very next move, or just
+  // "gave away X pawns") gets the prepared look-ahead: the engine's line after this move against the line after the best move.
+  if (base && base.cause && base.cause.id !== 'positional') return base;
+  const deep = await deepCause(inp, isCancelled);
+  return deep ?? base;
+}
+
+/** Keeps the legal part of an engine line, and asks the engine to carry on when it is shorter than `minPlies`. */
+async function extendLine(fen: string, ucis: string[], minPlies: number, isCancelled: () => boolean): Promise<string[]> {
+  const line: string[] = [];
+  let c: Chess;
+  try { c = new Chess(fen); } catch { return line; }
+  for (const u of ucis) {
+    try { c.move(uciMove(u)); line.push(u); } catch { break; }
+  }
+  if (line.length < minPlies && !c.isGameOver() && !isCancelled()) {
+    try {
+      for (const u of pvOf(await engineEval(c.fen(), 12))) {
+        try { c.move(uciMove(u)); line.push(u); } catch { break; }
+      }
+    } catch { /* keep what we have */ }
+  }
+  return line;
+}
+
+/** The position after the first `n` plies of a line (or the last legal one). */
+function fenAfterPlies(fen: string, ucis: string[], n: number): string {
+  const c = new Chess(fen);
+  for (const u of ucis.slice(0, n)) { try { c.move(uciMove(u)); } catch { break; } }
+  return c.fen();
+}
+
+/** First move of `side` in the line that is a real tactic (fork, pin, mate, a piece won...), with the ply it happens on. */
+function firstShot(fen: string, line: string[], side: 'w' | 'b'): { n: Narrated; ply: number } | null {
+  let c: Chess;
+  try { c = new Chess(fen); } catch { return null; }
+  for (let i = 0; i < Math.min(line.length, 7); i++) {
+    if (c.turn() === side) {
+      const n = narrateMove(c.fen(), line[i], line.slice(i + 1));
+      if (n && n.tactical) return { n, ply: i };
+    }
+    try { c.move(uciMove(line[i])); } catch { break; }
+  }
+  return null;
+}
+
+/**
+ * The prepared analysis: why a bad move is bad, from looking AHEAD instead of from a label.
+ * It follows the engine's line after the move that was played and the engine's line after the best move, then states
+ *  1. what the opponent gets in the first line (a tactic, material, mate),
+ *  2. what the best move does differently,
+ *  3. which weakness shows up at the end of the first line and not in the second,
+ * and each sentence is only used when the line (or the board) proves it.
+ */
+async function deepCause(inp: ExplainInput, isCancelled: () => boolean): Promise<Scene | null> {
+  if (!BAD.includes(inp.quality)) return null;
+  const mover = inp.color, opp = other(mover);
+  const side = sideName(mover), oppName = sideName(opp);
+  let played: any;
+  try { played = new Chess(inp.fenBefore).move(inp.san); } catch { return null; }
+  const sentences: string[] = [];
+  let tacticFound = false;
+  const arrows: SceneArrow[] = [{ from: played.from, to: played.to, color: 'red' }];
+
+  try {
+    // ---- the line after the move that was played
+    const refu = await extendLine(inp.fenAfter, pvOf(inp.evalAfter), 6, isCancelled);
+    if (isCancelled()) return null;
+    const lm = settleLine(inp.fenAfter, refu, mover);
+    const mateN = typeof inp.evalAfter?.mate === 'number' ? inp.evalAfter.mate : 0;
+    const mated = mateN !== 0 && (mover === 'w' ? mateN < 0 : mateN > 0);
+    const loses = lm.settled && lm.swing <= -1 && !!lm.worst;
+    const shot = firstShot(inp.fenAfter, refu, opp);
+    const first = refu[0] ? narrateMove(inp.fenAfter, refu[0], refu.slice(1)) : null;
+    let lineFact = '';
+    if (shot && (loses || mated || shot.n.kind !== 'capture')) {
+      const when = shot.ply === 0 ? `After ${played.san}, ${oppName} can play` : `${played.san} lets ${oppName} start a sequence that ends with`;
+      const verb = shot.n.kind === 'capture' ? 'which' : `${named(KIND_LABEL[shot.n.kind] ?? 'tactic')}, which`;
+      lineFact = `${when} **${shot.n.san}**, ${verb} ${shot.n.does}.`;
+      arrows.push(...itemArrows(shot.n, 'red'));
+    } else if (first && refu[0].slice(2, 4) === played.to && loses) {
+      lineFact = `After ${played.san}, ${oppName} can simply take on ${played.to}.`;
+    }
+    if (lineFact) { sentences.push(lineFact); tacticFound = true; }
+    if (mated) sentences.push(`The engine follows this to a forced **checkmate** for ${oppName}.`);
+    else if (loses) sentences.push(`When the exchanges end, ${side} is ~~down ${article(NAME[lm.worst!])} ${NAME[lm.worst!]}~~.`);
+
+    // ---- the line after the best move
+    let bestFen = '', bestLine: string[] = [];
+    if (inp.bestUci && inp.bestUci.length >= 4 && !inp.isPlayedBest) {
+      const rest = restAfter(inp.evalBefore, inp.bestUci) ?? [];
+      const bn = narrateMove(inp.fenBefore, inp.bestUci, rest);
+      if (bn) {
+        bestFen = bn.fen;
+        bestLine = await extendLine(bestFen, rest, 6, isCancelled);
+        const bm = settleLine(bestFen, bestLine, mover);
+        const bShot = firstShot(bestFen, bestLine, opp);
+        const keeps = `the engine keeps **${formatEval(inp.evalBefore)}**`;
+        const how = `**${bn.san}** ${bn.does}`;
+        // Say what the best move AVOIDS only when its own line proves the opponent gets nothing there.
+        const avoids = (shot || loses) && !bShot && !(bm.settled && bm.swing <= -1)
+          ? ` and ${oppName} gets no such shot`
+          : '';
+        const gain = bm.settled && bm.swing >= 1 && bm.best ? `, and ${side} ends ++up ${article(NAME[bm.best])} ${NAME[bm.best]}++` : '';
+        sentences.push(`${bn.san === played.san ? '' : 'Instead, '}${how}${avoids}${gain}; ${keeps}.`);
+        arrows.push({ from: bn.from, to: bn.to, color: 'green' });
+      }
+    }
+
+    // ---- what the end of the played line looks like compared with the end of the best line
+    if (!lineFact || !loses) {
+      const n = Math.min(refu.length, 4);
+      if (n >= 2) {
+        const endRefu = positionFacts(fenAfterPlies(inp.fenAfter, refu, n), undefined, false);
+        const endBest = bestFen ? positionFacts(fenAfterPlies(bestFen, bestLine, Math.min(bestLine.length, 4)), undefined, false) : [];
+        const bestKeys = new Set(endBest.map((f) => f.key));
+        const hurts = endRefu
+          .filter((f) => f.side && f.polarity !== 'info' && f.score >= 12 && !bestKeys.has(f.key)
+            && ((f.polarity === 'weakness' && f.side === mover) || (f.polarity === 'asset' && f.side === opp)))
+          .sort((a, b) => b.score - a.score)[0];
+        if (hurts) {
+          sentences.push(`Looking a few moves ahead, ${posMarkup(hurts.text, 'neutral')}`);
+          arrows.push(...hurts.arrows.slice(0, 2).map((a) => ({ ...a, color: 'red' as ArrowColor })));
+        }
+      }
+      // What the move itself does to the structure (lost protection, weakened squares), straight from the position.
+      if (sentences.length < 3) {
+        const bad = moveInsights(inp.fenBefore, played, inp.fenAfter, undefined, 3, false)
+          .filter((i) => i.verdict === 'bad' && i.side === mover && i.kind !== 'pin' && i.kind !== 'loose')[0];
+        if (bad) sentences.push(posMarkup(bad.text, 'neutral'));
+      }
+    }
+  } catch { /* fall through */ }
+
+  const b = moverPawns(inp.evalBefore, mover), a = moverPawns(inp.evalAfter, mover);
+  if (!sentences.length) return null;
+  if (b != null && a != null && b - a >= 0.2) {
+    sentences.push(`That costs about **${(b - a).toFixed(1)}** pawns of evaluation (${formatEval(inp.evalBefore)} to ${formatEval(inp.evalAfter)}).`);
+  }
+  const id: CauseId = tacticFound ? 'allowed-tactic' : 'positional';
+  const sc = mk(inp.fenAfter, played, `${causeLead(inp.fenAfter + inp.san)}${sentences.join(' ')}`, arrows, `Why · ${CAUSE_LABEL[id]}`);
+  sc.cause = { id, label: CAUSE_LABEL[id] };
+  return sc;
 }
 
 /** Plays a UCI line and returns one scene per ply, narrated for `mover`. */
@@ -623,7 +771,7 @@ function lineScenes(fenStart: string, ucis: string[], mover: 'w' | 'b', maxPlies
     } catch { break; }
     const first = scenes.length === 0;
     let text = first && intro === 'reply'
-      ? `${watchLead(chess.fen())} ${sideName(m.color)} ${answerVerb(chess.fen())}: ${describeMove(m as PlyMove)}.`
+      ? `${sideName(m.color)} ${answerVerb(chess.fen())}: ${describeMove(m as PlyMove)}.`
       : `${first ? 'The game could go' : thenLead(chess.fen())}: ${describeMove(m as PlyMove)}.`;
 
     // Is the captured piece simply taken back on the very next move? Then it's a trade, not a win.
@@ -650,6 +798,30 @@ function lineScenes(fenStart: string, ucis: string[], mover: 'w' | 'b', maxPlies
 }
 
 /** What a move is for (used for good moves and for the "better move"). Tactics are detected on the board first. */
+/**
+ * Does the engine's line after the played move end in something worth watching move by move:
+ * a forced checkmate, a fork that wins something, or the loss of a piece (knight or more)?
+ */
+export function leadsToShot(inp: ExplainInput): boolean {
+  try {
+    const mover = inp.color, opp = other(mover);
+    const mateN = typeof inp.evalAfter?.mate === 'number' ? inp.evalAfter.mate : 0;
+    if (mateN !== 0 && (mover === 'w' ? mateN < 0 : mateN > 0)) return true;
+    const refu = pvOf(inp.evalAfter);
+    if (!refu.length) return false;
+    if (lineOutcome(inp.fenAfter, refu)?.kind === 'mate') return true;
+    const lm = settleLine(inp.fenAfter, refu, mover);
+    if (lm.settled && lm.swing <= -3 && !!lm.worst && VAL[lm.worst] >= 3) return true;
+    const shot = firstShot(inp.fenAfter, refu, opp);
+    if (shot && shot.n.kind === 'fork' && verifyClaim(inp.fenAfter, refu, { kind: 'fork', side: opp }).ok) return true;
+  } catch { /* ignore */ }
+  return false;
+}
+
+/** Inaccuracy / mistake / miss / blunder in "forcing" mode with nothing forcing behind it: tell the why and the better move, no sequence. */
+const quietLine = (inp: ExplainInput): boolean =>
+  inp.sequence === 'forcing' && BAD.includes(inp.quality) && !leadsToShot(inp);
+
 /**
  * `line` = the engine's line from `fenAfter`. When given, "forks" / "wins" / "sacrifice" are only said if the material at the
  * end of that line agrees; otherwise the plain fact is said instead ("attacks", "takes").
@@ -810,7 +982,7 @@ export function buildCoreScenes(inp: ExplainInput): Scene[] {
 
   // ---- What happens next (punishment if bad, follow-up if good)
   // After the best move there is nothing to warn about: explain why it is good and stop (no "the game could go...").
-  const lineSc = !bad && inp.isPlayedBest && !drawSaved ? [] : lineScenes(inp.fenAfter, refutation, mover, bad ? 5 : 3, bad ? 'reply' : 'then');
+  const lineSc = (!bad && inp.isPlayedBest && !drawSaved) || (bad && quietLine(inp)) ? [] : lineScenes(inp.fenAfter, refutation, mover, bad ? 5 : 3, bad ? 'reply' : 'then');
   scenes.push(...lineSc);
   if (bad && lineSc.length) {
     const phrase = materialPhrase(lineMat);
@@ -934,7 +1106,7 @@ async function ideaScenes(inp: ExplainInput, isCancelled: () => boolean): Promis
     const d = narrateMove(inp.fenAfter, refu[0], refu.slice(1));
     if (d && d.tactical && !(bad && d.kind === 'capture' && d.to === played.to)) {
       if (bad) {
-        out.push(sceneOf(d, wantsText(oppName, d.san, d.does, d.fen), 'red', `Danger · ${KIND_LABEL[d.kind] ?? 'Idea'}`));
+        out.push(sceneOf(d, `${oppName} threatens **${d.san}**, which ${d.does}.`, 'red', `Danger · ${KIND_LABEL[d.kind] ?? 'Idea'}`));
       } else {
         // A sound move that leaves something en prise is a SACRIFICE, not a mistake. The engine's own line says what it is for.
         const lm = settleLine(inp.fenAfter, refu, mover);
@@ -958,7 +1130,7 @@ async function ideaScenes(inp: ExplainInput, isCancelled: () => boolean): Promis
           text = `Sacrifice for position: ${oppName} can win material with **${d.san}** (it ${d.does}), but ${side} gets a strong attack. The engine still rates the position **${formatEval(inp.evalAfter)}**, so the initiative is worth more than the material.`;
           chip = 'Sacrifice';
         } else {
-          text = wantsText(oppName, d.san, d.does, d.fen);
+          text = `${oppName} threatens **${d.san}**, which ${d.does}.`;
         }
         out.push(sceneOf(d, text, 'red', chip));
       }
@@ -1402,46 +1574,7 @@ async function positionalScenes(inp: ExplainInput, isCancelled: () => boolean): 
 }
 
 
-// ---------- the coach's method: sweep + four criteria ----------
-
-/** Step 3 of the method: checks, captures, attacks, read from the position BEFORE the move. */
-function ccaScene(inp: ExplainInput): Scene | null {
-  const mover = inp.color, opp = other(mover);
-  const bad = BAD.includes(inp.quality);
-  let played: any;
-  let moves: any[] = [];
-  try {
-    played = new Chess(inp.fenBefore).move(inp.san);
-    moves = new Chess(inp.fenBefore).moves({ verbose: true });
-  } catch { return null; }
-  const checks = moves.filter((m) => /[+#]/.test(m.san));
-  const captures = moves.filter((m) => m.captured && !/[+#]/.test(m.san));
-  let attackedCaps: ReturnType<typeof winnableCaptures> = [];
-  try { attackedCaps = winnableCaptures(inp.fenBefore, opp); } catch { /* ignore */ }
-  const attacked = attackedCaps.map((c) => `the ${NAME[c.victim]} on ${c.to}`);
-  // Nothing forcing and the move was fine: not worth a scene.
-  if (!bad && checks.length + captures.length + attacked.length === 0) return null;
-  const kindOf = (san: string): 'check' | 'capture' | 'quiet' => (/[+#]/.test(san) ? 'check' : san.includes('x') ? 'capture' : 'quiet');
-  let bestKind: 'check' | 'capture' | 'quiet' | null = null;
-  let bestArrow: SceneArrow[] = [];
-  if (inp.bestUci && inp.bestUci.length >= 4) {
-    try {
-      const bm: any = new Chess(inp.fenBefore).move(uciMove(inp.bestUci));
-      bestKind = kindOf(bm.san);
-      bestArrow = [{ from: bm.from, to: bm.to, color: 'green' }];
-    } catch { /* ignore */ }
-  }
-  const text = ccaText({
-    checks: checks.map((m) => m.san), captures: captures.map((m) => m.san), attacked,
-    playedKind: kindOf(played.san), bestKind, bad, seed: inp.fenBefore + inp.san,
-  });
-  const arrows: SceneArrow[] = [
-    ...bestArrow,
-    ...checks.slice(0, 2).map((m) => ({ from: m.from as Square, to: m.to as Square, color: 'yellow' as ArrowColor })),
-    ...attackedCaps.slice(0, 2).map((c) => ({ from: c.from, to: c.to, color: 'red' as ArrowColor })),
-  ];
-  return mk(inp.fenBefore, played, text, arrows.length ? arrows : [{ from: played.from, to: played.to, color: 'blue' }], 'Checks · captures · attacks');
-}
+// ---------- the coach's method: four criteria ----------
 
 const KING_KINDS = new Set<FactKind>(['castled', 'king-center', 'shield', 'king-zone', 'back-rank']);
 const ACTIVITY_KINDS = new Set<FactKind>(['development', 'rook-7th', 'rook-battery', 'open-file', 'half-open', 'diagonal', 'bishop-pair', 'bad-bishop', 'rim-knight', 'outpost', 'outpost-available', 'early-queen', 'trapped', 'loose', 'pin', 'endgame-king']);
@@ -1500,25 +1633,18 @@ export async function buildAdvancedExplanation(
 ): Promise<Scene[]> {
   const core = buildCoreScenes(inp);
   if (isCancelled() || core.length === 0) return core;
-  const mover = inp.color;
-  const refu = pvOf(inp.evalAfter);
-  const drawSaved = savesDraw(moverPawns(inp.evalBefore, mover), moverPawns(inp.evalAfter, mover));
   // The short version a player sees first: verdict, WHY it went wrong (for mistakes), what happens, the better move.
   // Everything else (structure, threats, main line, other good moves) is marked `extra` for "Show more".
   // Every "why" / threat / missed tactic is confirmed by Stockfish before it is shown.
   const cause = await buildCause(inp, isCancelled);
-  // The method's step 3: the checks / captures / attacks sweep. After a mistake it is part of the short version
-  // (right after the verdict); after a good move it is an optional extra. Beginners only get it after a mistake.
-  const sweep = ccaScene(inp);
-  const wasBadMove = BAD.includes(inp.quality);
-  const sweepScenes: Scene[] = sweep && (wasBadMove || inp.level !== 'beginner') ? [sweep] : [];
-  const head: Scene[] = [core[0], ...(wasBadMove ? sweepScenes : []), ...(cause ? [cause] : [])];
-  const sweepExtra: Scene[] = wasBadMove ? [] : sweepScenes;
+  const head: Scene[] = [core[0], ...(cause ? [cause] : [])];
+  // Nothing forcing behind this inaccuracy / mistake: the verdict, the why and the better move say it all. No sequence, no side lines.
+  if (quietLine(inp)) return [...head, ...core.slice(1)];
   const ex = (s: Scene[]): Scene[] => s.map((x) => ({ ...x, extra: true }));
   let ideas: Scene[] = [];
   let positional: Scene[] = [];
   let draw: { scenes: Scene[]; end: LineEnd | null } = { scenes: [], end: null };
-  const fallback = () => [...head, ...draw.scenes, ...ex(sweepExtra), ...ex(positional), ...ex(ideas), ...core.slice(1)];
+  const fallback = () => [...head, ...draw.scenes, ...ex(positional), ...ex(ideas), ...core.slice(1)];
   ideas = await ideaScenes(inp, isCancelled);
   if (isCancelled()) return fallback();
   // A move that turns a lost game into a draw (stalemate trick, perpetual...): follow the engine's line to the end of the game.
@@ -1532,44 +1658,11 @@ export async function buildAdvancedExplanation(
   const bestLine = await bestLineScenes(inp);
   if (isCancelled()) return fallback();
   const alsoGood = await alternativeScenes(inp);
-  // The idea scenes move the board to hypothetical positions, so return to the move that was really played
-  // before the line continues ("White answers: ...").
-  let back: Scene[] = [];
   const oppName = sideName(other(inp.color));
   const wasBad = BAD.includes(inp.quality);
-  const lineEnd = lineOutcome(inp.fenAfter, refu) ?? draw.end;
   // If the look-ahead found something the played move THREATENS, the scenes that follow must know about it:
   // the engine's next move is then the opponent's defence, not "nothing happens".
   const threatScene = wasBad ? undefined : ideas.find((s) => (s.chip ?? '').startsWith('Threat'));
-  if ((ideas.length > 0 || draw.scenes.length > 0) && (!inp.isPlayedBest || drawSaved)) {
-    try {
-      const pm: any = new Chess(inp.fenBefore).move(inp.san);
-      const th = threatScene?.threat;
-      // Say WHAT the threat is and show it on the board: arrow from the piece's current square to the target,
-      // plus the squares of the pieces it would hit.
-      const note = th
-        ? th.afterCheck
-          ? ` Once ${oppName} has dealt with the check, ${sideName(inp.color)} threatens **${th.san}**, which ${th.does}.`
-          : ` It threatens **${th.san}**, which ${th.does}. ${oppName} has to deal with that.`
-        : '';
-      const threatArrows: SceneArrow[] = th ? th.arrows : [];
-      const lit = [...new Set(threatArrows.flatMap((a) => [a.from, a.to]))] as Square[];
-      // "Back to the game" tells the player what the game is really about now (engine verdict vs material, stalemate / mate / draw ideas, plan).
-      const story = gameStory(inp, lineEnd, drawSaved);
-      // The eval bar goes back to the real position (the engine's eval after the played move) and Stockfish's best reply is drawn in blue.
-      const bestReply = bestOf(inp.fenAfter, inp.evalAfter);
-      const bestArrow: SceneArrow[] = bestReply ? [{ from: bestReply.uci.slice(0, 2) as Square, to: bestReply.uci.slice(2, 4) as Square, color: 'blue' }] : [];
-      back = [{
-        ...core[0],
-        evalInfo: sceneEvalOf(inp.evalAfter),
-        best: bestReply,
-        chip: th ? `Back to the game · Threat ${th.san}` : 'Back to the game',
-        arrows: [{ from: pm.from as Square, to: pm.to as Square, color: wasBad ? 'red' : 'green' }, ...threatArrows, ...bestArrow],
-        squares: lit,
-        text: parseSegs(`Back to the game: ${describeMove(pm as PlyMove)} was played.${note} ${story} Now let's see how ${oppName} answers.`),
-      }];
-    } catch { /* ignore */ }
-  }
   // Reword the first line scene ("The game could go: ...") when it is really the answer to a threat.
   const restRaw = core.slice(1).map((s, i) => {
     if (i !== 0 || !threatScene || !s.text.length || !s.text[0].t.startsWith('The game could go: ')) return s;
@@ -1580,22 +1673,18 @@ export async function buildAdvancedExplanation(
     };
     return { ...s, text: segs };
   });
-  // Every scene that follows "Back to the game" carries the engine's eval of ITS position, so the eval bar moves with the moves,
+  // Every scene of the engine line carries the engine's eval of ITS position, so the eval bar moves with the moves,
   // and Stockfish's best move from there.
   const rest = await withEngineInfo(restRaw, inp.depth, isCancelled);
   const drawScenes = await withEngineInfo(draw.scenes, inp.depth, isCancelled);
-  // verdict → why → drawing idea → structure / open lines / weak spots / plan → threats & dangers → back to the game → what happens next
+  // verdict → why → drawing idea → structure / open lines / weak spots / plan → threats & dangers → what happens next
   // Beginners get the simple story only: no pawn-structure talk, no side lines, no alternative moves.
   const beginner = inp.level === 'beginner';
-  // When the game is about a draw / stalemate, "Back to the game" is part of the short version, not an optional extra.
-  const backScenes = drawSaved || (lineEnd && lineEnd.kind !== 'mate') ? back : ex(back);
   return [
     ...head,
     ...drawScenes,
-    ...ex(sweepExtra),
     ...(beginner ? [] : ex(positional)),
     ...ex(ideas),
-    ...backScenes,
     ...rest,
     ...(beginner ? [] : bestLine),
     ...(beginner ? [] : ex(alsoGood)),
