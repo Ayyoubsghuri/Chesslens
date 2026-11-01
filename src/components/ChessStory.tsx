@@ -29,14 +29,14 @@ interface Game {
   mate?: string | null;
 }
 
-const MAX_GAMES = 10000;
+const MAX_GAMES = 1000;
 /** Progress while fetching: games found so far. */
 type OnProgress = (found: number) => void;
 
 /**
  * Brilliant moves this player made, counted from the games analyzed in this app.
  * Chess.com and Lichess do not publish move labels (brilliant, blunder...) in their APIs, and running Stockfish on
- * 10,000 games in the browser would take days, so the count comes from the games you have analyzed here.
+ * thousands of games in the browser would take days, so the count comes from the games you have analyzed here.
  */
 function countBrilliants(name: string): { n: number; games: number; analyzed: number } | null {
   const me = name.trim().toLowerCase();
@@ -271,7 +271,7 @@ async function fetchLichess(user: string, onProgress?: OnProgress): Promise<{ ga
   );
   if (res.status === 404) throw new Error(`No Lichess player called "${user}".`);
   if (!res.ok) throw new Error(`Lichess returned ${res.status}. Try again in a moment.`);
-  // Lichess streams one game per line: read it as it arrives so the progress counter moves (10,000 games take a while).
+  // Lichess streams one game per line: read it as it arrives so the progress counter moves (big accounts take a while).
   let text = '';
   if (res.body && typeof TextDecoder !== 'undefined') {
     const reader = res.body.getReader();
@@ -1416,7 +1416,7 @@ export function ChessStory({ games: imported }: { games: ImportedGame[] }) {
       <div className="mb-5">
         <h2 id="story-heading" className="text-xl font-bold">Your chess, as a story</h2>
         <p className="text-sm text-ink-400 mt-0.5">
-          Enter any Chess.com or Lichess username to get a full-screen story from up to 10,000 recent games: openings, what checkmated you, what opponents play, their weaknesses by rating and more.
+          Enter any Chess.com or Lichess username to get a full-screen story from up to 1,000 recent games: openings, what checkmated you, what opponents play, their weaknesses by rating and more.
         </p>
       </div>
 
@@ -1458,7 +1458,7 @@ export function ChessStory({ games: imported }: { games: ImportedGame[] }) {
       {loading && (
         <p className="text-sm text-ink-400 mb-2">
           Fetching recent games… {found > 0 && <span className="font-mono text-ink-300">{Math.min(found, MAX_GAMES).toLocaleString()} / {MAX_GAMES.toLocaleString()}</span>}
-          <span className="block text-xs text-ink-500">Big accounts can take a few minutes to load all 10,000 games.</span>
+          <span className="block text-xs text-ink-500">Big accounts can take a minute to load all 1,000 games.</span>
         </p>
       )}
 
