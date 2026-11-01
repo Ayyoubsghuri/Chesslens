@@ -18,6 +18,13 @@ import { speak, unlockSpeech, squareCues, litSquares } from '@/lib/tts';
 
 export type CoachMode = 'move' | 'game';
 
+/** Whose moves the whole-game review talks about: both players, only White's moves, or only Black's. */
+export type SideFilter = 'both' | 'w' | 'b';
+
+/** Beats that are about one move (good / bad) are kept only for the chosen side; intro, opening, end and summary always stay. */
+const keepBeat = (b: GameBeat, side: SideFilter) =>
+  side === 'both' || (b.kind !== 'good' && b.kind !== 'bad') || (b.moveIndex % 2 === 0 ? 'w' : 'b') === side;
+
 export function CoachModeTabs({ mode, onChange }: { mode: CoachMode; onChange: (m: CoachMode) => void }) {
   const tab = (m: CoachMode, text: string) => (
     <button
@@ -97,8 +104,10 @@ export function GameCoach({
   moves, currentIndex, onIndexChange, previewActive, onScene, you = null, level, depth, compact, voice = false, voiceName, names, onPickYou,
 }: Props) {
   const [detail, setDetail] = useState<GameDetail>('every');
+  const [side, setSide] = useState<SideFilter>('both');
   // The review is built in small slices (not in one blocking pass), so the page stays alive and shows a loading bar.
-  const [beats, setBeats] = useState<GameBeat[]>([]);
+  const [allBeats, setBeats] = useState<GameBeat[]>([]);
+  const beats = useMemo(() => allBeats.filter((b) => keepBeat(b, side)), [allBeats, side]);
   const [building, setBuilding] = useState(moves.length > 0);
   const [buildFrac, setBuildFrac] = useState(0);
   useEffect(() => {
@@ -148,7 +157,7 @@ export function GameCoach({
     setStarted(false);
     setSpoken(null);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [moves, detail, you]);
+  }, [moves, detail, you, side]);
 
   // Leaving: clear the preview.
   useEffect(() => () => { if (startedRef.current) onScene(null); }, []); // eslint-disable-line react-hooks/exhaustive-deps
@@ -340,6 +349,28 @@ export function GameCoach({
           </button>
         </div>
       )}
+      {/* Whose moves to review: both players, or only White's / only Black's */}
+      <div className="mb-2 flex gap-1 rounded-lg bg-ink-900/40 p-0.5" role="group" aria-label="Whose moves to review">
+        {([
+          ['both', 'Both sides'],
+          ['w', names?.white ? `White · ${names.white}` : 'White only'],
+          ['b', names?.black ? `Black · ${names.black}` : 'Black only'],
+        ] as [SideFilter, string][]).map(([k, label]) => (
+          <button
+            key={k}
+            onClick={() => setSide(k)}
+            aria-pressed={side === k}
+            title={k === 'both' ? "Review every player's moves" : `Only review ${k === 'w' ? "White's" : "Black's"} moves`}
+            className={`min-w-0 flex-1 truncate rounded-md px-2 py-1 text-[11px] font-semibold transition-colors ${
+              side === k ? 'bg-ink-600 text-white' : 'text-ink-400 hover:bg-ink-700/60 hover:text-ink-200'
+            }`}
+          >
+            {k !== 'both' && <span className={`mr-1 inline-block h-2 w-2 rounded-full align-middle ${k === 'w' ? 'bg-white' : 'bg-ink-900 ring-1 ring-ink-400'}`} />}
+            {label}
+          </button>
+        ))}
+      </div>
+
       <div className="flex min-w-0 items-center gap-2 mb-2 text-xs text-ink-400">
         <Sparkles size={13} className="shrink-0 text-brand-400" />
         <span className="shrink-0 font-semibold text-ink-300">Game coach</span>

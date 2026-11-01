@@ -25,7 +25,7 @@ type Q = 'brilliant' | 'best' | 'great' | 'excellent' | 'good' | 'book' | 'inacc
 // ---------------------------------------------------------------------------
 const GOOD_EXTRA: Record<string, string[]> = {
   brilliant: ['You have to see this one.', 'That is the kind of move you screenshot.', 'Not easy to spot, take a bow.'],
-  best: ['Exactly what the position was asking for.', 'The engine nods.', 'Simple, strong, no drama.'],
+  best: ['Exactly what the position was asking for.', 'That is what a strong player plays here.', 'Simple, strong, no drama.'],
   great: ['Very nice practical move.', 'Good vision.', 'That puts the piece right where it wants to be.'],
   excellent: ['Nice and clean.', 'No notes.', 'Simple chess wins games.'],
   good: ['Totally fine.', 'Boring is good.', 'No weaknesses, keep going.'],
@@ -47,7 +47,7 @@ export const badOpen = (q: string, seed: string): string =>
   v(seed, [...(OPENERS[q as Q] ?? ['Hmm.']), ...(BAD_EXTRA[q] ?? [])]);
 
 export const topChoice = (seed: string): string =>
-  v(seed, [" It's also the engine's top choice.", ' And the engine agrees, it is the top choice.', " That's the engine's number one pick too.", ' The engine loves it too.']);
+  v(seed, [" That's exactly the move I would have played.", ' Nothing better on the board, well played.', " That's the strongest move here.", ' You found the best move.']);
 
 // ---------------------------------------------------------------------------
 // What happens next
@@ -80,14 +80,12 @@ export const blunderAnalogy = (seed: string, level?: string): string => {
 export const betterText = (bad: boolean, seed: string, move: string, why: string, evalStr: string, quiet = false): string =>
   bad
     ? v(seed, [
-        `A much better choice was ${move}. It ${why}, and the position would have stayed around **${evalStr}**.`,
-        `Here is what I wanted: ${move}. It ${why}, and you keep the position around **${evalStr}**.`,
-        `Look at ${move} instead. It ${why}, so the position holds around **${evalStr}**.`,
-        `What you were looking for: ${move}. It ${why}, and the position stays around **${evalStr}**.`,
-        `How do you put ${move} into words? Simple: it ${why}, and the position stays around **${evalStr}**.`,
-      ]) + (quiet ? ' Honestly, that is a computer move: do not worry if you could not find it from the move alone. The practical idea is to keep improving your worst piece.' : '')
+        `Here is what I wanted to see: ${move}. Why? Because it ${why}. That keeps the position around **${evalStr}**.`,
+        `Look at ${move} instead. The point is that it ${why}, so the position holds around **${evalStr}**.`,
+        `The stronger move was ${move}. Put it into words: it ${why}, and you keep the position around **${evalStr}**.`,
+      ]) + (quiet ? ' I will be honest with you, there is no single trick behind it. It is about patience: when nothing is forcing, find your worst piece and improve it.' : '')
     : v(seed, [
-        `The engine likes ${move} a little more: it ${why}.`,
+        `Fine move, but ${move} was a little stronger, because it ${why}.`,
         `Small note: ${move} was a hair stronger, because it ${why}.`,
         `Fine move, but ${move} was slightly sharper: it ${why}.`,
       ]);
@@ -144,7 +142,7 @@ export const retryPrompt = (word: string, side: string, seed: string): string =>
   ]);
 
 export const retryOk = (seed: string): string =>
-  v(seed, ["Yes, that's the engine's move. Well found!", "Boom. That's the engine's move. Nicely done!", "That's the one. You see the board well."]);
+  v(seed, ["Yes, that's the move. Well found!", "Boom. That's the one. Nicely done!", "That's the one. You see the board well."]);
 
 export const retryNo = (seed: string): string =>
   v(seed, ['Want a hint?', 'Not quite. Want a hint?', 'Close, but no. Want a hint?']);

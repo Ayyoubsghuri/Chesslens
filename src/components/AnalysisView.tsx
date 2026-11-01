@@ -949,7 +949,7 @@ export function AnalysisView({ analysis, currentIndex, onIndexChange, depth = 12
     } catch {}
   }
 
-  /** "Best line": the engine's best move from the position BEFORE this move, followed by its continuation, one ply per second. */
+  /** "Best move": the engine's best move from the position BEFORE this move, followed by its continuation, one ply per second. */
   function playBestLine() {
     if (!move) return;
     const line = (move.evalBefore?.continuation ?? '').split(/\s+/).filter(Boolean).slice(0, 10);
@@ -963,7 +963,7 @@ export function AnalysisView({ analysis, currentIndex, onIndexChange, depth = 12
           frames.push({ fen: chess.fen(), from: r.from as Square, to: r.to as Square, san: r.san, uci: r.from + r.to + (r.promotion ?? '') });
         } catch { break; }
       }
-      playFrames(frames, 'Best line');
+      playFrames(frames, 'Best move');
     } catch {}
   }
 
@@ -1549,9 +1549,9 @@ export function AnalysisView({ analysis, currentIndex, onIndexChange, depth = 12
                   onClick={() => move && playBestLine()}
                   disabled={!move || !engineBestUci}
                   className="btn-secondary justify-center py-2.5 text-sm disabled:opacity-40"
-                  title="Play the engine's best line on the board"
+                  title="Show the best move on the board, then how the game continues"
                 >
-                  <Sparkles size={14} /> Best line
+                  <Sparkles size={14} /> Best move
                 </button>
                 <button onClick={handleFlip} className="btn-secondary justify-center py-2.5 text-sm" title="Flip board">
                   <RotateCcw size={14} /> Flip board
@@ -1712,11 +1712,11 @@ export function AnalysisView({ analysis, currentIndex, onIndexChange, depth = 12
               <button
                 onClick={() => playBestLine()}
                 disabled={!engineBestUci}
-                title={engineBestUci ? "Play the engine's best line on the board" : 'No engine best move'}
+                title={engineBestUci ? "Show the best move on the board, then how the game continues" : 'No engine best move'}
                 className="flex items-center justify-center gap-2 py-2.5 text-sm text-ink-200 hover:bg-ink-700/50 transition-colors disabled:opacity-40 disabled:cursor-default"
               >
                 <Sparkles size={14} className="text-brand-400" />
-                Best line
+                Best move
               </button>
               <button
                 onClick={() => onIndexChange(Math.min(moves.length - 1, currentIndex + 1))}
@@ -1800,11 +1800,11 @@ export function AnalysisView({ analysis, currentIndex, onIndexChange, depth = 12
               <button
                 onClick={() => playBestLine()}
                 disabled={!engineBestUci}
-                title={engineBestUci ? "Play the engine's best line on the board" : 'No engine best move'}
+                title={engineBestUci ? "Show the best move on the board, then how the game continues" : 'No engine best move'}
                 className="flex items-center justify-center gap-2 py-2.5 text-sm text-ink-200 hover:bg-ink-700/50 transition-colors disabled:opacity-40 disabled:cursor-default"
               >
                 <Sparkles size={14} className="text-brand-400" />
-                Best line
+                Best move
               </button>
               <button
                 onClick={() => onIndexChange(Math.min(moves.length - 1, currentIndex + 1))}

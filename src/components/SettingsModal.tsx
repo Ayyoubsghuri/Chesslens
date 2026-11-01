@@ -113,7 +113,7 @@ export function SettingsModal({ settings, onSave, onClose }: SettingsModalProps)
                 <span className="flex-1">
                   <span className="block text-sm font-medium text-ink-100">Speak explanations</span>
                   <span className="block text-xs text-ink-400 mt-0.5">
-                    The coach reads each step out loud (free, via Puter.js). Puter may ask you to sign in the first time.
+                    The coach reads each step out loud in a deep, calm coach voice (free, via Puter.js; Puter may ask you to sign in the first time). Without Puter, your browser's most natural male voice is used, pitched down and slowed.
                   </span>
                 </span>
                 <span className={`relative h-6 w-11 shrink-0 rounded-full transition-colors ${local.coachVoice ? 'bg-brand-500' : 'bg-ink-600'}`}>

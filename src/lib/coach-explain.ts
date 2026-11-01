@@ -19,6 +19,8 @@ import {
 } from '@/lib/coach-voice';
 // HOW the coach explains: the four criteria and the closing rule of thumb.
 import { criteriaIntro, criteriaClose, principleTail } from '@/lib/coach-method';
+// "Why is the better move better?": side-by-side comparison of the played move and the engine's move, in coach words.
+import { compareMoves, bestMoveVirtue } from '@/lib/coach-compare';
 // The line checks live in claim-check.ts (pure chess.js, unit-tested); re-exported so existing imports keep working.
 export { lineOutcome };
 export type { LineEnd };
@@ -193,7 +195,7 @@ export function sceneLines(scene: Scene): SceneLine[] {
   return out.slice(0, 3);
 }
 /** Reading time for a scene (ms). */
-export const sceneDuration = (s: Scene) => Math.min(9000, Math.max(3200, plainText(s.text).length * 62));
+export const sceneDuration = (s: Scene) => Math.min(16000, Math.max(3200, plainText(s.text).length * 62)); // long "why it's better" scenes need reading time
 
 // ---------- chess helpers ----------
 
@@ -607,6 +609,8 @@ async function buildCause(inp: ExplainInput, isCancelled: () => boolean): Promis
     const now = moverPawns(inp.evalBefore, opp), then = moverPawns(ev, opp);
     pre.threatBefore = uci && now != null && then != null ? { uci, gain: then - now } : null;
   } catch { pre.threatBefore = null; }
+  threatCache.set(threatKey(inp), pre.threatBefore ?? null);
+  if (threatCache.size > 200) threatCache.delete(threatCache.keys().next().value as string);
   const base = causeScene(inp, pre);
   // Concrete tactics are already explained directly. Everything else (no tactic on the very next move, or just
   // "gave away X pawns") gets the prepared look-ahead: the engine's line after this move against the line after the best move.
@@ -705,7 +709,7 @@ async function deepCause(inp: ExplainInput, isCancelled: () => boolean): Promise
         bestLine = await extendLine(bestFen, rest, 6, isCancelled);
         const bm = settleLine(bestFen, bestLine, mover);
         const bShot = firstShot(bestFen, bestLine, opp);
-        const keeps = `the engine keeps **${formatEval(inp.evalBefore)}**`;
+        const keeps = `the position stays around **${formatEval(inp.evalBefore)}**`;
         const how = `**${bn.san}** ${bn.does}`;
         // Say what the best move AVOIDS only when its own line proves the opponent gets nothing there.
         const avoids = (shot || loses) && !bShot && !(bm.settled && bm.swing <= -1)
@@ -965,7 +969,11 @@ export function buildCoreScenes(inp: ExplainInput): Scene[] {
           ? ` This saves the game: the line ends in ${END_WORD[lineEnd.kind]}, a draw from a lost position (about ${pawnGap(inp.evalBefore, mover)} pawns down).`
           : ` This saves the game: the engine now says **${formatEval(inp.evalAfter)}**, it was about ${pawnGap(inp.evalBefore, mover)} pawns down before the move, so ${side} found a drawing resource.`;
     }
-    if (inp.isPlayedBest && inp.quality !== 'book' && tacG?.kind !== 'mate') text += topChoice(inp.fenAfter + inp.san);
+    if (inp.isPlayedBest && inp.quality !== 'book' && tacG?.kind !== 'mate') {
+      // Not just "the engine agrees": say the human reason it was the right move, when the board shows one.
+      const virtue = bestMoveVirtue(inp.fenBefore, played.from + played.to + (played.promotion ?? ''), mover);
+      text += virtue && !text.includes(virtue) ? ` Even better, ${virtue}.` : topChoice(inp.fenAfter + inp.san);
+    }
     try { text += principleTail(inp.quality, analyzePhase(inp.fenAfter), inp.fenAfter + inp.san); } catch { /* ignore */ }
   }
   // Lines on the board: the tactic (fork / pin / skewer / ...) or, failing that, what the moved piece now attacks.
@@ -1002,7 +1010,12 @@ export function buildCoreScenes(inp: ExplainInput): Scene[] {
     } else if (after != null && after <= -2.5) {
       resultText = `${resultLead('losing', inp.fenAfter + inp.san)} After this, ${side} is **clearly losing**${phrase ? ` and ${phrase}` : ''}. The engine now shows **${formatEval(inp.evalAfter)}**${wasText}.${inp.quality === 'blunder' ? blunderAnalogy(inp.fenAfter + inp.san, inp.level) : ''}`;
     } else {
-      resultText = `${resultLead('worse', inp.fenAfter + inp.san)} After this, ${side} ${phrase ?? 'is clearly worse'}. The engine now shows **${formatEval(inp.evalAfter)}**${wasText || ''}.`;
+      // Say what is really left: an inaccuracy at +0.4 is not "clearly worse".
+      const standing = after == null || after <= -1 ? 'is clearly worse'
+        : after < -0.3 ? 'is a little worse now'
+        : after <= 0.3 ? 'has let the position drift back to equal'
+        : 'is still a bit better, but a good part of the edge is gone';
+      resultText = `${resultLead('worse', inp.fenAfter + inp.san)} After this, ${side} ${phrase ?? standing}. The engine now shows **${formatEval(inp.evalAfter)}**${wasText || ''}.`;
     }
     scenes.push({
       ...last,
@@ -1012,22 +1025,59 @@ export function buildCoreScenes(inp: ExplainInput): Scene[] {
     });
   }
 
-  // ---- The better move
-  if (!inp.isPlayedBest && inp.bestUci && inp.bestUci.length >= 4) {
-    try {
-      const c = new Chess(inp.fenBefore);
-      const bm: any = c.move({ from: inp.bestUci.slice(0, 2), to: inp.bestUci.slice(2, 4), promotion: inp.bestUci.length > 4 ? inp.bestUci[4] : undefined });
-      const why = purpose(inp.fenBefore, bm, c.fen(), mover, restAfter(inp.evalBefore, inp.bestUci));
-      scenes.push(mk(
-        c.fen(), bm,
+  // ---- The better move: compared side by side with the played move, the way a coach does it
+  scenes.push(...betterMoveScenes(inp, null, restAfter(inp.evalBefore, inp.bestUci ?? '') ?? []));
+  return scenes;
+}
+
+/** Threat the opponent had before the move (from buildCause's "pass" search), kept so the better-move scene can use it. */
+const threatCache = new Map<string, { uci: string; gain: number } | null>();
+const threatKey = (inp: ExplainInput) => `${inp.fenBefore}|${inp.san}`;
+
+/**
+ * "Better: Bd3" — not "the engine prefers it" but WHY: the threat it handles, what your move stopped guarding,
+ * your worst piece, king safety / activity / structure a few moves later, material once the trades settle,
+ * then the strategic plan the position was asking for. Falls back to the short template when the board shows nothing concrete.
+ */
+function betterMoveScenes(inp: ExplainInput, threat: { uci: string; gain: number } | null, bestLine: string[]): Scene[] {
+  if (inp.isPlayedBest || !inp.bestUci || inp.bestUci.length < 4) return [];
+  const mover = inp.color;
+  const bad = BAD.includes(inp.quality);
+  try {
+    const c = new Chess(inp.fenBefore);
+    const bm: any = c.move(uciMove(inp.bestUci));
+    const bestFen = c.fen();
+    let playedUci = '';
+    try { const pm: any = new Chess(inp.fenBefore).move(inp.san); playedUci = pm.from + pm.to + (pm.promotion ?? ''); } catch { /* ignore */ }
+    const cmp = playedUci ? compareMoves({
+      fenBefore: inp.fenBefore, mover, playedUci, playedLine: pvOf(inp.evalAfter), bestUci: inp.bestUci, bestLine,
+      evalBefore: moverPawns(inp.evalBefore, mover), evalAfter: moverPawns(inp.evalAfter, mover), bad, threat,
+      narrate: (f, u, l) => narrateMove(f, u, l), level: inp.level,
+    }) : null;
+    const out: Scene[] = [];
+    if (cmp) {
+      const sc = mk(bestFen, bm, cmp.text, cmp.arrows, `Better: ${bm.san} · why`);
+      sc.squares = cmp.squares;
+      out.push(sc);
+      if (cmp.strategy && (bad || inp.level === 'advanced')) {
+        const st = mk(bestFen, bm, cmp.strategy.text, cmp.strategy.arrows, 'The idea you missed');
+        st.squares = cmp.strategy.squares;
+        out.push(st);
+      }
+    } else {
+      const why = purpose(inp.fenBefore, bm, bestFen, mover, bestLine);
+      out.push(mk(
+        bestFen, bm,
         betterText(bad, inp.fenBefore + bm.san, describeMove(bm), why, formatEval(inp.evalBefore), why.startsWith('improves the position')),
         [{ from: bm.from, to: bm.to, color: 'green' }],
         `Better: ${bm.san}`,
       ));
-    } catch { /* ignore */ }
-  }
-  return scenes;
+    }
+    return out;
+  } catch { return []; }
 }
+
+const isBetterScene = (s: Scene) => (s.chip ?? '').startsWith('Better:') || s.chip === 'The idea you missed';
 
 // ---------- engine-assisted extras ----------
 
@@ -1638,6 +1688,20 @@ export async function buildAdvancedExplanation(
   // Every "why" / threat / missed tactic is confirmed by Stockfish before it is shown.
   const cause = await buildCause(inp, isCancelled);
   const head: Scene[] = [core[0], ...(cause ? [cause] : [])];
+  // Now that the opponent's threat is known (and the engine line after the better move can be made longer),
+  // rebuild the "why the better move is better" scenes with that extra knowledge.
+  if (!inp.isPlayedBest && inp.bestUci && inp.bestUci.length >= 4 && !isCancelled()) {
+    try {
+      const bestFen = new Chess(inp.fenBefore); bestFen.move(uciMove(inp.bestUci));
+      const longer = await extendLine(bestFen.fen(), restAfter(inp.evalBefore, inp.bestUci) ?? [], 6, isCancelled);
+      const fresh = betterMoveScenes(inp, threatCache.get(threatKey(inp)) ?? null, longer);
+      if (fresh.length) {
+        const at = core.findIndex(isBetterScene);
+        if (at >= 0) core.splice(at, core.filter(isBetterScene).length, ...fresh);
+      }
+    } catch { /* keep the first version */ }
+  }
+  if (isCancelled()) return core;
   // Nothing forcing behind this inaccuracy / mistake: the verdict, the why and the better move say it all. No sequence, no side lines.
   if (quietLine(inp)) return [...head, ...core.slice(1)];
   const ex = (s: Scene[]): Scene[] => s.map((x) => ({ ...x, extra: true }));

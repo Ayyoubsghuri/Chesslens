@@ -1,22 +1,62 @@
 /**
  * Coach voice.
  *
- * 1. Puter.js neural voice (free) - used only if the listener is already signed in to Puter,
- *    because Puter's sign-in popup is blocked by browsers when it isn't opened from a click
- *    (that is why the voice used to do nothing).
- * 2. Otherwise the browser's built-in speech (Web Speech API): free, no account, no popup, works right away.
+ * 1. Puter.js neural voices (free) - used only if the listener is already signed in to Puter,
+ *    because Puter's sign-in popup is blocked by browsers when it isn't opened from a click.
+ *    The default "Coach (deep)" voice is OpenAI's deep "onyx" voice, given delivery instructions so it sounds like a
+ *    coach at the board (measured pace, pauses before the key idea). It falls back to Polly "Brian" if unavailable.
+ * 2. Otherwise the browser's built-in speech (Web Speech API): free, no account, no popup. The most natural male voice
+ *    on the device is picked, and pitch / rate are lowered so it sounds deeper and calmer.
  *
  * AdvancedCoach just calls speak(); the fallback is automatic.
  */
 declare global { interface Window { puter?: any } }
 
-/** Brian is the coach's voice everywhere. (To offer Amy again, add 'Amy' here: saved 'Amy' settings are mapped to Brian until then.) */
-export const COACH_VOICES = ['Brian'] as const;
-export const DEFAULT_COACH_VOICE = 'Brian';
-/** Old saved settings may still say Joanna / Matthew: map them to a voice that exists. */
+/**
+ * The coach's voices. "Coach (deep)" is the default: a deep baritone (OpenAI "onyx" through Puter) told to speak like a
+ * coach sitting next to you at the board, slowly on the moves and with a pause before the key idea.
+ * If that provider fails, the voice falls back to Polly "Brian", then to the browser's own voice (lowered and slowed down).
+ */
+export const COACH_VOICES = ['Coach (deep)', 'Coach (gravelly)', 'Brian (classic)'] as const;
+export const DEFAULT_COACH_VOICE = 'Coach (deep)';
+/** Old saved settings ("Brian", "Amy", "Joanna"...) are mapped to the deep coach voice. */
 const normalizeVoice = (v?: string) => ((COACH_VOICES as readonly string[]).includes(v ?? '') ? (v as string) : DEFAULT_COACH_VOICE);
-const UK = new Set(['Amy', 'Brian', 'Emma']);
-const MALE = new Set(['Matthew', 'Brian']);
+
+/** How a real coach talks: the instructions sent to voices that accept them. */
+const COACH_DELIVERY = [
+  'Voice: a deep, warm, resonant baritone. An experienced chess coach sitting next to the student at the board.',
+  'Tone: calm, confident and encouraging; honest about mistakes without sounding harsh. Never sound like you are reading.',
+  'Pacing: measured, a little slower than normal conversation. Slow down slightly on move names and squares (like "bishop to d three") so the student can find them on the board.',
+  'Pauses: a short pause before the key move or the key idea, and after a question you ask the student, as if letting them think.',
+  'Emphasis: stress the important move, the word "because", and the lesson at the end.',
+].join('\n');
+
+interface VoiceProfile {
+  /** Puter request options, tried in order. */
+  puter: Record<string, unknown>[];
+  /** Browser fallback: language, and how far to lower pitch / slow down. */
+  lang: 'en-GB' | 'en-US';
+  pitch: number;
+  rate: number;
+  /** Puter audio playback speed with the pitch NOT preserved (below 1 = slower and deeper). 1 = untouched. */
+  depth: number;
+}
+const BRIAN = { provider: 'aws-polly', voice: 'Brian', engine: 'neural', language: 'en-GB' };
+const PROFILES: Record<string, VoiceProfile> = {
+  'Coach (deep)': {
+    puter: [{ provider: 'openai', model: 'gpt-4o-mini-tts', voice: 'onyx', instructions: COACH_DELIVERY }, BRIAN],
+    lang: 'en-US', pitch: 0.78, rate: 0.9, depth: 1,
+  },
+  'Coach (gravelly)': {
+    puter: [{ provider: 'gemini', voice: 'Algenib', instructions: COACH_DELIVERY }, { provider: 'openai', model: 'gpt-4o-mini-tts', voice: 'onyx', instructions: COACH_DELIVERY }, BRIAN],
+    lang: 'en-US', pitch: 0.72, rate: 0.88, depth: 1,
+  },
+  'Brian (classic)': {
+    puter: [BRIAN],
+    lang: 'en-GB', pitch: 0.82, rate: 0.92, depth: 0.93,
+  },
+};
+const profileOf = (voice: string) => PROFILES[normalizeVoice(voice)];
 
 // ---------------------------------------------------------------------------
 // Puter.js
@@ -86,6 +126,9 @@ export function toSpeech(text: string): string {
     .replace(/(^|\s)\+(\d)/g, '$1plus $2')
     .replace(/(^|\s)[-−](\d)/g, '$1minus $2')
     .replace(/\bvs\.?\b/gi, 'versus')
+    // dashes and dots used as separators in the text read badly: turn them into short pauses
+    .replace(/\s[—–]\s/g, ', ')
+    .replace(/\s·\s/g, '. ')
     .replace(/\s+/g, ' ')
     .trim()
     .slice(0, 2900);
@@ -133,12 +176,21 @@ const cache = new Map<string, Promise<HTMLAudioElement>>();
 
 export function prepareSpeech(text: string, voice: string = DEFAULT_COACH_VOICE): Promise<HTMLAudioElement> {
   const spoken = toSpeech(text);
-  const key = `${voice}|${spoken}`;
+  const key = `${normalizeVoice(voice)}|${spoken}`;
   let p = cache.get(key);
   if (!p) {
-    p = loadPuter().then((puter) =>
-      puter.ai.txt2speech(spoken, { voice, engine: 'neural', language: UK.has(voice) ? 'en-GB' : 'en-US' }),
-    ) as Promise<HTMLAudioElement>;
+    const options = profileOf(voice).puter;
+    p = loadPuter().then(async (puter) => {
+      // Try each provider of the profile in turn: the deep coach voice first, Brian if that one is unavailable.
+      let last: unknown = null;
+      for (const opts of options) {
+        try {
+          const a = await puter.ai.txt2speech(spoken, opts);
+          if (a) return a as HTMLAudioElement;
+        } catch (e) { last = e; }
+      }
+      throw last ?? new Error('No voice available');
+    }) as Promise<HTMLAudioElement>;
     p.catch(() => cache.delete(key));
     cache.set(key, p);
     if (cache.size > 24) cache.delete(cache.keys().next().value as string);
@@ -159,7 +211,7 @@ export interface SpeakOptions {
    * and that text's length. Pair it with squareCues(text) + litSquares(...) to light the board in sync.
    */
   onWord?: (charIndex: number, total: number) => void;
-  /** Speaking speed for the browser voice (0.5 slow .. 1.5 fast). Default 0.95, a little calmer than normal. */
+  /** Speaking speed for the browser voice (0.5 slow .. 1.5 fast). Default: the voice profile's (about 0.9, calmer than normal). */
   rate?: number;
 }
 export interface SpeakHandle { done: Promise<void>; cancel: () => void }
@@ -181,27 +233,21 @@ const MALE_RE = /(^|[^a-z])male\b|brian|david|daniel|alex\b|mark|guy|george|ryan
 const isMaleVoice = (v: SpeechSynthesisVoice) => MALE_RE.test(v.name) && !FEMALE_RE.test(v.name);
 const langOf = (v: SpeechSynthesisVoice) => v.lang.toLowerCase().replace('_', '-'); // Android reports "en_GB"
 
-function pickBrowserVoice(name: string): SpeechSynthesisVoice | undefined {
+/** Natural-sounding system voices (Edge "Online (Natural)", Chrome "Google", Apple "Daniel"...) beat the robotic defaults. */
+const QUALITY_RE = /natural|neural|online|premium|enhanced|google/i;
+const DEEP_RE = /guy|christopher|eric|davis|roger|steffan|ryan|thomas|daniel|arthur|google uk english male/i;
+
+function pickBrowserVoice(lang: 'en-GB' | 'en-US'): SpeechSynthesisVoice | undefined {
   const all = window.speechSynthesis.getVoices();
   const en = all.filter((v) => langOf(v).startsWith('en'));
-  const wantLang = UK.has(name) ? 'en-gb' : 'en-us';
-  if (MALE.has(name)) {
-    return (
-      all.find((v) => v.name.toLowerCase().includes(name.toLowerCase())) ??
-      en.find((v) => langOf(v) === wantLang && isMaleVoice(v)) ??
-      en.find((v) => isMaleVoice(v)) ??                                      // any English male voice beats a female one
-      en.find((v) => langOf(v) === wantLang && !FEMALE_RE.test(v.name)) ??
-      en.find((v) => !FEMALE_RE.test(v.name)) ??
-      en.find((v) => langOf(v) === wantLang) ??
-      en[0]
-    );
-  }
-  return (
-    all.find((v) => v.name.toLowerCase().includes(name.toLowerCase())) ??
-    en.find((v) => langOf(v) === wantLang && FEMALE_RE.test(v.name)) ??
-    en.find((v) => langOf(v) === wantLang) ??
-    en[0]
-  );
+  const want = lang.toLowerCase();
+  const score = (v: SpeechSynthesisVoice) =>
+    (isMaleVoice(v) ? 100 : FEMALE_RE.test(v.name) ? 0 : 40) +
+    (QUALITY_RE.test(v.name) ? 30 : 0) +
+    (DEEP_RE.test(v.name) ? 15 : 0) +
+    (langOf(v) === want ? 10 : 0) +
+    (v.localService ? 0 : 5);
+  return [...en].sort((a, b) => score(b) - score(a))[0];
 }
 
 function speakBrowser(spoken: string, voice: string, opts: SpeakOptions): SpeakHandle {
@@ -213,11 +259,12 @@ function speakBrowser(spoken: string, voice: string, opts: SpeakOptions): SpeakH
       await voicesReady();
       if (cancelled) return resolve();
       const u = new SpeechSynthesisUtterance(spoken);
-      const v = pickBrowserVoice(voice);
-      if (v) { u.voice = v; u.lang = v.lang; } else u.lang = UK.has(voice) ? 'en-GB' : 'en-US';
-      // No male voice on this device (some phones only ship female ones): lower the pitch so Brian still sounds like Brian.
-      u.pitch = MALE.has(voice) && !(v && isMaleVoice(v)) ? 0.75 : 1;
-      u.rate = opts.rate ?? 0.95;
+      const prof = profileOf(voice);
+      const v = pickBrowserVoice(prof.lang);
+      if (v) { u.voice = v; u.lang = v.lang; } else u.lang = prof.lang;
+      // Deeper and calmer than the default system voice. A device with only female voices gets pitched down further.
+      u.pitch = v && isMaleVoice(v) ? prof.pitch : Math.max(0.5, prof.pitch - 0.12);
+      u.rate = opts.rate ?? prof.rate;
       let best = 0;
       const t0 = performance.now();
       const estMs = Math.max(1200, spoken.length * 65); // ~15 chars/second, only used if no boundary events arrive
@@ -267,6 +314,12 @@ function speakPuter(puter: any, spoken: string, voice: string, opts: SpeakOption
         if (cancelled) return resolve();
         audio = a;
         a.currentTime = 0;
+        // "Deeper" on voices that need it: play slightly slower without keeping the pitch.
+        const depth = profileOf(voice).depth;
+        if (depth !== 1) {
+          (a as any).preservesPitch = false; (a as any).mozPreservesPitch = false; (a as any).webkitPreservesPitch = false;
+          a.playbackRate = depth;
+        }
         a.ontimeupdate = () => {
           if (a.duration > 0) {
             const p = Math.min(1, a.currentTime / a.duration);
