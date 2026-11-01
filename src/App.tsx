@@ -225,32 +225,58 @@ function App() {
     return false;
   }), []);
 
-  // Phone app: when the app opens (or comes back to the front) and a PGN is on the clipboard, ask to import + analyze it.
+  // A PGN on the clipboard: offer to import + analyze it.
+  //  - phone app: checked at launch and whenever the app comes back to the front;
+  //  - web: the "Paste game" button (a tap is required by browsers); and, once the browser has been allowed to
+  //    read the clipboard, also automatically when the page is shown again (never an unexpected permission prompt).
   const clipState = useRef({ enabled: true, open: false });
   clipState.current = { enabled: settings.clipboardImport !== false, open: !!clipGames };
-  useEffect(() => {
-    if (!isNative()) return;
-    let alive = true;
-    let t: number | undefined;
-    const check = async () => {
-      if (!clipState.current.enabled || clipState.current.open) return;
-      const text = (await readClipboardText()).trim();
-      if (!alive || !text || !looksLikePgn(text)) return;
-      const h = hashText(text);
+  const [toast, setToast] = useState<string | null>(null);
+  const toastTimer = useRef<number | undefined>(undefined);
+  const showToast = useCallback((m: string) => {
+    setToast(m);
+    window.clearTimeout(toastTimer.current);
+    toastTimer.current = window.setTimeout(() => setToast(null), 4200);
+  }, []);
+
+  const checkClipboard = useCallback(async (manual: boolean) => {
+    if (clipState.current.open) return;
+    if (!manual && !clipState.current.enabled) return;
+    const text = (await readClipboardText()).trim();
+    if (!text) { if (manual) showToast("Nothing to paste, or the browser didn't allow reading the clipboard. Use Import and paste the PGN."); return; }
+    if (!looksLikePgn(text)) { if (manual) showToast("The clipboard doesn't look like a PGN game."); return; }
+    const h = hashText(text);
+    if (!manual) {
       let seen = '';
       try { seen = localStorage.getItem(CLIP_KEY) ?? ''; } catch { /* ignore */ }
       if (seen === h) return;
-      const parsed = parsePgnText(text);
-      if (!alive || parsed.length === 0 || clipState.current.open) return;
-      clipHash.current = h;
-      setClipGames(parsed);
+    }
+    const parsed = parsePgnText(text);
+    if (parsed.length === 0) { if (manual) showToast('Found text, but no valid game in it. Check the moves, or use Import.'); return; }
+    if (clipState.current.open) return;
+    clipHash.current = h;
+    setClipGames(parsed);
+  }, [showToast]);
+
+  useEffect(() => {
+    let alive = true;
+    let t: number | undefined;
+    const auto = async () => {
+      if (!alive) return;
+      if (isNative()) { checkClipboard(false); return; }
+      try {
+        const st = await (navigator as any).permissions?.query({ name: 'clipboard-read' });
+        if (st?.state === 'granted' && document.hasFocus()) checkClipboard(false);
+      } catch { /* browser can't tell: only the Paste button works */ }
     };
-    const soon = (ms = 700) => { window.clearTimeout(t); t = window.setTimeout(check, ms); };
+    const soon = (ms = 700) => { window.clearTimeout(t); t = window.setTimeout(auto, ms); };
     soon();
-    const retry = window.setTimeout(check, 2500); // Android only lets the focused app read the clipboard; try again once
+    const retry = isNative() ? window.setTimeout(auto, 2500) : undefined; // Android only lets the focused app read the clipboard
     const off = onAppForeground(() => soon());
-    return () => { alive = false; window.clearTimeout(t); window.clearTimeout(retry); off(); };
-  }, []);
+    const vis = () => { if (!document.hidden) soon(); };
+    document.addEventListener('visibilitychange', vis);
+    return () => { alive = false; window.clearTimeout(t); window.clearTimeout(retry); off(); document.removeEventListener('visibilitychange', vis); };
+  }, [checkClipboard]);
 
   const acceptClipboard = () => {
     const g = clipGames;
@@ -345,7 +371,7 @@ function App() {
           <PuzzleTrainer initialCategory={puzzleTheme} />
         ) : !selectedGame ? (
           <div className="flex flex-col">
-          <MobileHome onImport={() => setShowImport(true)} onGo={(t) => { setPuzzleTheme(undefined); setMissionCtx(null); setPage(t); }} />
+          <MobileHome onImport={() => setShowImport(true)} onPaste={() => checkClipboard(true)} onGo={(t) => { setPuzzleTheme(undefined); setMissionCtx(null); setPage(t); }} />
           <div className="order-2 sm:order-1"><ChessStory games={games} /></div>
           <div className={`order-1 sm:order-2 ${games.length === 0 ? 'hidden sm:flex' : 'flex'} flex-col items-center justify-center text-center ${games.length === 0 ? 'sm:min-h-[50vh]' : 'sm:min-h-[30vh]'}`}>
             {games.length === 0 ? (
@@ -478,6 +504,11 @@ function App() {
         </div>
       </nav>
 
+      {toast && (
+        <div role="status" className="fixed left-4 right-4 sm:left-1/2 sm:right-auto sm:-translate-x-1/2 sm:max-w-md bottom-[calc(env(safe-area-inset-bottom)+5.5rem)] sm:bottom-6 z-[80] rounded-xl bg-[#f5ecd9] px-4 py-3 text-sm font-medium text-[#1a2a24] shadow-xl animate-fade-in">
+          {toast}
+        </div>
+      )}
       {clipGames && <ClipboardPrompt games={clipGames} onImport={acceptClipboard} onDismiss={dismissClipboard} />}
       {showImport && <ImportModal onClose={() => setShowImport(false)} onImport={handleImport} />}
       {showSettings && <SettingsModal settings={settings} onSave={handleSaveSettings} onClose={() => setShowSettings(false)} />}
