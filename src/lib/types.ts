@@ -119,6 +119,8 @@ export interface Settings {
   coachVoiceName?: string;
   /** End-of-game announcement + animations (resign, timeout, draw, checkmate...). On unless set to false. */
   endAnimations?: boolean;
+  /** Phone app: when a PGN is on the clipboard at launch, offer to import and analyze it (on unless set to false). */
+  clipboardImport?: boolean;
 }
 
 export type View = 'analysis' | 'coach' | 'drills';

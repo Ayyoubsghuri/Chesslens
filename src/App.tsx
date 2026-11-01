@@ -21,8 +21,19 @@ import { logEvent } from '@/lib/activity';
 import { getUsername, setUsername, guessUsername } from '@/lib/player';
 import { loadGames, saveGames, loadAnalyses, saveAnalysis, deleteAnalysis, loadSettings, saveSettings } from '@/lib/storage';
 import type { ImportedGame, AnalysisResult, Settings as SettingsType, View } from '@/lib/types';
-import { onBackButton } from './native';
+import { onBackButton, onAppForeground, readClipboardText, isNative } from './native';
+import { ClipboardPrompt } from '@/components/ClipboardPrompt';
+import { looksLikePgn, parsePgnText } from '@/lib/pgn-clean';
 import { Loader2, Plus, Settings as SettingsIcon, BarChart3, GraduationCap, Target, Crown as ChessIcon, Upload, Swords, Home, Trash2, ChevronLeft, ChevronRight, Search, X, BookOpen, MoreHorizontal } from 'lucide-react';
+
+const CLIP_KEY = 'chesslens.clipboardHandled';
+/** Small stable hash of the clipboard text, so the same PGN is only offered once. */
+function hashText(t: string): string {
+  let h = 5381;
+  for (let i = 0; i < t.length; i++) h = ((h * 33) ^ t.charCodeAt(i)) >>> 0;
+  return `${t.length}:${h}`;
+}
+const rememberClip = (h: string) => { try { localStorage.setItem(CLIP_KEY, h); } catch { /* ignore */ } };
 
 function App() {
   const [games, setGames] = useState<ImportedGame[]>([]);
@@ -38,6 +49,8 @@ function App() {
   const [analyzing, setAnalyzing] = useState(false);
   const [analysisProgress, setAnalysisProgress] = useState({ current: 0, total: 0 });
   const [pendingAnalyzeId, setPendingAnalyzeId] = useState<string | null>(null);
+  const [clipGames, setClipGames] = useState<ImportedGame[] | null>(null);
+  const clipHash = useRef('');
   const [missionCtx, setMissionCtx] = useState<{ mission: Mission; page: 'puzzles' | 'play' | 'openings' | 'home' } | null>(null);
 
   const handleLearnNavigate = useCallback((target: LearnNavigate) => {
@@ -211,6 +224,43 @@ function App() {
     if (b.page !== 'home') { setPage('home'); setMissionCtx(null); return true; }
     return false;
   }), []);
+
+  // Phone app: when the app opens (or comes back to the front) and a PGN is on the clipboard, ask to import + analyze it.
+  const clipState = useRef({ enabled: true, open: false });
+  clipState.current = { enabled: settings.clipboardImport !== false, open: !!clipGames };
+  useEffect(() => {
+    if (!isNative()) return;
+    let alive = true;
+    let t: number | undefined;
+    const check = async () => {
+      if (!clipState.current.enabled || clipState.current.open) return;
+      const text = (await readClipboardText()).trim();
+      if (!alive || !text || !looksLikePgn(text)) return;
+      const h = hashText(text);
+      let seen = '';
+      try { seen = localStorage.getItem(CLIP_KEY) ?? ''; } catch { /* ignore */ }
+      if (seen === h) return;
+      const parsed = parsePgnText(text);
+      if (!alive || parsed.length === 0 || clipState.current.open) return;
+      clipHash.current = h;
+      setClipGames(parsed);
+    };
+    const soon = (ms = 700) => { window.clearTimeout(t); t = window.setTimeout(check, ms); };
+    soon();
+    const retry = window.setTimeout(check, 2500); // Android only lets the focused app read the clipboard; try again once
+    const off = onAppForeground(() => soon());
+    return () => { alive = false; window.clearTimeout(t); window.clearTimeout(retry); off(); };
+  }, []);
+
+  const acceptClipboard = () => {
+    const g = clipGames;
+    if (!g || g.length === 0) return;
+    rememberClip(clipHash.current);
+    setClipGames(null);
+    handleImport(g);
+    setPendingAnalyzeId(g[0].id);
+  };
+  const dismissClipboard = () => { rememberClip(clipHash.current); setClipGames(null); };
 
   const PAGE_TITLES: Record<string, string> = { learn: 'Learn Path', openings: 'Openings', puzzles: 'Puzzles', play: 'Play vs Computer' };
   const canGoBack = page !== 'home' || !!selectedGame;
@@ -428,6 +478,7 @@ function App() {
         </div>
       </nav>
 
+      {clipGames && <ClipboardPrompt games={clipGames} onImport={acceptClipboard} onDismiss={dismissClipboard} />}
       {showImport && <ImportModal onClose={() => setShowImport(false)} onImport={handleImport} />}
       {showSettings && <SettingsModal settings={settings} onSave={handleSaveSettings} onClose={() => setShowSettings(false)} />}
     </div>

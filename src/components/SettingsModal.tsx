@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { X, Settings as SettingsIcon, Cpu, Sparkles, Volume2, Film } from 'lucide-react';
+import { X, Settings as SettingsIcon, Cpu, Sparkles, Volume2, Film, ClipboardPaste } from 'lucide-react';
 import type { Settings } from '@/lib/types';
 import { COACH_VOICES, DEFAULT_COACH_VOICE } from '@/lib/tts';
 
@@ -150,6 +150,24 @@ export function SettingsModal({ settings, onSave, onClose }: SettingsModalProps)
             </span>
             <span className={`relative h-6 w-11 shrink-0 rounded-full transition-colors ${local.endAnimations !== false ? 'bg-brand-500' : 'bg-ink-600'}`}>
               <span className={`absolute top-0.5 h-5 w-5 rounded-full bg-white transition-all ${local.endAnimations !== false ? 'left-[22px]' : 'left-0.5'}`} />
+            </span>
+          </button>
+          <button
+            type="button"
+            role="switch"
+            aria-checked={local.clipboardImport !== false}
+            onClick={() => setLocal({ ...local, clipboardImport: local.clipboardImport === false })}
+            className="mt-3 w-full flex items-center gap-3 rounded-xl border border-ink-700 bg-ink-800/60 px-3.5 py-3 text-left hover:bg-ink-700/50 transition-colors"
+          >
+            <ClipboardPaste size={18} className="text-brand-400 shrink-0" />
+            <span className="flex-1">
+              <span className="block text-sm font-medium text-ink-100">Import PGN from clipboard</span>
+              <span className="block text-xs text-ink-400 mt-0.5">
+                In the phone app: when you open ChessLens and a game (PGN) is on your clipboard, it asks if you want to import and analyze it. It always asks first.
+              </span>
+            </span>
+            <span className={`relative h-6 w-11 shrink-0 rounded-full transition-colors ${local.clipboardImport !== false ? 'bg-brand-500' : 'bg-ink-600'}`}>
+              <span className={`absolute top-0.5 h-5 w-5 rounded-full bg-white transition-all ${local.clipboardImport !== false ? 'left-[22px]' : 'left-0.5'}`} />
             </span>
           </button>
         </div>

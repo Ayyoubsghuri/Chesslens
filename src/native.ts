@@ -1,12 +1,17 @@
 /**
  * native.ts — Android (Capacitor) polish. Does nothing in a normal browser.
- * Uses the global Capacitor object so no extra imports are needed for the web build.
+ * Plugins are reached through registerPlugin(name), which talks to the native side by name.
  */
-type Plugin = Record<string, (...a: any[]) => any>;
-const cap = (): any => (window as any).Capacitor;
+import { Capacitor, registerPlugin } from '@capacitor/core';
 
-export const isNative = () => !!cap()?.isNativePlatform?.();
-const plugin = (name: string): Plugin | undefined => cap()?.Plugins?.[name];
+type Plugin = Record<string, (...a: any[]) => any>;
+
+export const isNative = () => { try { return Capacitor.isNativePlatform(); } catch { return false; } };
+const cache: Record<string, Plugin> = {};
+const plugin = (name: string): Plugin | undefined => {
+  if (!isNative()) return undefined;
+  try { return (cache[name] ??= registerPlugin<Plugin>(name)); } catch { return undefined; }
+};
 
 /** Let the page draw under the status bar / gesture bar (safe-area insets then keep content clear). */
 function allowEdgeToEdge() {
@@ -47,4 +52,23 @@ export function onBackButton(handler: () => boolean): () => void {
 
 export function haptic() {
   try { plugin('Haptics')?.impact({ style: 'LIGHT' }); } catch { /* optional */ }
+}
+
+/** Calls `cb` every time the app comes back to the foreground (and `cb` is also safe to call at launch). */
+export function onAppForeground(cb: () => void): () => void {
+  const app = plugin('App');
+  if (!app) return () => {};
+  let handle: { remove?: () => void } | undefined;
+  Promise.resolve(app.addListener('appStateChange', (s: { isActive: boolean }) => { if (s?.isActive) cb(); }))
+    .then((h: any) => { handle = h; });
+  return () => { try { handle?.remove?.(); } catch { /* ignore */ } };
+}
+
+/** Text currently on the clipboard ('' when empty or not allowed). Uses the Capacitor Clipboard plugin, then the web API. */
+export async function readClipboardText(): Promise<string> {
+  try {
+    const r = await plugin('Clipboard')?.read();
+    if (r?.value) return String(r.value);
+  } catch { /* plugin missing or empty */ }
+  try { return (await navigator.clipboard.readText()) || ''; } catch { return ''; }
 }
