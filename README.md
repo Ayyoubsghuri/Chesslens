@@ -21,7 +21,7 @@ ChessLens is a chess game review app that runs in your browser. Import a game an
 - **Best move**: shows the engine's best move on the board, then how the game would continue.
 - **Why not this move?**: try any move on the board and the coach explains it the same way.
 - **Find a better move**: after a mistake, retry the position, with hints.
-- **Chess Story**: enter any Chess.com or Lichess username to get a shareable story from up to **10,000** recent games: record, openings, nemesis, how you win and lose, checkmates that beat you, opponents' weaknesses by rating. It also shows your **brilliant moves (!!)**, counted from the games you have analyzed in the app, because Chess.com and Lichess don't publish move labels in their APIs.
+- **Chess Story**: enter any Chess.com or Lichess username to get a shareable story from up to **1,000** recent games: record, openings, nemesis, how you win and lose, checkmates that beat you, opponents' weaknesses by rating. It also shows your **brilliant moves (!!)**, counted from the games you have analyzed in the app, because Chess.com and Lichess don't publish move labels in their APIs.
 - **Learn Path, Openings trainer, Practice puzzles, Studies, Masters games, Play vs Computer.**
 - **Drills**: practice positions built from your own mistakes.
 - **Explore mode**: play your own moves on the board and get instant engine feedback.
@@ -62,6 +62,17 @@ cp node_modules/stockfish/stockfish-18-lite-single.wasm public/stockfish/
 If your installed version lays out files differently, check `node_modules/stockfish/`.
 
 The single-threaded build doesn't need `SharedArrayBuffer`, so **no special COOP/COEP headers are required**.
+
+### Add the Maia model (for the AI Game Rating)
+
+The **Maia game rating** button uses the Maia 3 neural network (`maia3-5m.onnx`, about 21 MB). Copy it from [NoRaincheck/chess-accuracy](https://github.com/NoRaincheck/chess-accuracy) (`chess_accuracy/maia3/onnx/maia3-5m.onnx`) into `public/models/`:
+
+```bash
+mkdir -p public/models
+cp path/to/chess-accuracy/chess_accuracy/maia3/onnx/maia3-5m.onnx public/models/
+```
+
+That repo has no license file, so check with its author (and the Maia authors) before you publish the model with your app. ONNX Runtime is loaded from the jsDelivr CDN when the button is first pressed, so nothing else needs installing. Without the model, the app keeps the quick accuracy-based Game Rating.
 
 ### Run
 
@@ -134,8 +145,12 @@ Special cases:
 ### Accuracy
 
 - **Games reviewed on Chess.com** show **Chess.com's own accuracy**, so the number is exactly the same as on Chess.com. The app reads it from Chess.com's public API: either when you import from Chess.com, or later by looking the game up from its Chess.com link. The card then says *Chess.com accuracy*.
-- **Other games** get an estimate calculated from Stockfish's evaluations, using the published Lichess method (`computeAccuracy` in `analysis.ts`). Each move is scored from the winning chances it lost. Sharp moments are weighted more, and the final number is the average of the weighted mean and the harmonic mean, which is why blunders hurt a lot. The card then says *Accuracy (estimated)*.
-- **Why the estimate can't match Chess.com exactly:** Chess.com's formula (CAPS2) is not public, and its servers search much deeper than Stockfish lite in the browser. `DEPTH_COMPENSATION` in `analysis.ts` partly makes up for that. A higher engine depth brings the estimate closer.
+- **Other games** get an estimate from a Chess.com-style model (`src/lib/accuracy-model.ts`), fitted on real Chess.com reviews. Chess.com punishes small losses much harder than Lichess: an "excellent" move scores about 83 and a "good" one about 70. It punishes blunders less: a blunder still scores about 20. The game score is mostly a harmonic mean. The card says *Accuracy (estimated)*.
+- **Two formulas, one tap apart.** At the top of the accuracy card you can switch between **Chess.com style**, the default described above, and **Lichess**. The Lichess option is the published Lichess formula, the same one as [NoRaincheck/chess-accuracy](https://github.com/NoRaincheck/chess-accuracy): per-move accuracy from win% lost, then the average of the volatility-weighted mean and the harmonic mean. Chess.com's real number, when the app knows it, is shown only in Chess.com mode.
+- **Accuracy by phase.** The card also shows **Opening / Middlegame / Endgame** accuracy for each player. The game is split with Lichess's Divider (`src/lib/game-phases.ts`). The middlegame starts when 10 or fewer pieces are left (not counting kings and pawns), when a back rank is thinned out, or when the armies have met. The endgame starts at 6 or fewer pieces. Each phase is scored with the selected formula.
+- **Game Rating.** By default it is a quick estimate from accuracy and errors. Press **Maia game rating** for the AI estimate. Maia 3 is a neural network trained on human games: for every pair of ratings (White, Black) it scores how likely the moves actually played are. The ratings that explain the game best become the game ratings, shown with a ± range (`src/lib/maia-elo.ts`, same method as `estimate_elo.py` in chess-accuracy). On that repo's example game it gives White 2054 ± 172 and Black 2514 ± 154, matching the reference (2054 / 2508). It takes about 30 seconds on a laptop and longer on a phone, and the result is saved per game.
+- **It learns from your games.** Under the accuracy card, **Enter Chess.com accuracy** lets you type the numbers from Chess.com's review. That game then shows Chess.com's exact number, and the model re-fits itself on every game where it knows the real accuracy, from the API or typed in. The more games you add, the closer the estimates get on your other games. Calibration data stays in your browser.
+- **Why it can't be exact without calibration:** Chess.com's formula (CAPS2) is not public, and its engine searches much deeper than Stockfish lite in the browser, so the two engines see different losses on the same moves.
 
 ### Brilliant moves (`src/lib/sacrifice.ts`)
 
@@ -192,7 +207,10 @@ src/
     MastersGames.tsx, PlayVsComputer.tsx   Training pages
   lib/
     engine.ts               Stockfish worker pool and eval helpers
-    analysis.ts             Game analysis, classification, accuracy
+    analysis.ts             Game analysis, classification
+    accuracy-model.ts       Chess.com-style accuracy model + self-calibration
+    maia-elo.ts             Maia 3 game rating (ONNX in the browser)
+    game-phases.ts          Opening / middlegame / endgame split (Lichess Divider), Lichess accuracy, per-phase accuracy
     sacrifice.ts            Material-sacrifice detector for brilliant moves
     coach-explain.ts        Builds the coach scenes for a move
     coach-compare.ts        Why the better move is better + the plan you missed

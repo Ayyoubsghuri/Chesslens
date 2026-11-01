@@ -83,3 +83,111 @@
 .piece-svg:hover {
   filter: drop-shadow(0 2px 4px rgba(0, 0, 0, 0.4));
 }
+
+
+/* ---------------------------------------------------------------------------
+   Phone / Android app polish
+   --------------------------------------------------------------------------- */
+html { -webkit-tap-highlight-color: transparent; }
+button, a, [role="button"], input, select { touch-action: manipulation; }
+
+@media (max-width: 639px) {
+  /* 16px inputs: Android/iOS webviews zoom the page when a smaller field gets focus */
+  input, select, textarea, .input { font-size: 16px !important; }
+  /* Comfortable thumb targets */
+  .btn { min-height: 44px; }
+  .btn-ghost.p-2 { min-width: 44px; min-height: 44px; }
+  h2 { @apply text-2xl; }
+  .card { @apply rounded-xl; }
+  /* No sideways wobble */
+  html, body { overflow-x: hidden; }
+}
+
+/* Native app: no rubber-band, no accidental text selection on controls, softer scrolling */
+html.native, html.native body { overscroll-behavior: none; }
+html.native button, html.native nav { -webkit-user-select: none; user-select: none; }
+html.native ::-webkit-scrollbar { display: none; }
+
+/* Safe areas (notch, status bar, gesture bar) */
+.safe-top { padding-top: env(safe-area-inset-top); }
+.safe-bottom { padding-bottom: env(safe-area-inset-bottom); }
+
+/* Bottom tab bar */
+.tabbar {
+  position: fixed; left: 0; right: 0; bottom: 0; z-index: 50;
+  padding-bottom: env(safe-area-inset-bottom);
+  @apply bg-ink-950/90;
+  -webkit-backdrop-filter: blur(14px); backdrop-filter: blur(14px);
+  border-top: 1px solid rgba(255, 255, 255, 0.06);
+}
+.tabbar-item {
+  position: relative; flex: 1; display: flex; flex-direction: column; align-items: center; gap: 2px;
+  padding: 8px 2px 7px; font-size: 0.64rem; font-weight: 600; letter-spacing: 0.02em;
+  @apply text-ink-400; transition: color .15s;
+}
+.tabbar-item svg { transition: transform .15s; }
+.tabbar-item[aria-current="page"] { @apply text-brand-400; }
+.tabbar-item[aria-current="page"] svg { transform: translateY(-1px) scale(1.08); }
+.tabbar-item[aria-current="page"]::before {
+  content: ''; position: absolute; top: 0; left: 28%; right: 28%; height: 3px; border-radius: 0 0 4px 4px; @apply bg-brand-400;
+}
+.tabbar-item:active { background: rgba(255, 255, 255, 0.04); }
+
+
+/* ---------------------------------------------------------------------------
+   App shell (phone)
+   --------------------------------------------------------------------------- */
+:root { --appbar-h: 0px; --strip-h: 0px; }
+@media (max-width: 639px) { :root { --appbar-h: calc(3rem + env(safe-area-inset-top)); --strip-h: 2.5rem; } }
+
+.appbar {
+  position: sticky; top: 0; z-index: 40;
+  @apply bg-ink-950/90 border-b border-ink-800;
+  -webkit-backdrop-filter: blur(14px); backdrop-filter: blur(14px);
+}
+.appbar-btn {
+  @apply w-10 h-10 shrink-0 flex items-center justify-center rounded-full text-ink-200 transition-colors;
+}
+.appbar-btn:active { @apply bg-ink-800; }
+
+.fab {
+  position: fixed; right: 16px; bottom: calc(env(safe-area-inset-bottom) + 4.9rem); z-index: 45;
+  width: 56px; height: 56px; border-radius: 18px;
+  @apply bg-brand-500 text-ink-950 flex items-center justify-center;
+  box-shadow: 0 10px 24px rgba(0, 0, 0, 0.45);
+  transition: transform .12s;
+}
+.fab:active { transform: scale(0.94); }
+
+@keyframes sheet-up { from { transform: translateY(100%); } to { transform: none; } }
+.sheet-up { animation: sheet-up .3s cubic-bezier(.2, .8, .2, 1); }
+@media (min-width: 640px) { .sheet-up { animation: none; } }
+.sheet-handle { width: 40px; height: 4px; border-radius: 2px; margin: 8px auto 0; @apply bg-ink-600; }
+
+@keyframes page-in { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: none; } }
+.page-enter { animation: page-in .22s ease-out; }
+@media (prefers-reduced-motion: reduce) { .page-enter, .sheet-up { animation: none; } }
+
+.no-scrollbar { scrollbar-width: none; }
+.no-scrollbar::-webkit-scrollbar { display: none; }
+
+/* Game screen toolbar (phone): Options | big centre button | Back | Forward */
+.gtoolbar {
+  position: fixed; left: 0; right: 0; bottom: 0; z-index: 50;
+  display: grid; grid-template-columns: 1fr 1fr 1.35fr 1fr 1fr; align-items: end;
+  padding: 6px 8px calc(env(safe-area-inset-bottom) + 6px);
+  @apply bg-ink-950/95 border-t border-ink-800;
+  -webkit-backdrop-filter: blur(14px); backdrop-filter: blur(14px);
+}
+.gtool { display: flex; flex-direction: column; align-items: center; gap: 2px; padding: 6px 0; font-size: .68rem; font-weight: 600; @apply text-ink-300; }
+.gtool:active { @apply text-brand-300; }
+.gtool:disabled { opacity: .35; }
+.gtool-main {
+  justify-self: center; width: 84px; height: 58px; border-radius: 16px; margin-top: -20px;
+  display: flex; flex-direction: column; gap: 1px; align-items: center; justify-content: center; font-size: .66rem; font-weight: 700;
+  @apply bg-brand-500 text-ink-950;
+  box-shadow: 0 8px 20px rgba(0, 0, 0, 0.45);
+  transition: transform .12s;
+}
+.gtool-main:active { transform: scale(0.95); }
+.gtool-main:disabled { opacity: .45; }

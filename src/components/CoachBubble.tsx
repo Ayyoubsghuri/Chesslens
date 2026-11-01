@@ -1,4 +1,5 @@
-import { useEffect, useState, type KeyboardEvent as ReactKeyboardEvent } from 'react';
+import { useEffect, useId, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from 'react';
+import { haptic } from '../native';
 import { Star, ThumbsUp, Check, BookOpen, X } from 'lucide-react';
 import type { MoveQuality } from '@/lib/types';
 import type { TbFrame } from '@/lib/tablebase';
@@ -74,85 +75,136 @@ function QualityDot({ quality, color, size }: { quality: MoveQuality; color: str
   );
 }
 
-/** Drawn cartoon coach. Calm and smiling normally; furious on a blunder. */
-export function CoachAvatar({ size, angry, flying, onClick }: { size: number; angry: boolean; flying?: boolean; onClick?: () => void }) {
+const POKES = ['Hehe!', 'Boop!', 'Hey!', 'Ooh!', 'Need a hint?', 'I see you 👀'];
+const reduceMotion = () => typeof window !== 'undefined' && !!window.matchMedia?.('(prefers-reduced-motion: reduce)').matches;
+
+/**
+ * The coach: a friendly mint-green mascot. It is alive:
+ *  - its eyes follow your finger / mouse, and it blinks now and then;
+ *  - it floats gently, wiggles on hover and squishes when you tap it (and says something);
+ *  - it smiles with happy eyes after a great move and turns red with slanted eyes after a blunder.
+ */
+export function CoachAvatar({ size, angry, flying, onClick, mood }: { size: number; angry: boolean; flying?: boolean; onClick?: () => void; mood?: 'calm' | 'happy' }) {
+  const uid = useId().replace(/:/g, '');
+  const live = !flying;
+  const box = useRef<HTMLSpanElement>(null);
+  const [look, setLook] = useState({ x: 0, y: 0 });
+  const [blink, setBlink] = useState(false);
+  const [poke, setPoke] = useState(0);          // changes on every tap -> restarts the squish animation
+  const [say, setSay] = useState<string | null>(null);
+  const pokes = useRef<number[]>([]);
+  const sayTimer = useRef<number | undefined>(undefined);
+
+  // Eyes follow the pointer.
+  useEffect(() => {
+    if (!live || reduceMotion()) return;
+    let raf = 0;
+    const move = (e: PointerEvent) => {
+      cancelAnimationFrame(raf);
+      raf = requestAnimationFrame(() => {
+        const r = box.current?.getBoundingClientRect();
+        if (!r) return;
+        const dx = e.clientX - (r.left + r.width / 2);
+        const dy = e.clientY - (r.top + r.height / 2);
+        const d = Math.hypot(dx, dy) || 1;
+        const k = Math.min(1, d / 160) * 5; // up to 5 units in the 120-unit drawing
+        setLook({ x: (dx / d) * k, y: (dy / d) * k });
+      });
+    };
+    const leave = () => setLook({ x: 0, y: 0 });
+    window.addEventListener('pointermove', move, { passive: true });
+    document.addEventListener('pointerleave', leave);
+    return () => { cancelAnimationFrame(raf); window.removeEventListener('pointermove', move); document.removeEventListener('pointerleave', leave); };
+  }, [live]);
+
+  // Random blinking.
+  useEffect(() => {
+    if (!live || reduceMotion()) return;
+    let t: number;
+    const loop = () => {
+      t = window.setTimeout(() => { setBlink(true); t = window.setTimeout(() => { setBlink(false); loop(); }, 140); }, 2200 + Math.random() * 3800);
+    };
+    loop();
+    return () => window.clearTimeout(t);
+  }, [live]);
+
+  useEffect(() => () => window.clearTimeout(sayTimer.current), []);
+
+  const tap = () => {
+    if (!live) return;
+    haptic();
+    const now = Date.now();
+    pokes.current = [...pokes.current.filter((t) => now - t < 2000), now];
+    const many = pokes.current.length >= 4;
+    setPoke((n) => n + 1);
+    setSay(many ? 'Okay okay, stop! 😵' : angry ? "Don't remind me!" : POKES[Math.floor(Math.random() * POKES.length)]);
+    window.clearTimeout(sayTimer.current);
+    sayTimer.current = window.setTimeout(() => setSay(null), 1300);
+    onClick?.();
+  };
+
+  const light = angry ? '#ffd2cb' : '#b4ecd3';
+  const mid = angry ? '#ff8a78' : '#62d8a2';
+  const dark = angry ? '#f0452f' : '#3ec98a';
+  const happy = mood === 'happy' && !angry && !say;
+  const eyeStyle = { transformBox: 'fill-box' as const, transformOrigin: 'center', transform: blink ? 'scaleY(0.12)' : 'scaleY(1)', transition: 'transform 90ms ease-out' };
+
   return (
     <span
-      className="relative block shrink-0"
-      style={{ width: size, height: size, cursor: onClick ? 'pointer' : undefined }}
+      ref={box}
+      className={`relative block shrink-0 ${live ? 'coach-live' : ''}`}
+      style={{ width: size, height: size, cursor: live ? 'pointer' : undefined, touchAction: 'manipulation' }}
       {...(flying ? {} : { 'data-coach-avatar': '' })}
-      {...(onClick ? { onClick, role: 'button', tabIndex: 0, title: 'Click me to show the best move', onKeyDown: (e: ReactKeyboardEvent) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onClick(); } } } : {})}
+      {...(live ? { onClick: tap, role: 'button', tabIndex: 0, title: onClick ? 'Tap me (I can replay the blunder)' : 'Tap me!', onKeyDown: (e: ReactKeyboardEvent) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); tap(); } } } : {})}
     >
-      <span
-        className="block h-full w-full overflow-hidden rounded-full"
-        style={{ backgroundColor: angry ? '#5a2620' : '#22352f' }}
-      >
-      <svg
-        key={angry ? 'angry' : 'calm'}
-        width={size}
-        height={size}
-        viewBox="0 0 120 120"
-        className={angry ? 'coach-angry' : ''}
-        style={{ display: 'block' }}
-        aria-hidden="true"
-      >
-        {/* hoodie */}
-        <path d="M8 120 C10 92 30 84 60 84 C90 84 110 92 112 120 Z" fill="#d4d7d9" />
-        <path d="M40 86 C46 100 74 100 80 86 C74 90 46 90 40 86 Z" fill="#b9bdc0" />
-        <path d="M50 94 L48 112" stroke="#fff" strokeWidth="2.5" strokeLinecap="round" />
-        <path d="M70 94 L72 112" stroke="#fff" strokeWidth="2.5" strokeLinecap="round" />
-        {/* neck + ears */}
-        <rect x="49" y="70" width="22" height="18" rx="8" fill="#e2ac8c" />
-        <ellipse cx="28" cy="52" rx="5" ry="8" fill="#eab796" />
-        <ellipse cx="92" cy="52" rx="5" ry="8" fill="#eab796" />
-        {/* face */}
-        <path d="M30 44 C30 24 44 16 60 16 C76 16 90 24 90 44 C90 66 76 80 60 80 C44 80 30 66 30 44 Z" fill="#f0c4a6" />
-        {angry && (
-          <path
-            d="M30 44 C30 24 44 16 60 16 C76 16 90 24 90 44 C90 66 76 80 60 80 C44 80 30 66 30 44 Z"
-            fill="#fa412d"
-            opacity="0.38"
-          />
-        )}
-        {/* hair */}
-        <path
-          d="M27 46 C20 28 30 8 52 6 C60 2 74 4 82 12 C94 16 98 32 92 46 C90 38 86 32 80 30 C70 34 52 30 44 24 C38 30 32 36 27 46 Z"
-          fill="#6e4a38"
-        />
-        <path d="M44 24 C52 20 62 18 70 20" stroke="#8a6350" strokeWidth="3" fill="none" strokeLinecap="round" />
-
-        {angry ? (
-          <>
-            {/* slanted, furrowed brows */}
-            <path d="M37 35 L56 44" stroke="#3d2619" strokeWidth="4" strokeLinecap="round" />
-            <path d="M83 35 L64 44" stroke="#3d2619" strokeWidth="4" strokeLinecap="round" />
-            {/* narrowed eyes */}
-            <ellipse cx="48" cy="49" rx="4" ry="2.6" fill="#fff" />
-            <ellipse cx="72" cy="49" rx="4" ry="2.6" fill="#fff" />
-            <circle cx="49" cy="49.5" r="2" fill="#2a2020" />
-            <circle cx="71" cy="49.5" r="2" fill="#2a2020" />
-            <path d="M42 46 L55 46" stroke="#5a3a2c" strokeWidth="1.5" />
-            <path d="M65 46 L78 46" stroke="#5a3a2c" strokeWidth="1.5" />
-            {/* nose */}
-            <path d="M60 50 Q56 60 60 62" stroke="#c9604f" strokeWidth="2" fill="none" strokeLinecap="round" />
-            {/* gritted teeth */}
-            <rect x="46" y="65" width="28" height="9" rx="3" fill="#fff" stroke="#8a2f25" strokeWidth="2" />
-            <path d="M53 65 V74 M60 65 V74 M67 65 V74" stroke="#8a2f25" strokeWidth="1.2" />
-            <path d="M44 74 Q60 64 76 74" stroke="#8a2f25" strokeWidth="0" fill="none" />
-          </>
-        ) : (
-          <>
-            <path d="M41 40 Q48 36 55 40" stroke="#5a3a2c" strokeWidth="2.5" fill="none" strokeLinecap="round" />
-            <path d="M65 40 Q72 36 79 40" stroke="#5a3a2c" strokeWidth="2.5" fill="none" strokeLinecap="round" />
-            <circle cx="48" cy="48" r="2.6" fill="#2a2020" />
-            <circle cx="72" cy="48" r="2.6" fill="#2a2020" />
-            <path d="M60 50 Q56 60 60 62" stroke="#d29c7e" strokeWidth="2" fill="none" strokeLinecap="round" />
-            <path d="M38 62 C42 76 78 76 82 62 C76 70 44 70 38 62 Z" fill="#d9a98b" opacity="0.7" />
-            <path d="M45 64 Q60 78 75 64 Q60 68 45 64 Z" fill="#fff" stroke="#b5755c" strokeWidth="1.5" strokeLinejoin="round" />
-          </>
-        )}
-      </svg>
+      <span className={`block h-full w-full ${live && !reduceMotion() ? 'coach-float' : ''}`}>
+        <svg
+          key={`${angry ? 'angry' : 'calm'}-${poke}`}
+          width={size}
+          height={size}
+          viewBox="0 0 120 120"
+          className={poke > 0 ? 'coach-poke' : angry ? 'coach-angry' : ''}
+          style={{ display: 'block', overflow: 'visible' }}
+          aria-hidden="true"
+        >
+          <defs>
+            <radialGradient id={`cg-${uid}`} gradientUnits="userSpaceOnUse" cx="38" cy="34" r="92">
+              <stop offset="0" stopColor={light} />
+              <stop offset="0.45" stopColor={mid} />
+              <stop offset="1" stopColor={dark} />
+            </radialGradient>
+          </defs>
+          <g transform="translate(60 61) scale(1.14) translate(-60 -60)">
+            {/* body leans a little toward what you are looking at */}
+            <g style={{ transform: `translate(${look.x * 0.35}px, ${look.y * 0.35}px)`, transition: 'transform 120ms ease-out' }}>
+              <polygon points="60,27 101,93 19,93" fill={`url(#cg-${uid})`} stroke={`url(#cg-${uid})`} strokeWidth="24" strokeLinejoin="round" />
+              <g style={{ transform: `translate(${look.x}px, ${look.y}px)`, transition: 'transform 90ms ease-out' }}>
+                {angry ? (
+                  <>
+                    <g style={eyeStyle}><rect x="48.5" y="47" width="10" height="19" rx="5" fill="#0d0d0d" transform="rotate(30 54 56)" /></g>
+                    <g style={eyeStyle}><rect x="67" y="47" width="10" height="19" rx="5" fill="#0d0d0d" transform="rotate(-30 72 56)" /></g>
+                  </>
+                ) : happy ? (
+                  <>
+                    <path d="M47 62 Q54 51 61 62" stroke="#0d0d0d" strokeWidth="5" fill="none" strokeLinecap="round" />
+                    <path d="M65 58 Q72 47 79 58" stroke="#0d0d0d" strokeWidth="5" fill="none" strokeLinecap="round" />
+                  </>
+                ) : (
+                  <>
+                    <g style={eyeStyle}><rect x="48.5" y="47" width="11" height={say ? 22 : 20} rx="5.5" fill="#0d0d0d" transform="rotate(-14 54 57)" /></g>
+                    <g style={eyeStyle}><rect x="66" y="43" width="11" height={say ? 22 : 20} rx="5.5" fill="#0d0d0d" transform="rotate(-14 71.5 53)" /></g>
+                  </>
+                )}
+              </g>
+            </g>
+          </g>
+        </svg>
       </span>
+      {say && (
+        <span key={poke} className="coach-say pointer-events-none absolute left-1/2 -top-1 z-10 whitespace-nowrap rounded-full bg-[#f5ecd9] px-2.5 py-1 text-[11px] font-bold text-[#1a2a24] shadow-lg" aria-live="polite">
+          {say}
+        </span>
+      )}
       {angry && (
         <span className="coach-anger-mark absolute -top-1 -right-1 select-none" style={{ fontSize: size * 0.32 }} aria-hidden="true">
           💢
@@ -224,6 +276,7 @@ export function CoachBubble({ san, quality, color, evalText, moveKey, compact, f
       <CoachAvatar
         size={avatar}
         angry={angry}
+        mood={['brilliant', 'great', 'best', 'excellent'].includes(quality) ? 'happy' : 'calm'}
         onClick={angry || ['inaccuracy', 'mistake', 'miss'].includes(quality) ? () => window.dispatchEvent(new CustomEvent('coach-blunder-run')) : undefined}
       />
 
@@ -269,7 +322,15 @@ export function CoachBubble({ san, quality, color, evalText, moveKey, compact, f
         .coach-angry { animation: coach-shake 500ms ease-in-out; }
         @keyframes coach-pop { 0% { transform: scale(0); opacity: 0; } 60% { transform: scale(1.3); opacity: 1; } 100% { transform: scale(1); opacity: 1; } }
         .coach-anger-mark { animation: coach-pop 300ms ease-out; }
-        @media (prefers-reduced-motion: reduce) { .coach-swap, .coach-angry, .coach-anger-mark { animation: none; } }
+        @keyframes coach-float { 0%,100% { transform: translateY(0); } 50% { transform: translateY(-3px); } }
+        .coach-float { animation: coach-float 3.4s ease-in-out infinite; }
+        @keyframes coach-poke { 0% { transform: scale(1,1); } 25% { transform: scale(1.2,0.8) translateY(4px); } 55% { transform: scale(0.9,1.14) translateY(-8px); } 80% { transform: scale(1.04,0.97); } 100% { transform: scale(1,1); } }
+        .coach-poke { transform-origin: 50% 88%; animation: coach-poke 480ms cubic-bezier(.3,1.4,.5,1); }
+        @keyframes coach-wiggle { 0%,100% { transform: rotate(0); } 25% { transform: rotate(-5deg); } 75% { transform: rotate(5deg); } }
+        .coach-live:hover > span:first-child { animation: coach-wiggle 420ms ease-in-out; }
+        @keyframes coach-say { 0% { opacity: 0; transform: translate(-50%, 6px) scale(.8); } 15% { opacity: 1; transform: translate(-50%, -6px) scale(1); } 85% { opacity: 1; transform: translate(-50%, -10px); } 100% { opacity: 0; transform: translate(-50%, -14px); } }
+        .coach-say { animation: coach-say 1300ms ease-out forwards; }
+        @media (prefers-reduced-motion: reduce) { .coach-swap, .coach-angry, .coach-anger-mark, .coach-float, .coach-poke, .coach-say, .coach-live:hover > span:first-child { animation: none; } }
       `}</style>
     </div>
   );

@@ -355,6 +355,7 @@ export function PlayVsComputer({ settings, onAnalyze }: { settings: Settings; on
       atFinalPosition={turn === 'over' && !viewing}
       whiteName={playerColor === 'w' ? 'You' : 'Computer'}
       blackName={playerColor === 'b' ? 'You' : 'Computer'}
+      enabled={settings.endAnimations !== false}
     >
       {(boardFen, effectPlaying) => (
         <ChessBoard

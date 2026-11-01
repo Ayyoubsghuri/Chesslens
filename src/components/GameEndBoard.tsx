@@ -552,11 +552,13 @@ interface GameEndBoardProps {
   /** Names used in the announcement ("Ayyoub resigned"). Default to White / Black. */
   whiteName?: string;
   blackName?: string;
+  /** Settings switch: false = no announcement and no end-of-game animation. Default true. */
+  enabled?: boolean;
   /** Render the real board. `playing` is true while an effect is running (disable dragging then). */
   children: (boardFen: string, playing: boolean) => ReactNode;
 }
 
-export function GameEndBoard({ fen, orientation, size, end, atFinalPosition, whiteName, blackName, children }: GameEndBoardProps) {
+export function GameEndBoard({ fen, orientation, size, end, atFinalPosition, whiteName, blackName, enabled = true, children }: GameEndBoardProps) {
   // Checkmate has no sprite animation here (the board plays its own), but it still gets the announcement.
   const mate = useMemo(() => {
     if (end) return null;
@@ -567,7 +569,7 @@ export function GameEndBoard({ fen, orientation, size, end, atFinalPosition, whi
       return null;
     }
   }, [fen, end]);
-  const active = (!!end || !!mate) && atFinalPosition;
+  const active = enabled && (!!end || !!mate) && atFinalPosition;
   const [announced, setAnnounced] = useState(false);
   const [run, setRun] = useState(0);
   const [dismissed, setDismissed] = useState(false);
@@ -699,6 +701,25 @@ export function GameEndBoard({ fen, orientation, size, end, atFinalPosition, whi
     return () => ids.forEach((id) => window.clearTimeout(id));
   }, [animating, kind, run]);
 
+  // Animations off: mark the kings instead (crown on the winner, red badge on the loser, "=" on a draw).
+  const badges = useMemo(() => {
+    if (enabled || !atFinalPosition || (!end && !mate)) return [];
+    const ks = parseBoard(fen, orientation);
+    const wk = ks.find((p) => p.ch === 'K');
+    const bk = ks.find((p) => p.ch === 'k');
+    if (!wk || !bk) return [];
+    const k = end?.kind;
+    if (k === 'draw' || k === 'stalemate') {
+      return [{ p: wk, t: 'draw' as const }, { p: bk, t: 'draw' as const }];
+    }
+    const loser = (end?.loser ?? mate?.loser) as 'w' | 'b';
+    const lt = (k ?? 'mate') as 'resign' | 'timeout' | 'abandon' | 'mate';
+    return [
+      { p: loser === 'w' ? bk : wk, t: 'win' as const },
+      { p: loser === 'w' ? wk : bk, t: lt },
+    ];
+  }, [enabled, atFinalPosition, end, mate, fen, orientation]);
+
   const gray = animating && kind === 'timeout' && phase !== 'sleep';
 
   return (
@@ -718,6 +739,28 @@ export function GameEndBoard({ fen, orientation, size, end, atFinalPosition, whi
           {children(boardFen, playing)}
         </BoardBoundary>
       </div>
+
+      {badges.length > 0 && (
+        <svg viewBox="0 0 800 800" aria-hidden className="pointer-events-none absolute inset-0 z-10 h-full w-full" style={{ overflow: 'visible' }}>
+          {badges.map((b, i) => {
+            const cx = b.p.col * 100 + 78, cy = b.p.row * 100 + 22;
+            const fill = b.t === 'win' ? '#81b64c' : b.t === 'draw' ? '#8b8987' : '#e03a3a';
+            const ink = { stroke: '#fff', strokeWidth: 2.6, strokeLinecap: 'round' as const, strokeLinejoin: 'round' as const, fill: 'none' };
+            return (
+              <g key={i} transform={`translate(${cx} ${cy})`}>
+                <circle r={23} fill={fill} stroke="rgba(0,0,0,0.25)" strokeWidth={1.5} />
+                <g transform="scale(0.95)">
+                  {b.t === 'win' && <path d="M-11 7 L-11 -5 L-5 0 L0 -8 L5 0 L11 -5 L11 7 Z" fill="#fff" />}
+                  {b.t === 'draw' && <><path d="M-9 -4 H9" {...ink} /><path d="M-9 4 H9" {...ink} /></>}
+                  {b.t === 'mate' && <><path d="M-4 -9 L-6 9 M5 -9 L3 9 M-10 -3 H10 M-10 4 H10" {...ink} /></>}
+                  {(b.t === 'resign' || b.t === 'abandon') && <><path d="M-7 -10 V10" {...ink} /><path d="M-7 -9 L9 -5 L-7 0 Z" fill="#fff" stroke="#fff" strokeWidth={1.5} strokeLinejoin="round" /></>}
+                  {b.t === 'timeout' && <><circle r={9} {...ink} /><path d="M0 -5 V0 L4 3" {...ink} /></>}
+                </g>
+              </g>
+            );
+          })}
+        </svg>
+      )}
 
       {animating && end && (
         <svg

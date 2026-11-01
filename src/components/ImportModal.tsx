@@ -107,8 +107,9 @@ export function ImportModal({ onClose, onImport }: ImportModalProps) {
   }
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm animate-fade-in p-4" onClick={onClose}>
-      <div className="card w-full max-w-2xl max-h-[85vh] overflow-hidden animate-slide-up" onClick={(e) => e.stopPropagation()}>
+    <div className="fixed inset-0 z-[60] flex items-end sm:items-center justify-center bg-black/60 backdrop-blur-sm animate-fade-in sm:p-4" onClick={onClose}>
+      <div className="card w-full max-w-2xl max-h-[92vh] sm:max-h-[85vh] overflow-hidden rounded-b-none sm:rounded-b-2xl rounded-t-3xl sm:rounded-2xl sheet-up pb-[env(safe-area-inset-bottom)] sm:pb-0" onClick={(e) => e.stopPropagation()}>
+        <div className="sheet-handle sm:hidden" />
         <div className="flex items-center justify-between border-b border-ink-700 px-5 py-4">
           <h2 className="text-lg font-semibold">Import Games</h2>
           <button onClick={onClose} className="btn-ghost p-1.5 rounded-lg">

@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import { Chess } from 'chess.js';
 import { ImportModal } from '@/components/ImportModal';
 import { SettingsModal } from '@/components/SettingsModal';
@@ -10,6 +10,7 @@ import { ChessStory } from '@/components/ChessStory';
 import { PlayVsComputer, type PlayedGame } from '@/components/PlayVsComputer';
 import { OpeningsTrainer } from '@/components/OpeningsTrainer';
 import { registerAnalyzeHandler } from '@/components/MastersGames';
+import { MobileHome } from '@/components/MobileHome';
 import { MissionBanner } from '@/components/MissionBanner';
 import type { Mission } from '@/lib/mission';
 import { LearnPath, type LearnNavigate } from '@/components/LearnPath';
@@ -20,7 +21,8 @@ import { logEvent } from '@/lib/activity';
 import { getUsername, setUsername, guessUsername } from '@/lib/player';
 import { loadGames, saveGames, loadAnalyses, saveAnalysis, deleteAnalysis, loadSettings, saveSettings } from '@/lib/storage';
 import type { ImportedGame, AnalysisResult, Settings as SettingsType, View } from '@/lib/types';
-import { Loader2, Plus, Settings as SettingsIcon, BarChart3, GraduationCap, Target, Crown as ChessIcon, Upload, Swords, Home, Trash2, ChevronLeft, ChevronRight, Search, X, BookOpen } from 'lucide-react';
+import { onBackButton } from './native';
+import { Loader2, Plus, Settings as SettingsIcon, BarChart3, GraduationCap, Target, Crown as ChessIcon, Upload, Swords, Home, Trash2, ChevronLeft, ChevronRight, Search, X, BookOpen, MoreHorizontal } from 'lucide-react';
 
 function App() {
   const [games, setGames] = useState<ImportedGame[]>([]);
@@ -198,22 +200,63 @@ function App() {
 
   const currentMove = selectedAnalysis?.moves[currentMoveIndex] || null;
 
+  // Android back button: close a dialog, then leave the game, then go Home, and only then exit.
+  const backState = useRef({ showImport, showSettings, selectedGameId, page, missionCtx });
+  backState.current = { showImport, showSettings, selectedGameId, page, missionCtx };
+  useEffect(() => onBackButton(() => {
+    const b = backState.current;
+    if (b.showSettings) { setShowSettings(false); return true; }
+    if (b.showImport) { setShowImport(false); return true; }
+    if (b.page === 'home' && b.selectedGameId) { setSelectedGameId(null); return true; }
+    if (b.page !== 'home') { setPage('home'); setMissionCtx(null); return true; }
+    return false;
+  }), []);
+
+  const PAGE_TITLES: Record<string, string> = { learn: 'Learn Path', openings: 'Openings', puzzles: 'Puzzles', play: 'Play vs Computer' };
+  const canGoBack = page !== 'home' || !!selectedGame;
+  const goBack = () => {
+    if (page === 'home' && selectedGameId) setSelectedGameId(null);
+    else if (page !== 'home') { setPage('home'); setMissionCtx(null); }
+  };
+  const barTitle = page !== 'home' ? PAGE_TITLES[page] ?? 'ChessLens' : selectedGame ? `${selectedGame.white} vs ${selectedGame.black}` : 'ChessLens';
+  const barSub = page === 'home' && selectedGame
+    ? [selectedGame.result, selectedGame.eco, selectedGame.timeControl].filter(Boolean).join(' · ')
+    : page === 'home' ? 'Analyze. Learn. Improve.' : '';
+
   return (
     <div className="min-h-screen flex flex-col">
-      <header className={`border-b border-ink-800 bg-ink-900/80 backdrop-blur-md ${inGame ? 'lg:sticky' : 'sticky'} top-0 z-40`}>
-        <div className="max-w-7xl mx-auto px-4 py-3 flex flex-wrap items-center justify-between gap-x-4 gap-y-2">
+      {/* Phone: app bar (back arrow + screen title + settings). Replaces the website header. */}
+      <header className="appbar safe-top sm:hidden">
+        <div className="flex items-center h-12 px-2 gap-1">
+          {canGoBack ? (
+            <button onClick={goBack} className="appbar-btn" aria-label="Back"><ChevronLeft size={26} /></button>
+          ) : (
+            <div className="w-9 h-9 mx-1 rounded-xl bg-gradient-to-br from-brand-400 to-brand-600 flex items-center justify-center shadow-lg shrink-0">
+              <ChessIcon size={19} className="text-white" />
+            </div>
+          )}
+          <div className="flex-1 min-w-0 px-1">
+            <h1 className="truncate !text-[1.2rem] leading-tight">{barTitle}</h1>
+            {barSub && <p className="truncate text-[11px] text-ink-400 -mt-0.5">{barSub}</p>}
+          </div>
+          <button onClick={() => setShowSettings(true)} className="appbar-btn" aria-label="Settings"><SettingsIcon size={21} /></button>
+        </div>
+      </header>
+
+      <header className={`hidden sm:block border-b border-ink-800 bg-ink-900/80 backdrop-blur-md ${inGame ? 'lg:sticky' : 'sticky'} top-0 z-40`}>
+        <div className="max-w-7xl mx-auto px-4 py-2.5 sm:py-3 flex items-center justify-between gap-x-4">
           <button onClick={() => { setPage('home'); }} className="flex items-center gap-2.5 text-left" title="Home">
             <div className="w-9 h-9 rounded-lg bg-gradient-to-br from-brand-400 to-brand-600 flex items-center justify-center shadow-lg">
               <ChessIcon size={20} className="text-white" />
             </div>
             <div>
               <h1 className="text-lg font-bold tracking-tight">ChessLens</h1>
-              <p className={`text-xs text-ink-400 -mt-0.5 ${inGame ? 'hidden sm:block' : ''}`}>Analyze. Learn. Improve.</p>
+              <p className="hidden sm:block text-xs text-ink-400 -mt-0.5">Analyze. Learn. Improve.</p>
             </div>
           </button>
 
           <nav
-            className={`${inGame ? 'hidden sm:flex' : 'flex'} items-center gap-1 order-last sm:order-none w-full sm:w-auto overflow-x-auto`}
+            className="flex items-center gap-1 sm:w-auto overflow-x-auto"
             aria-label="Main"
           >
             <NavTab active={page === 'home'} onClick={() => setPage('home')} icon={Home} label="Home" />
@@ -234,7 +277,7 @@ function App() {
         </div>
       </header>
 
-      <main className="flex-1 max-w-7xl mx-auto w-full px-4 py-6">
+      <main key={`${page}-${selectedGameId ?? ""}`} className="page-enter flex-1 max-w-7xl mx-auto w-full px-4 pt-4 sm:pt-6 pb-[calc(env(safe-area-inset-bottom)+5rem)] sm:pb-6">
         {missionCtx && page === missionCtx.page && (
           <MissionBanner
             mission={missionCtx.mission}
@@ -251,9 +294,10 @@ function App() {
         ) : page === 'puzzles' ? (
           <PuzzleTrainer initialCategory={puzzleTheme} />
         ) : !selectedGame ? (
-          <>
-          <ChessStory games={games} />
-          <div className={`flex flex-col items-center justify-center text-center ${games.length === 0 ? 'min-h-[50vh]' : 'min-h-[30vh]'}`}>
+          <div className="flex flex-col">
+          <MobileHome onImport={() => setShowImport(true)} onGo={(t) => { setPuzzleTheme(undefined); setMissionCtx(null); setPage(t); }} />
+          <div className="order-2 sm:order-1"><ChessStory games={games} /></div>
+          <div className={`order-1 sm:order-2 ${games.length === 0 ? 'hidden sm:flex' : 'flex'} flex-col items-center justify-center text-center ${games.length === 0 ? 'sm:min-h-[50vh]' : 'sm:min-h-[30vh]'}`}>
             {games.length === 0 ? (
               <>
                 <div className="w-20 h-20 rounded-2xl bg-gradient-to-br from-brand-400 to-brand-600 flex items-center justify-center mb-6 shadow-xl">
@@ -271,12 +315,12 @@ function App() {
               <GameLibrary games={games} analyses={analyses} onSelect={handleSelectGame} onDelete={handleDeleteGame} onDeleteMany={handleDeleteMany} />
             )}
           </div>
-          </>
+          </div>
         ) : (
           <>
-            <div className="mb-6">
-              <div className="flex flex-wrap items-center justify-between gap-3 mb-4">
-                <div>
+            <div className={`${selectedAnalysis && view === 'analysis' ? 'mb-0' : 'mb-4'} sm:mb-6`}>
+              <div className={`${selectedAnalysis ? 'hidden sm:flex' : 'flex'} flex-wrap items-center justify-between gap-3 mb-3 sm:mb-4`}>
+                <div className="hidden sm:block">
                   <button onClick={() => setSelectedGameId(null)} className="text-xs text-ink-400 hover:text-ink-200 mb-1 flex items-center gap-1">
                     ← Back to games
                   </button>
@@ -299,9 +343,9 @@ function App() {
                   </div>
                 </div>
 
-                <div className="flex items-center gap-2">
+                <div className="flex items-center gap-2 w-full sm:w-auto">
                   {!selectedAnalysis ? (
-                    <button onClick={handleAnalyze} disabled={analyzing} className="btn-primary">
+                    <button onClick={handleAnalyze} disabled={analyzing} className="btn-primary w-full sm:w-auto h-12 sm:h-auto text-base sm:text-sm">
                       {analyzing ? (
                         <>
                           <Loader2 size={16} className="animate-spin" />
@@ -314,7 +358,7 @@ function App() {
                       )}
                     </button>
                   ) : (
-                    <button onClick={handleAnalyze} disabled={analyzing} className="btn-secondary text-sm">
+                    <button onClick={handleAnalyze} disabled={analyzing} className="btn-secondary text-sm ml-auto">
                       {analyzing ? <Loader2 size={14} className="animate-spin" /> : <BarChart3 size={14} />}
                       Re-analyze
                     </button>
@@ -334,7 +378,7 @@ function App() {
               )}
 
               {selectedAnalysis && (
-                <div className="flex gap-1 border-b border-ink-800">
+                <div className={`${view === 'analysis' ? 'hidden sm:flex' : 'flex'} gap-1 p-1 rounded-2xl bg-ink-800 sm:p-0 sm:rounded-none sm:bg-transparent sm:border-b sm:border-ink-800 [&>button]:flex-1 sm:[&>button]:flex-none`}>
                   <TabButton active={view === 'analysis'} onClick={() => setView('analysis')} icon={BarChart3} label="Analysis" />
                   <TabButton active={view === 'coach'} onClick={() => setView('coach')} icon={GraduationCap} label="Coach" />
                   <TabButton active={view === 'drills'} onClick={() => setView('drills')} icon={Target} label="Drills" />
@@ -343,7 +387,7 @@ function App() {
             </div>
 
             {!selectedAnalysis ? (
-              <div className="card p-12 text-center">
+              <div className="card p-8 sm:p-12 text-center">
                 <BarChart3 size={32} className="mx-auto mb-3 text-ink-500" />
                 <p className="text-ink-400 mb-1">No analysis yet.</p>
                 <p className="text-sm text-ink-500">Click "Analyze Game" to run the engine on every move.</p>
@@ -357,6 +401,9 @@ function App() {
                 advancedCoach={!!settings.advancedCoach}
                 coachVoice={!!settings.coachVoice}
                 coachVoiceName={settings.coachVoiceName}
+                endAnimations={settings.endAnimations !== false}
+                onViewChange={setView}
+                onReanalyze={handleAnalyze}
               />
             ) : view === 'coach' ? (
               <CoachPanel move={currentMove} settings={settings} moves={selectedAnalysis.moves} onNavigate={handleCoachNavigate} />
@@ -367,9 +414,32 @@ function App() {
         )}
       </main>
 
+      {page === 'home' && !selectedGame && games.length > 0 && (
+        <button onClick={() => setShowImport(true)} className="fab sm:hidden" aria-label="Import games"><Plus size={28} /></button>
+      )}
+
+      <nav className={`tabbar sm:hidden ${inGame && view === 'analysis' ? 'hidden' : ''}`} aria-label="Main">
+        <div className="flex">
+          <BottomTab active={page === 'home'} onClick={() => setPage('home')} icon={Home} label="Home" />
+          <BottomTab active={page === 'learn'} onClick={() => setPage('learn')} icon={GraduationCap} label="Learn" />
+          <BottomTab active={page === 'openings'} onClick={() => setPage('openings')} icon={BookOpen} label="Openings" />
+          <BottomTab active={page === 'puzzles'} onClick={() => setPage('puzzles')} icon={Target} label="Puzzles" />
+          <BottomTab active={page === 'play'} onClick={() => setPage('play')} icon={Swords} label="Play" />
+        </div>
+      </nav>
+
       {showImport && <ImportModal onClose={() => setShowImport(false)} onImport={handleImport} />}
       {showSettings && <SettingsModal settings={settings} onSave={handleSaveSettings} onClose={() => setShowSettings(false)} />}
     </div>
+  );
+}
+
+function BottomTab({ active, onClick, icon: Icon, label }: { active: boolean; onClick: () => void; icon: any; label: string }) {
+  return (
+    <button onClick={onClick} aria-current={active ? 'page' : undefined} className="tabbar-item">
+      <Icon size={22} strokeWidth={active ? 2.4 : 1.9} />
+      {label}
+    </button>
   );
 }
 
@@ -389,7 +459,7 @@ function TabButton({ active, onClick, icon: Icon, label }: { active: boolean; on
   return (
     <button
       onClick={onClick}
-      className={`flex items-center gap-2 px-4 py-2.5 text-sm font-medium border-b-2 transition-colors ${active ? 'border-brand-400 text-brand-300' : 'border-transparent text-ink-400 hover:text-ink-200'}`}
+      className={`flex items-center justify-center gap-2 px-4 py-2.5 text-sm font-medium transition-colors rounded-xl sm:rounded-none sm:border-b-2 ${active ? 'bg-ink-600 text-brand-300 sm:bg-transparent sm:border-brand-400' : 'text-ink-400 sm:border-transparent hover:text-ink-200'}`}
     >
       <Icon size={16} /> {label}
     </button>
@@ -401,6 +471,7 @@ const PAGE_SIZE = 10;
 function GameLibrary({ games, analyses, onSelect, onDelete, onDeleteMany }: { games: ImportedGame[]; analyses: Record<string, AnalysisResult>; onSelect: (id: string) => void; onDelete: (id: string) => void; onDeleteMany: (ids: string[], label: string) => void }) {
   const [pageNum, setPageNum] = useState(0);
   const [query, setQuery] = useState('');
+  const [tools, setTools] = useState(false);
   const q = query.trim().toLowerCase();
   const filtered = q
     ? games.filter(g => [g.white, g.black, g.date, g.eco, g.result, g.timeControl].some(v => String(v ?? '').toLowerCase().includes(q)))
@@ -430,6 +501,8 @@ function GameLibrary({ games, analyses, onSelect, onDelete, onDeleteMany }: { ga
             </button>
           )}
         </div>
+        <button onClick={() => setTools(t => !t)} className="btn-ghost p-2 sm:hidden" aria-label="More" aria-expanded={tools}><MoreHorizontal size={20} /></button>
+        <div className={`${tools ? 'flex' : 'hidden'} sm:contents items-center gap-2 w-full`}>
         <button
           onClick={() => onDeleteMany(analyzedIds, 'all analyzed games')}
           disabled={analyzedIds.length === 0}
@@ -443,6 +516,7 @@ function GameLibrary({ games, analyses, onSelect, onDelete, onDeleteMany }: { ga
         >
           <Trash2 size={13} /> Delete all
         </button>
+        </div>
       </div>
       {filtered.length === 0 && <p className="text-sm text-ink-500 text-left py-6">No games match "{query}".</p>}
       <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
@@ -452,21 +526,26 @@ function GameLibrary({ games, analyses, onSelect, onDelete, onDeleteMany }: { ga
             <div key={g.id} className="relative group">
               <button
                 onClick={() => onSelect(g.id)}
-                className="card p-4 pr-11 text-left hover:border-brand-400/40 transition-colors w-full"
+                className="card p-3.5 pr-12 text-left hover:border-brand-400/40 active:bg-ink-700 transition-colors w-full flex items-center gap-3"
               >
-                <div className="flex items-center justify-between mb-1">
-                  <span className="font-medium text-sm">{g.white} vs {g.black}</span>
-                  <span className="text-xs text-ink-400">{getGameOutcome(g).short}</span>
+                <div className={`w-11 h-11 shrink-0 rounded-xl flex items-center justify-center ${analysis ? 'bg-brand-500/20 text-brand-300' : 'bg-ink-700 text-ink-400'}`}>
+                  {analysis ? <BarChart3 size={19} /> : <ChessIcon size={19} />}
                 </div>
-                <div className="flex items-center gap-2 text-xs text-ink-400">
-                  {g.date && <span>{g.date}</span>}
-                  {g.eco && <span>· {g.eco}</span>}
-                  {analysis && <span className="chip bg-brand-500/20 text-brand-300">Analyzed</span>}
+                <div className="min-w-0 flex-1">
+                  <div className="flex items-center justify-between gap-2 mb-0.5">
+                    <span className="font-medium text-sm truncate">{g.white} vs {g.black}</span>
+                    <span className="text-xs text-ink-400 shrink-0">{getGameOutcome(g).short}</span>
+                  </div>
+                  <div className="flex items-center gap-2 text-xs text-ink-400 whitespace-nowrap overflow-hidden">
+                    {g.date && <span>{g.date}</span>}
+                    {g.eco && <span>· {g.eco}</span>}
+                    {analysis && <span className="chip bg-brand-500/20 text-brand-300 !py-0.5">Analyzed</span>}
+                  </div>
                 </div>
               </button>
               <button
                 onClick={() => onDelete(g.id)}
-                className="absolute right-2 bottom-2 p-1.5 rounded-md text-ink-500 hover:text-red-300 hover:bg-red-500/10 transition-colors"
+                className="absolute right-1.5 top-1/2 -translate-y-1/2 p-2 rounded-md text-ink-500 hover:text-red-300 hover:bg-red-500/10 transition-colors"
                 title="Delete game"
                 aria-label={`Delete ${g.white} vs ${g.black}`}
               >

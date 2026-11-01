@@ -1412,16 +1412,16 @@ export function ChessStory({ games: imported }: { games: ImportedGame[] }) {
   }
 
   return (
-    <section className="mb-10 w-full" aria-labelledby="story-heading">
+    <section className="mt-8 mb-4 sm:mt-0 sm:mb-10 w-full" aria-labelledby="story-heading">
       <div className="mb-5">
         <h2 id="story-heading" className="text-xl font-bold">Your chess, as a story</h2>
-        <p className="text-sm text-ink-400 mt-0.5">
+        <p className="hidden sm:block text-sm text-ink-400 mt-0.5">
           Enter any Chess.com or Lichess username to get a full-screen story from up to 1,000 recent games: openings, what checkmated you, what opponents play, their weaknesses by rating and more.
         </p>
       </div>
 
       <form onSubmit={generate} className="flex flex-wrap items-center gap-2 mb-2">
-        <div className="flex gap-1 p-1 rounded-lg bg-ink-800/70 text-sm">
+        <div className="flex gap-1 p-1 rounded-lg bg-ink-800/70 text-sm w-full sm:w-auto [&>button]:flex-1 sm:[&>button]:flex-none">
           {(['chesscom', 'lichess'] as const).map((p) => (
             <button
               type="button"
@@ -1433,7 +1433,7 @@ export function ChessStory({ games: imported }: { games: ImportedGame[] }) {
             </button>
           ))}
         </div>
-        <div className="relative flex-1 min-w-[12rem] max-w-sm">
+        <div className="relative w-full sm:flex-1 sm:min-w-[12rem] sm:max-w-sm">
           <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-ink-500" />
           <input
             value={user}
@@ -1445,7 +1445,7 @@ export function ChessStory({ games: imported }: { games: ImportedGame[] }) {
             className="w-full rounded-lg bg-ink-800 border border-ink-700 text-ink-100 text-sm pl-8 pr-3 py-2 placeholder:text-ink-500"
           />
         </div>
-        <button type="submit" disabled={loading || !user.trim()} className="btn-primary text-sm">
+        <button type="submit" disabled={loading || !user.trim()} className="btn-primary text-sm w-full sm:w-auto">
           {loading ? <Loader2 size={14} className="animate-spin" /> : <Sparkles size={14} />} Tell my chess story
         </button>
         {cards.length > 1 && (

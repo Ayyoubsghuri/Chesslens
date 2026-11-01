@@ -117,6 +117,8 @@ export interface Settings {
   coachVoice?: boolean;
   /** Voice used for the spoken explanation (e.g. 'Joanna'). */
   coachVoiceName?: string;
+  /** End-of-game announcement + animations (resign, timeout, draw, checkmate...). On unless set to false. */
+  endAnimations?: boolean;
 }
 
 export type View = 'analysis' | 'coach' | 'drills';

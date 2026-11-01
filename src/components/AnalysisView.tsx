@@ -25,7 +25,7 @@ import type { AnalysisResult, AnalyzedMove, MoveQuality, PieceColor } from '@/li
 import {
   ChevronLeft, ChevronRight, AlertTriangle, Target, TrendingUp, Award,
   CheckCircle2, ThumbsUp, Minus, BookOpen, AlertCircle, XCircle, RotateCcw,
-  Info, X, Star, HelpCircle, Sparkles, Zap, Maximize2, ChevronsLeft, ChevronsRight, Play, Pause, Loader2,
+  Info, X, Star, HelpCircle, Sparkles, Zap, Maximize2, ChevronsLeft, ChevronsRight, Play, Pause, Loader2, SlidersHorizontal, Layers, GraduationCap, RefreshCw,
 } from 'lucide-react';
 
 const QUALITY_META: Record<MoveQuality, { color: string; bg: string; icon: any; label: string }> = {
@@ -513,9 +513,16 @@ interface AnalysisViewProps {
   /** Settings → Speak explanations (Puter.js TTS). */
   coachVoice?: boolean;
   coachVoiceName?: string;
+  /** Settings switch for the end-of-game animations (default on). */
+  endAnimations?: boolean;
+  /** Phone layout: lets the Options sheet switch the review to the Coach / Drills tab or re-run the analysis. */
+  onViewChange?: (v: 'analysis' | 'coach' | 'drills') => void;
+  onReanalyze?: () => void;
 }
 
-export function AnalysisView({ analysis, currentIndex, onIndexChange, depth = 12, advancedCoach = false, coachVoice = false, coachVoiceName }: AnalysisViewProps) {
+export function AnalysisView({ analysis, currentIndex, onIndexChange, depth = 12, advancedCoach = false, coachVoice = false, coachVoiceName, endAnimations = true, onViewChange, onReanalyze }: AnalysisViewProps) {
+  const [optionsOpen, setOptionsOpen] = useState(false);
+  const coachCardRef = useRef<HTMLDivElement>(null);
   const moves = analysis.moves;
   const move = moves[currentIndex] || null;
   const displayQuality: MoveQuality | null = move ? correctedQuality(move) : null;
@@ -990,21 +997,18 @@ export function AnalysisView({ analysis, currentIndex, onIndexChange, depth = 12
     } catch {}
   }
 
-  /** "Best move": the engine's best move from the position BEFORE this move, followed by its continuation, one ply per second. */
-  function playBestLine() {
+  /** "Best move": shows just the engine's best move from the position BEFORE this move (arrow + preview). Tap again to hide it. */
+  function showBestMove() {
     if (!move) return;
-    const line = (move.evalBefore?.continuation ?? '').split(/\s+/).filter(Boolean).slice(0, 10);
-    if (line.length < 2) { handleBestMoveClick(move.evalBefore?.bestMove || ''); return; }
+    if (bestPreview?.label === 'Best move') { stopLine(); setBestPreview(null); return; }
+    const uci = engineBestUci;
+    if (!uci || uci.length < 4) return;
+    stopLine();
+    setPlaying(false);
     try {
       const chess = new Chess(move.fenBefore);
-      const frames: { fen: string; from: Square; to: Square; san: string; uci: string }[] = [];
-      for (const uci of line) {
-        try {
-          const r = chess.move({ from: uci.slice(0, 2), to: uci.slice(2, 4), promotion: uci.length > 4 ? uci[4] : undefined });
-          frames.push({ fen: chess.fen(), from: r.from as Square, to: r.to as Square, san: r.san, uci: r.from + r.to + (r.promotion ?? '') });
-        } catch { break; }
-      }
-      playFrames(frames, 'Best move');
+      const r = chess.move({ from: uci.slice(0, 2), to: uci.slice(2, 4), promotion: uci.length > 4 ? uci[4] : undefined });
+      setBestPreview({ fen: chess.fen(), from: r.from as Square, to: r.to as Square, san: r.san, uci, label: 'Best move' });
     } catch {}
   }
 
@@ -1107,6 +1111,7 @@ export function AnalysisView({ analysis, currentIndex, onIndexChange, depth = 12
       atFinalPosition={atFinalPosition}
       whiteName={analysis.game?.white}
       blackName={analysis.game?.black}
+      enabled={endAnimations}
     >
       {(boardFen, effectPlaying) => (
         <div className="relative">
@@ -1246,7 +1251,7 @@ export function AnalysisView({ analysis, currentIndex, onIndexChange, depth = 12
                   </span>
                 ) : (
                   <button
-                    onClick={() => playBestLine()}
+                    onClick={() => showBestMove()}
                     className="font-mono text-brand-300 hover:text-brand-200 hover:underline decoration-dotted underline-offset-2 cursor-pointer"
                     title="Click to preview this move on the board"
                   >
@@ -1664,7 +1669,7 @@ export function AnalysisView({ analysis, currentIndex, onIndexChange, depth = 12
              <div className="shrink-0 p-3 pt-0 space-y-3">
               <div className="grid grid-cols-2 gap-2">
                 <button
-                  onClick={() => move && playBestLine()}
+                  onClick={() => move && showBestMove()}
                   disabled={!move || !engineBestUci}
                   className="btn-secondary justify-center py-2.5 text-sm disabled:opacity-40"
                   title="Show the best move on the board, then how the game continues"
@@ -1711,9 +1716,12 @@ export function AnalysisView({ analysis, currentIndex, onIndexChange, depth = 12
       className="grid grid-cols-1 lg:grid-cols-[minmax(0,580px)_1fr_380px] gap-4 sm:gap-6"
     >
       <div className="flex flex-col gap-4 min-w-0">
+        {/* Phone: move strip (1. e4 e6 2. Nf3 ...) like a chess app */}
+        <MobileMoveStrip moves={moves} currentIndex={currentIndex} onSelect={onIndexChange} />
+
         {/* Mobile: coach bubble pinned at the top so it stays visible together with the board */}
         {!isExploring && move && moveMeta && (
-          <div className="lg:hidden sticky top-0 z-30 -mx-4 px-4 pb-2 pt-1 bg-ink-900">
+          <div className="lg:hidden sticky top-[calc(var(--appbar-h)+var(--strip-h))] z-30 -mx-4 px-4 pb-2 pt-1 bg-ink-900">
             <CoachBubble
               compact
               bubbleOnly
@@ -1749,7 +1757,7 @@ export function AnalysisView({ analysis, currentIndex, onIndexChange, depth = 12
                 >
                   <Maximize2 size={14} />
                 </button>
-                <button onClick={handleFlip} className="btn-secondary px-2.5 py-1.5" title="Flip board">
+                <button onClick={handleFlip} className="btn-secondary px-2.5 py-1.5 hidden sm:inline-flex" title="Flip board">
                   <RotateCcw size={14} />
                 </button>
               </div>
@@ -1758,7 +1766,7 @@ export function AnalysisView({ analysis, currentIndex, onIndexChange, depth = 12
         </div>
 
         {/* Navigation: big touch targets on phones, compact from sm: up */}
-        <div className="grid grid-cols-[1fr_1fr_auto_1fr_1fr] items-center gap-2 sm:flex sm:justify-center">
+        <div className="hidden sm:flex sm:justify-center items-center gap-2">
           <button
             onClick={() => onIndexChange(0)}
             disabled={currentIndex === 0}
@@ -1800,7 +1808,7 @@ export function AnalysisView({ analysis, currentIndex, onIndexChange, depth = 12
 
 
         {/* Mobile: coach card right below the navigation buttons (bubble itself is pinned at the top) */}
-        <div className="lg:hidden">
+        <div className="lg:hidden scroll-mt-[calc(var(--appbar-h)+var(--strip-h)+5rem)]" ref={coachCardRef}>
         {isExploring ? (
           <FreeMoveReviewCard review={exploreReview} />
         ) : move && moveMeta && (
@@ -1828,7 +1836,7 @@ export function AnalysisView({ analysis, currentIndex, onIndexChange, depth = 12
             {(displayQuality === 'brilliant' || displayQuality === 'great') && <BrilliantLineButton onClick={playBrilliantLine} />}
             <div className="grid grid-cols-2 gap-px bg-ink-700/50 border-t border-ink-700/50">
               <button
-                onClick={() => playBestLine()}
+                onClick={() => showBestMove()}
                 disabled={!engineBestUci}
                 title={engineBestUci ? "Show the best move on the board, then how the game continues" : 'No engine best move'}
                 className="flex items-center justify-center gap-2 py-2.5 text-sm text-ink-200 hover:bg-ink-700/50 transition-colors disabled:opacity-40 disabled:cursor-default"
@@ -1916,7 +1924,7 @@ export function AnalysisView({ analysis, currentIndex, onIndexChange, depth = 12
             {(displayQuality === 'brilliant' || displayQuality === 'great') && <BrilliantLineButton onClick={playBrilliantLine} />}
             <div className="grid grid-cols-2 gap-px bg-ink-700/50 border-t border-ink-700/50">
               <button
-                onClick={() => playBestLine()}
+                onClick={() => showBestMove()}
                 disabled={!engineBestUci}
                 title={engineBestUci ? "Show the best move on the board, then how the game continues" : 'No engine best move'}
                 className="flex items-center justify-center gap-2 py-2.5 text-sm text-ink-200 hover:bg-ink-700/50 transition-colors disabled:opacity-40 disabled:cursor-default"
@@ -1959,6 +1967,84 @@ export function AnalysisView({ analysis, currentIndex, onIndexChange, depth = 12
 
         {keyMomentsCard}
       </div>
+
+      {/* Phone: bottom toolbar (Options · Coach · Back · Forward) */}
+      <div className="gtoolbar sm:hidden">
+        <button className="gtool" onClick={() => setOptionsOpen(true)} aria-label="Options"><SlidersHorizontal size={22} /><span>Options</span></button>
+        <button
+          className="gtool"
+          aria-label="Coach explanation"
+          onClick={() => {
+            const el = coachCardRef.current;
+            if (!el) return;
+            const near = el.getBoundingClientRect().top < window.innerHeight * 0.75;
+            if (near) window.scrollTo({ top: 0, behavior: 'smooth' }); else el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+          }}
+        ><Sparkles size={22} /><span>Coach</span></button>
+        <button
+          className="gtool-main"
+          aria-label="Show the best move"
+          disabled={!engineBestUci}
+          onClick={() => showBestMove()}
+        ><Star size={26} /><span>Best move</span></button>
+        <button className="gtool" onClick={() => onIndexChange(Math.max(0, currentIndex - 1))} disabled={currentIndex === 0} aria-label="Previous move"><ChevronLeft size={26} /><span>Back</span></button>
+        <button className="gtool" onClick={() => onIndexChange(Math.min(moves.length - 1, currentIndex + 1))} disabled={currentIndex >= moves.length - 1} aria-label="Next move"><ChevronRight size={26} /><span>Forward</span></button>
+      </div>
+
+      {optionsOpen && (
+        <div className="fixed inset-0 z-[60] flex items-end bg-black/60 backdrop-blur-sm animate-fade-in sm:hidden" onClick={() => setOptionsOpen(false)}>
+          <div className="card w-full rounded-b-none rounded-t-3xl sheet-up pb-[calc(env(safe-area-inset-bottom)+1rem)]" onClick={(e) => e.stopPropagation()}>
+            <div className="sheet-handle" />
+            <div className="grid grid-cols-3 gap-2 p-4">
+              <SheetTile icon={RotateCcw} label="Flip board" onClick={() => { handleFlip(); setOptionsOpen(false); }} />
+              <SheetTile icon={Sparkles} label="Best move" disabled={!engineBestUci} onClick={() => { showBestMove(); setOptionsOpen(false); }} />
+              <SheetTile icon={Layers} label={coachMode === 'move' ? 'Whole game' : 'This move'} onClick={() => { setCoachMode(coachMode === 'move' ? 'game' : 'move'); setOptionsOpen(false); window.setTimeout(() => coachCardRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' }), 60); }} />
+              <SheetTile icon={GraduationCap} label="Coach tab" disabled={!onViewChange} onClick={() => { setOptionsOpen(false); onViewChange?.('coach'); }} />
+              <SheetTile icon={Target} label="Drills" disabled={!onViewChange} onClick={() => { setOptionsOpen(false); onViewChange?.('drills'); }} />
+              <SheetTile icon={RefreshCw} label="Re-analyze" disabled={!onReanalyze} onClick={() => { setOptionsOpen(false); onReanalyze?.(); }} />
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function SheetTile({ icon: Icon, label, onClick, disabled }: { icon: any; label: string; onClick: () => void; disabled?: boolean }) {
+  return (
+    <button onClick={onClick} disabled={disabled} className="flex flex-col items-center gap-2 rounded-2xl bg-ink-700/60 py-4 text-xs font-medium text-ink-100 active:bg-ink-600 disabled:opacity-40">
+      <Icon size={22} className="text-brand-400" />
+      {label}
+    </button>
+  );
+}
+
+/** Horizontal, scrolling move list for phones: "1. e4 e6 2. Nf3 Nc6 ...". The current move is highlighted and kept in view. */
+function MobileMoveStrip({ moves, currentIndex, onSelect }: { moves: AnalyzedMove[]; currentIndex: number; onSelect: (i: number) => void }) {
+  const box = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    const c = box.current;
+    const el = c?.querySelector<HTMLElement>('[data-current="true"]');
+    if (c && el) c.scrollTo({ left: el.offsetLeft - c.clientWidth / 2 + el.clientWidth / 2, behavior: 'smooth' });
+  }, [currentIndex]);
+  return (
+    <div
+      ref={box}
+      className="sm:hidden sticky top-[var(--appbar-h)] z-30 -mx-4 -mt-4 px-3 h-10 flex items-center gap-0.5 overflow-x-auto whitespace-nowrap bg-ink-950 border-b border-ink-800 no-scrollbar"
+      aria-label="Moves"
+    >
+      {moves.map((m, i) => (
+        <span key={i} className="flex items-center shrink-0">
+          {m.color === 'w' && <span className="px-1.5 text-xs text-ink-500 font-mono">{Math.floor(i / 2) + 1}.</span>}
+          <button
+            data-current={i === currentIndex}
+            onClick={() => onSelect(i)}
+            className={`px-2 py-1 rounded-md text-[15px] font-medium ${i === currentIndex ? 'bg-brand-500/25 text-brand-200' : 'text-ink-200 active:bg-ink-800'}`}
+          >
+            {m.san}
+          </button>
+        </span>
+      ))}
     </div>
   );
 }
@@ -2033,9 +2119,13 @@ function FreeMoveReviewCard({ review }: { review: ExploreReview | null }) {
 
 function PlayerBar({ name, color, fen }: { name: string; color: 'white' | 'black'; fen?: string }) {
   return (
-    <div className="flex items-center gap-2 px-3 lg:px-0.5">
-      <span className="w-2.5 h-2.5 rounded-full border border-ink-600 shrink-0" style={{ backgroundColor: color === 'white' ? '#f5ecd9' : '#16251f' }} />
-      <span className="text-sm font-medium text-ink-200 truncate">{name}</span>
+    <div className="flex items-center gap-2.5 sm:gap-2 px-3 py-1 sm:py-0 lg:px-0.5">
+      <span
+        className="sm:hidden w-9 h-9 rounded-lg flex items-center justify-center text-base font-bold shrink-0 border border-ink-600"
+        style={{ backgroundColor: color === 'white' ? '#f5ecd9' : '#16251f', color: color === 'white' ? '#16251f' : '#f5ecd9' }}
+      >{(name || '?').trim().charAt(0).toUpperCase()}</span>
+      <span className="hidden sm:inline-block w-2.5 h-2.5 rounded-full border border-ink-600 shrink-0" style={{ backgroundColor: color === 'white' ? '#f5ecd9' : '#16251f' }} />
+      <span className="text-[15px] sm:text-sm font-semibold sm:font-medium text-ink-100 sm:text-ink-200 truncate">{name}</span>
       {fen && <CapturedPieces fen={fen} color={color} />}
     </div>
   );
