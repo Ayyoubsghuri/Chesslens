@@ -1,4 +1,4 @@
-import { useMemo, useRef, useState, useEffect } from 'react';
+import { useMemo, useRef, useState, useEffect, type PointerEvent as ReactPointerEvent, type KeyboardEvent as ReactKeyboardEvent } from 'react';
 import { Chess, type Square } from 'chess.js';
 import { ChessBoard } from './ChessBoard';
 import { EvalBar } from './Evalbar';
@@ -502,6 +502,38 @@ async function fetchChessComRating(username: string, timeControl?: string | null
   }
 }
 
+/**
+ * Press-and-hold repeat for the Back / Forward buttons: one step on press, then it keeps stepping
+ * (slow at first, then faster) while the finger stays down. `step` returns false when it cannot go further.
+ */
+function useHoldRepeat(step: () => boolean) {
+  const stepRef = useRef(step);
+  stepRef.current = step;
+  const timer = useRef<number | undefined>(undefined);
+  const stop = () => { window.clearTimeout(timer.current); timer.current = undefined; };
+  useEffect(() => stop, []);
+  const schedule = (delay: number, next: number) => {
+    timer.current = window.setTimeout(() => {
+      if (!stepRef.current()) { stop(); return; }
+      schedule(next, Math.max(40, next * 0.9));
+    }, delay);
+  };
+  return {
+    onPointerDown: (e: ReactPointerEvent) => {
+      if (e.pointerType === 'mouse' && e.button !== 0) return;
+      stop();
+      if (!stepRef.current()) return;
+      schedule(380, 120);
+    },
+    onPointerUp: stop,
+    onPointerCancel: stop,
+    onPointerLeave: stop,
+    onContextMenu: (e: { preventDefault: () => void }) => e.preventDefault(),
+    onKeyDown: (e: ReactKeyboardEvent) => { if ((e.key === 'Enter' || e.key === ' ') && !e.repeat) { e.preventDefault(); stepRef.current(); } },
+    style: { touchAction: 'none' as const, WebkitTouchCallout: 'none' as const },
+  };
+}
+
 interface AnalysisViewProps {
   analysis: AnalysisResult;
   currentIndex: number;
@@ -522,6 +554,18 @@ interface AnalysisViewProps {
 
 export function AnalysisView({ analysis, currentIndex, onIndexChange, depth = 12, advancedCoach = false, coachVoice = false, coachVoiceName, endAnimations = true, onViewChange, onReanalyze }: AnalysisViewProps) {
   const [optionsOpen, setOptionsOpen] = useState(false);
+  // Newest index, updated immediately so fast repeated steps never use a stale value.
+  const idxRef = useRef(currentIndex);
+  idxRef.current = currentIndex;
+  const stepBy = (d: number) => () => {
+    const next = Math.max(0, Math.min(moves.length - 1, idxRef.current + d));
+    if (next === idxRef.current) return false;
+    idxRef.current = next;
+    onIndexChange(next);
+    return true;
+  };
+  const holdBack = useHoldRepeat(stepBy(-1));
+  const holdForward = useHoldRepeat(stepBy(1));
   const coachCardRef = useRef<HTMLDivElement>(null);
   const moves = analysis.moves;
   const move = moves[currentIndex] || null;
@@ -1987,8 +2031,8 @@ export function AnalysisView({ analysis, currentIndex, onIndexChange, depth = 12
           disabled={!engineBestUci}
           onClick={() => showBestMove()}
         ><Star size={26} /><span>Best move</span></button>
-        <button className="gtool" onClick={() => onIndexChange(Math.max(0, currentIndex - 1))} disabled={currentIndex === 0} aria-label="Previous move"><ChevronLeft size={26} /><span>Back</span></button>
-        <button className="gtool" onClick={() => onIndexChange(Math.min(moves.length - 1, currentIndex + 1))} disabled={currentIndex >= moves.length - 1} aria-label="Next move"><ChevronRight size={26} /><span>Forward</span></button>
+        <button className="gtool" {...holdBack} disabled={currentIndex === 0} aria-label="Previous move (hold to rewind)"><ChevronLeft size={26} /><span>Back</span></button>
+        <button className="gtool" {...holdForward} disabled={currentIndex >= moves.length - 1} aria-label="Next move (hold to fast-forward)"><ChevronRight size={26} /><span>Forward</span></button>
       </div>
 
       {optionsOpen && (
