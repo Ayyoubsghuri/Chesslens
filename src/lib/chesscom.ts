@@ -88,7 +88,10 @@ export function fetchChesscomAccuracy(game: ImportedGame): Promise<{ white: numb
       return null;
     })());
   }
-  return accCache.get(key)!;
+  const pending = accCache.get(key)!;
+  // Chess.com updates its archives with a delay: do not remember a "not found" answer, ask again next time.
+  pending.then((v) => { if (!v) accCache.delete(key); }).catch(() => accCache.delete(key));
+  return pending;
 }
 
 export async function getGamesForMonthRaw(archiveUrl: string): Promise<{ pgn: string; url: string }[]> {

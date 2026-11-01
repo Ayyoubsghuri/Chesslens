@@ -11,8 +11,11 @@ import { CapturedPieces } from './CapturedPieces';
 import { CoachSquares } from './CoachSquares';
 import { detectKnightFork } from '@/lib/knight-fork';
 import { formatEval, evalToPawns, analyzePosition } from '@/lib/engine';
-import { classifyMove, computeAccuracy } from '@/lib/analysis';
+import { classifyMove } from '@/lib/analysis';
 import { fetchChesscomAccuracy } from '@/lib/chesscom';
+import { addSample, loadModel } from '@/lib/accuracy-model';
+import { accuracyOf, phaseAccuracies, loadMethod, saveMethod, type AccuracyMethod } from '@/lib/game-phases';
+import { estimateGameRatings, browserRunner, type MaiaEstimate } from '@/lib/maia-elo';
 import { useElementSize } from '@/lib/useElementSize';
 import { getUsername, setUsername, youSide as sideOfUser } from '@/lib/player';
 import { offerCoachMove } from '@/lib/coach-bus';
@@ -22,7 +25,7 @@ import type { AnalysisResult, AnalyzedMove, MoveQuality, PieceColor } from '@/li
 import {
   ChevronLeft, ChevronRight, AlertTriangle, Target, TrendingUp, Award,
   CheckCircle2, ThumbsUp, Minus, BookOpen, AlertCircle, XCircle, RotateCcw,
-  Info, X, Star, HelpCircle, Sparkles, Zap, Maximize2, ChevronsLeft, ChevronsRight, Play, Pause,
+  Info, X, Star, HelpCircle, Sparkles, Zap, Maximize2, ChevronsLeft, ChevronsRight, Play, Pause, Loader2,
 } from 'lucide-react';
 
 const QUALITY_META: Record<MoveQuality, { color: string; bg: string; icon: any; label: string }> = {
@@ -798,18 +801,51 @@ export function AnalysisView({ analysis, currentIndex, onIndexChange, depth = 12
   const bottomColor: 'white' | 'black' = orientation === 'white' ? 'white' : 'black';
 
   // Eval-based accuracy (same method as the stored analysis): see computeAccuracy in lib/analysis.ts.
-  const realistic = useMemo(() => computeAccuracy(moves), [moves]);
+  // Bumped whenever the accuracy model learns from a new game, so the estimate is recomputed.
+  const [modelVersion, setModelVersion] = useState(0);
+  // Which formula: Chess.com-style (fitted on Chess.com reviews, self-calibrating) or Lichess (lila / NoRaincheck chess-accuracy).
+  const [accMethod, setAccMethodState] = useState<AccuracyMethod>(loadMethod);
+  const setAccMethod = (m: AccuracyMethod) => { setAccMethodState(m); saveMethod(m); };
+  const realistic = useMemo(() => accuracyOf(moves, accMethod), [moves, modelVersion, accMethod]); // eslint-disable-line react-hooks/exhaustive-deps
+  const phaseAcc = useMemo(() => phaseAccuracies(moves, accMethod), [moves, modelVersion, accMethod]); // eslint-disable-line react-hooks/exhaustive-deps
   // Games reviewed on Chess.com: show Chess.com's own accuracy, so the number is exactly the same as there.
-  const [officialAcc, setOfficialAcc] = useState<{ white: number; black: number } | null>(analysis.game?.chesscomAccuracy ?? null);
+  // It comes from the Chess.com API, or from the player typing it in. Either way the model also learns from it.
+  const manualKey = `chesslens.ccAcc.${analysis.game?.id ?? ''}`;
+  const readManual = (): { white: number; black: number } | null => {
+    try { const v = JSON.parse(localStorage.getItem(manualKey) ?? 'null'); return v && v.white > 0 && v.black > 0 ? v : null; } catch { return null; }
+  };
+  const [officialAcc, setOfficialAcc] = useState<{ white: number; black: number } | null>(analysis.game?.chesscomAccuracy ?? readManual());
+  const learnFrom = (acc: { white: number; black: number }) => {
+    if (!moves.length || !analysis.game) return;
+    addSample(analysis.game.id, moves, acc);
+    setModelVersion((v) => v + 1);
+  };
   useEffect(() => {
     let alive = true;
-    setOfficialAcc(analysis.game?.chesscomAccuracy ?? null);
-    if (analysis.game) fetchChesscomAccuracy(analysis.game).then((a) => { if (alive && a) setOfficialAcc(a); }).catch(() => {});
+    const known = analysis.game?.chesscomAccuracy ?? readManual();
+    setOfficialAcc(known);
+    if (known) learnFrom(known);
+    else if (analysis.game) fetchChesscomAccuracy(analysis.game).then((a) => { if (alive && a) { setOfficialAcc(a); learnFrom(a); } }).catch(() => {});
     return () => { alive = false; };
-  }, [analysis.game]);
-  const whiteAccuracy = officialAcc ? officialAcc.white : moves.length > 0 ? realistic.white : (analysis.accuracy?.white ?? 0);
-  const blackAccuracy = officialAcc ? officialAcc.black : moves.length > 0 ? realistic.black : (analysis.accuracy?.black ?? 0);
-  const accuracySource = officialAcc ? 'Chess.com accuracy' : 'Accuracy (estimated)';
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [analysis.game, moves.length]);
+  const [enterAcc, setEnterAcc] = useState<{ white: string; black: string } | null>(null);
+  const saveManual = () => {
+    if (!enterAcc) return;
+    const w = parseFloat(enterAcc.white.replace(',', '.')), b = parseFloat(enterAcc.black.replace(',', '.'));
+    if (!(w > 0 && w <= 100 && b > 0 && b <= 100)) return;
+    const acc = { white: w, black: b };
+    try { localStorage.setItem(manualKey, JSON.stringify(acc)); } catch { /* ignore */ }
+    setOfficialAcc(acc);
+    learnFrom(acc);
+    setEnterAcc(null);
+  };
+  const calibratedOn = useMemo(() => loadModel().samples, [modelVersion]); // eslint-disable-line react-hooks/exhaustive-deps
+  // Chess.com's real number wins in Chess.com mode; Lichess mode always shows the Lichess formula.
+  const showOfficial = !!officialAcc && accMethod === 'chesscom';
+  const whiteAccuracy = showOfficial ? officialAcc!.white : moves.length > 0 ? realistic.white : (analysis.accuracy?.white ?? 0);
+  const blackAccuracy = showOfficial ? officialAcc!.black : moves.length > 0 ? realistic.black : (analysis.accuracy?.black ?? 0);
+  const accuracySource = showOfficial ? 'Chess.com accuracy' : accMethod === 'lichess' ? 'Accuracy (Lichess)' : 'Accuracy (estimated)';
 
   const gameAny = analysis.game as any;
   const embeddedWhite: number | null =
@@ -856,8 +892,38 @@ export function AnalysisView({ analysis, currentIndex, onIndexChange, depth = 12
     inaccuracies: moves.filter(m => m.color === 'b' && scoringQuality(m) === 'inaccuracy').length,
   }), [moves]);
 
-  const whiteGameRating = estimateGameRating(whiteAccuracy, whitePlayerRating, whiteErrors);
-  const blackGameRating = estimateGameRating(blackAccuracy, blackPlayerRating, blackErrors);
+  // Game Rating from Maia 3 (what rating plays like this?), once computed; until then the accuracy-based guess.
+  const maiaKey = `chesslens.maia.${analysis.game?.id ?? ''}`;
+  const [maia, setMaia] = useState<MaiaEstimate | null>(() => {
+    try { return JSON.parse(localStorage.getItem(maiaKey) ?? 'null'); } catch { return null; }
+  });
+  const [maiaBusy, setMaiaBusy] = useState<{ frac: number; label: string } | null>(null);
+  const [maiaError, setMaiaError] = useState<string | null>(null);
+  useEffect(() => {
+    try { setMaia(JSON.parse(localStorage.getItem(maiaKey) ?? 'null')); } catch { setMaia(null); }
+    setMaiaError(null);
+  }, [maiaKey]);
+  async function runMaia() {
+    if (maiaBusy || !moves.length) return;
+    setMaiaError(null);
+    setMaiaBusy({ frac: 0, label: 'Loading the Maia model' });
+    try {
+      const game = moves.map((m) => {
+        const mv = new Chess(m.fenBefore).move(m.san);
+        return { fen: m.fenBefore, uci: mv.from + mv.to + (mv.promotion ?? '') };
+      });
+      const est = await estimateGameRatings(game, browserRunner(), { onProgress: (frac, label) => setMaiaBusy({ frac, label }) });
+      if (!est) throw new Error('Not enough moves to estimate a rating');
+      setMaia(est);
+      try { localStorage.setItem(maiaKey, JSON.stringify(est)); } catch { /* ignore */ }
+    } catch (e: any) {
+      setMaiaError(e?.message ? String(e.message).slice(0, 120) : 'Could not run the Maia model');
+    } finally {
+      setMaiaBusy(null);
+    }
+  }
+  const whiteGameRating = maia ? maia.white : estimateGameRating(whiteAccuracy, whitePlayerRating, whiteErrors);
+  const blackGameRating = maia ? maia.black : estimateGameRating(blackAccuracy, blackPlayerRating, blackErrors);
 
   const qualityRows = useMemo(() => {
     const categories: { q: MoveQuality; label: string }[] = [
@@ -1192,8 +1258,23 @@ export function AnalysisView({ analysis, currentIndex, onIndexChange, depth = 12
           </div>
   );
 
+  const PHASE_LABEL = { opening: 'Opening', middlegame: 'Middlegame', endgame: 'Endgame' } as const;
   const accuracyCard = (
         <div className="card p-4">
+          {/* Formula: Chess.com-style (default) or Lichess */}
+          <div className="mb-3 flex gap-1 rounded-lg bg-ink-900/40 p-0.5 text-[11px] font-semibold" role="group" aria-label="Accuracy formula">
+            {([['chesscom', 'Chess.com style'], ['lichess', 'Lichess']] as [AccuracyMethod, string][]).map(([k, label]) => (
+              <button
+                key={k}
+                type="button"
+                onClick={() => setAccMethod(k)}
+                aria-pressed={accMethod === k}
+                className={`flex-1 rounded-md px-2 py-1 transition-colors ${accMethod === k ? 'bg-ink-600 text-white' : 'text-ink-400 hover:text-ink-200'}`}
+              >
+                {label}
+              </button>
+            ))}
+          </div>
           <div className="flex items-center justify-between mb-4">
             <div className="flex-1 flex flex-col items-center">
               <div className="flex items-center gap-2 mb-1">
@@ -1201,7 +1282,7 @@ export function AnalysisView({ analysis, currentIndex, onIndexChange, depth = 12
                 <span className="text-sm font-semibold text-ink-100 truncate max-w-[120px]">{whiteName}</span>
               </div>
               <span className="text-3xl font-bold text-ink-100">{whiteAccuracy.toFixed(1)}</span>
-              <span className="text-[10px] uppercase tracking-wide text-ink-500 mt-0.5" title={officialAcc ? 'Taken from Chess.com Game Review' : 'Calculated here from Stockfish evaluations (Chess.com has no review for this game)'}>{accuracySource}</span>
+              <span className="text-[10px] uppercase tracking-wide text-ink-500 mt-0.5" title={showOfficial ? 'Taken from Chess.com Game Review' : accMethod === 'lichess' ? 'Lichess formula on Stockfish evaluations' : 'Chess.com-style estimate from Stockfish evaluations'}>{accuracySource}</span>
               {whitePlayerRating != null && (
                 <span className="text-xs text-ink-400 mt-0.5 font-mono">{whitePlayerRating}</span>
               )}
@@ -1212,12 +1293,28 @@ export function AnalysisView({ analysis, currentIndex, onIndexChange, depth = 12
                 <span className="text-sm font-semibold text-ink-100 truncate max-w-[120px]">{blackName}</span>
               </div>
               <span className="text-3xl font-bold text-ink-100">{blackAccuracy.toFixed(1)}</span>
-              <span className="text-[10px] uppercase tracking-wide text-ink-500 mt-0.5" title={officialAcc ? 'Taken from Chess.com Game Review' : 'Calculated here from Stockfish evaluations (Chess.com has no review for this game)'}>{accuracySource}</span>
+              <span className="text-[10px] uppercase tracking-wide text-ink-500 mt-0.5" title={showOfficial ? 'Taken from Chess.com Game Review' : accMethod === 'lichess' ? 'Lichess formula on Stockfish evaluations' : 'Chess.com-style estimate from Stockfish evaluations'}>{accuracySource}</span>
               {blackPlayerRating != null && (
                 <span className="text-xs text-ink-400 mt-0.5 font-mono">{blackPlayerRating}</span>
               )}
             </div>
           </div>
+          {phaseAcc.phases.length > 0 && (
+            <div className="mb-3 rounded-lg bg-ink-900/30 px-2 py-1.5" aria-label="Accuracy by game phase">
+              {phaseAcc.phases.map((ph) => (
+                <div key={ph.phase} className="flex items-center py-0.5" title={`Moves ${Math.floor(ph.from / 2) + 1}–${Math.floor(ph.to / 2) + 1}`}>
+                  <span className="w-24 text-xs text-ink-300 shrink-0">{PHASE_LABEL[ph.phase]}</span>
+                  <span className="flex-1 text-right pr-4 text-sm font-bold font-mono text-ink-100">{ph.white != null ? ph.white.toFixed(1) : '–'}</span>
+                  <span className="w-6 shrink-0 text-center text-[10px] text-ink-500">{ph.phase === 'opening' ? '♙' : ph.phase === 'middlegame' ? '♘' : '♔'}</span>
+                  <span className="flex-1 text-left pl-4 text-sm font-bold font-mono text-ink-100">{ph.black != null ? ph.black.toFixed(1) : '–'}</span>
+                </div>
+              ))}
+              <p className="mt-0.5 text-center text-[10px] text-ink-500">
+                {phaseAcc.division.middle != null ? `Middlegame from move ${Math.floor(phaseAcc.division.middle / 2) + 1}` : 'No middlegame'}
+                {phaseAcc.division.end != null ? ` · endgame from move ${Math.floor(phaseAcc.division.end / 2) + 1}` : ''}
+              </p>
+            </div>
+          )}
           <div className="space-y-0.5">
             {qualityRows.map(({ q, label, whiteCount, blackCount, meta }) => (
               <div key={q} className="flex items-center py-1">
@@ -1241,9 +1338,12 @@ export function AnalysisView({ analysis, currentIndex, onIndexChange, depth = 12
           </div>
           <div className="mt-4 pt-3 border-t border-ink-700/50">
             <div className="flex items-center">
-              <span className="w-24 text-sm text-ink-400 shrink-0" title="Estimated strength of play in this game">Game Rating</span>
+              <span className="w-24 text-sm text-ink-400 shrink-0" title={maia ? `Maia 3: the ratings whose human moves best explain this game (${maia.positions} positions)` : 'Quick estimate from accuracy and errors. Press "Maia game rating" for the AI estimate.'}>
+                Game Rating{maia && <span className="block text-[10px] text-brand-400">Maia AI</span>}
+              </span>
               <span className="flex-1 text-right pr-4 text-sm font-bold text-ink-100 font-mono">
                 {whiteGameRating}
+                {maia && <span className="ml-0.5 text-[10px] font-normal text-ink-500">±{maia.whiteStd}</span>}
                 {whitePlayerRating != null && (
                   <span className={`ml-1 text-xs font-normal ${whiteGameRating >= whitePlayerRating ? 'text-brand-400' : 'text-accent-400'}`}>
                     {whiteGameRating >= whitePlayerRating ? '+' : ''}{whiteGameRating - whitePlayerRating}
@@ -1253,6 +1353,7 @@ export function AnalysisView({ analysis, currentIndex, onIndexChange, depth = 12
               <div className="w-6 shrink-0" />
               <span className="flex-1 text-left pl-4 text-sm font-bold text-ink-100 font-mono">
                 {blackGameRating}
+                {maia && <span className="ml-0.5 text-[10px] font-normal text-ink-500">±{maia.blackStd}</span>}
                 {blackPlayerRating != null && (
                   <span className={`ml-1 text-xs font-normal ${blackGameRating >= blackPlayerRating ? 'text-brand-400' : 'text-accent-400'}`}>
                     {blackGameRating >= blackPlayerRating ? '+' : ''}{blackGameRating - blackPlayerRating}
@@ -1263,6 +1364,48 @@ export function AnalysisView({ analysis, currentIndex, onIndexChange, depth = 12
             {(whitePlayerRating != null || blackPlayerRating != null) && (
               <p className="text-[10px] text-ink-500 mt-1.5 text-center">Compared to your rating · higher = played above your level</p>
             )}
+            <div className="mt-2 text-center">
+              {maiaBusy ? (
+                <div className="mx-auto max-w-[16rem]" role="status" aria-live="polite">
+                  <div className="flex items-center justify-center gap-1.5 text-[11px] text-ink-300">
+                    <Loader2 size={11} className="animate-spin" /> {maiaBusy.label}… {Math.round(maiaBusy.frac * 100)}%
+                  </div>
+                  <div className="mt-1 h-1 rounded-full bg-ink-700 overflow-hidden">
+                    <div className="h-full bg-brand-500 transition-[width]" style={{ width: `${Math.max(3, maiaBusy.frac * 100)}%` }} />
+                  </div>
+                </div>
+              ) : (
+                <button type="button" onClick={runMaia} className="inline-flex items-center gap-1.5 rounded-md bg-ink-700/60 px-2.5 py-1 text-[11px] font-semibold text-ink-100 hover:bg-ink-600/70">
+                  <Sparkles size={12} className="text-brand-400" /> {maia ? 'Recompute Maia game rating' : 'Maia game rating (AI, ~1 min)'}
+                </button>
+              )}
+              {maiaError && <p className="mt-1 text-[10px] text-amber-300/90">{maiaError}</p>}
+            </div>
+          </div>
+          {/* Teach the estimate: type Chess.com's accuracy for this game. It is shown as-is and the model re-fits on it. */}
+          <div className="mt-3 pt-3 border-t border-ink-700/50 text-center">
+            {enterAcc ? (
+              <form onSubmit={(e) => { e.preventDefault(); saveManual(); }} className="flex flex-wrap items-center justify-center gap-2 text-xs">
+                <span className="text-ink-400">Chess.com accuracy:</span>
+                <input inputMode="decimal" value={enterAcc.white} onChange={(e) => setEnterAcc({ ...enterAcc, white: e.target.value })} placeholder="White" aria-label="White accuracy on Chess.com" className="w-16 rounded-md bg-ink-800 border border-ink-700 px-2 py-1 text-ink-100 font-mono" />
+                <input inputMode="decimal" value={enterAcc.black} onChange={(e) => setEnterAcc({ ...enterAcc, black: e.target.value })} placeholder="Black" aria-label="Black accuracy on Chess.com" className="w-16 rounded-md bg-ink-800 border border-ink-700 px-2 py-1 text-ink-100 font-mono" />
+                <button type="submit" className="rounded-md bg-brand-500 px-2.5 py-1 font-semibold text-ink-900">Save</button>
+                <button type="button" onClick={() => setEnterAcc(null)} className="rounded-md px-2 py-1 text-ink-400 hover:text-ink-200">Cancel</button>
+              </form>
+            ) : (
+              <button
+                type="button"
+                onClick={() => setEnterAcc({ white: officialAcc ? String(officialAcc.white) : '', black: officialAcc ? String(officialAcc.black) : '' })}
+                className="text-[11px] text-ink-400 hover:text-ink-200 underline underline-offset-2"
+              >
+                {officialAcc ? 'Edit Chess.com accuracy' : 'Enter Chess.com accuracy'}
+              </button>
+            )}
+            <p className="mt-1 text-[10px] text-ink-500">
+              {calibratedOn > 0
+                ? `Estimates are calibrated on ${calibratedOn} of your Chess.com game${calibratedOn > 1 ? 's' : ''}.`
+                : 'Each Chess.com accuracy you add makes the estimates closer for your other games.'}
+            </p>
           </div>
         </div>
   );
