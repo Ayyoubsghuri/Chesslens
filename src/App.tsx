@@ -21,7 +21,7 @@ import { logEvent } from '@/lib/activity';
 import { getUsername, setUsername, guessUsername } from '@/lib/player';
 import { loadGames, saveGames, loadAnalyses, saveAnalysis, deleteAnalysis, loadSettings, saveSettings } from '@/lib/storage';
 import type { ImportedGame, AnalysisResult, Settings as SettingsType, View } from '@/lib/types';
-import { onBackButton, onAppForeground, readClipboardText, isNative } from './native';
+import { onBackButton, onAppForeground, onSharedText, readClipboardText, isNative } from './native';
 import { ClipboardPrompt } from '@/components/ClipboardPrompt';
 import { looksLikePgn, parsePgnText } from '@/lib/pgn-clean';
 import { Loader2, Plus, Settings as SettingsIcon, BarChart3, GraduationCap, Target, Crown as ChessIcon, Upload, Swords, Home, Trash2, ChevronLeft, ChevronRight, Search, X, BookOpen, MoreHorizontal } from 'lucide-react';
@@ -277,6 +277,30 @@ function App() {
     document.addEventListener('visibilitychange', vis);
     return () => { alive = false; window.clearTimeout(t); window.clearTimeout(retry); off(); document.removeEventListener('visibilitychange', vis); };
   }, [checkClipboard]);
+
+  // Android Share sheet: Chess.com -> Export PGN -> ChessLens. The player chose us, so no extra question: import and analyze.
+  const lastShared = useRef({ h: '', t: 0 });
+  useEffect(() => {
+    if (!isNative()) return;
+    return onSharedText((raw) => {
+      const text = raw.trim();
+      if (!text) return;
+      const h = hashText(text);
+      const now = Date.now();
+      if (lastShared.current.h === h && now - lastShared.current.t < 4000) return; // same text delivered twice
+      lastShared.current = { h, t: now };
+      const games = looksLikePgn(text) ? parsePgnText(text) : [];
+      if (games.length === 0) {
+        showToast(/^https?:\/\//i.test(text)
+          ? 'That is a link, not a game. In Chess.com choose Share / Export, then PGN (the game moves).'
+          : "Couldn't find a valid game in what was shared.");
+        return;
+      }
+      rememberClip(h); // do not offer the same PGN again from the clipboard
+      handleImport(games);
+      setPendingAnalyzeId(games[0].id);
+    });
+  }, [handleImport, showToast]);
 
   const acceptClipboard = () => {
     const g = clipGames;

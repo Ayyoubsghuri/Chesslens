@@ -72,3 +72,17 @@ export async function readClipboardText(): Promise<string> {
   } catch { /* plugin missing or empty */ }
   try { return (await navigator.clipboard.readText()) || ''; } catch { return ''; }
 }
+
+/**
+ * Text (or a .pgn file's text) sent to the app from Android's Share sheet, e.g. Chess.com -> Share -> ChessLens.
+ * `cb` also receives text that arrived before the page was ready (cold start).
+ */
+export function onSharedText(cb: (text: string) => void): () => void {
+  const p = plugin('SharedText');
+  if (!p) return () => {};
+  let handle: { remove?: () => void } | undefined;
+  Promise.resolve(p.addListener('sharedText', (e: { text?: string }) => { if (e?.text) cb(String(e.text)); }))
+    .then((h: any) => { handle = h; }).catch(() => {});
+  Promise.resolve(p.getPending?.()).then((r: { text?: string } | undefined) => { if (r?.text) cb(String(r.text)); }).catch(() => {});
+  return () => { try { handle?.remove?.(); } catch { /* ignore */ } };
+}
