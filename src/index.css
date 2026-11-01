@@ -99,12 +99,12 @@ button, a, [role="button"], input, select { touch-action: manipulation; }
   .btn-ghost.p-2 { min-width: 44px; min-height: 44px; }
   h2 { @apply text-2xl; }
   .card { @apply rounded-xl; }
-  /* No sideways wobble */
-  html, body { overflow-x: hidden; }
+  /* No sideways wobble. `clip` does not create a scroll container, so vertical touch scrolling keeps working in the Android WebView. */
+  #root { overflow-x: clip; }
 }
 
 /* Native app: no rubber-band, no accidental text selection on controls, softer scrolling */
-html.native, html.native body { overscroll-behavior: none; }
+/* Deliberately no overflow / overscroll-behavior rules on html or body: they can stop touch scrolling in the Android WebView. */
 html.native button, html.native nav { -webkit-user-select: none; user-select: none; }
 html.native ::-webkit-scrollbar { display: none; }
 
