@@ -289,6 +289,10 @@ function App() {
       const now = Date.now();
       if (lastShared.current.h === h && now - lastShared.current.t < 4000) return; // same text delivered twice
       lastShared.current = { h, t: now };
+      if (text === '__UNREADABLE__') {
+        showToast("ChessLens got the share but couldn't read it as text. In Chess.com copy the PGN instead, then open ChessLens.");
+        return;
+      }
       const games = looksLikePgn(text) ? parsePgnText(text) : [];
       if (games.length === 0) {
         showToast(/^https?:\/\//i.test(text)
