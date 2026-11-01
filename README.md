@@ -9,7 +9,7 @@ ChessLens is a chess game review app that runs in your browser. Import a game an
 - **Game import**: pull games from Chess.com or paste a PGN.
 - **Engine analysis**: Stockfish 18 (lite, WASM) evaluates every position in the game, entirely in the browser.
 - **Move classification**: brilliant, great, best, excellent, good, book, inaccuracy, mistake, miss, blunder.
-- **Accuracy and ACPL**: per-player accuracy % and average centipawn loss, plus an evaluation graph.
+- **Accuracy and ACPL**: per-player accuracy % (Chess.com's own number when the game was reviewed there) and average centipawn loss, plus an evaluation graph.
 - **Opening detection**: book moves are recognized and the opening is named.
 - **Advanced coach**: for each move, a short walkthrough on the board with arrows and lit squares:
   - the verdict, and **why** (a piece left loose, a threat ignored, a tactic allowed or missed, a greedy capture, an edge that slowly slipped away),
@@ -21,6 +21,7 @@ ChessLens is a chess game review app that runs in your browser. Import a game an
 - **Best move**: shows the engine's best move on the board, then how the game would continue.
 - **Why not this move?**: try any move on the board and the coach explains it the same way.
 - **Find a better move**: after a mistake, retry the position, with hints.
+- **Chess Story**: enter any Chess.com or Lichess username to get a shareable story from up to **10,000** recent games: record, openings, nemesis, how you win and lose, checkmates that beat you, opponents' weaknesses by rating. It also shows your **brilliant moves (!!)**, counted from the games you have analyzed in the app, because Chess.com and Lichess don't publish move labels in their APIs.
 - **Learn Path, Openings trainer, Practice puzzles, Studies, Masters games, Play vs Computer.**
 - **Drills**: practice positions built from your own mistakes.
 - **Explore mode**: play your own moves on the board and get instant engine feedback.
@@ -130,7 +131,11 @@ Special cases:
 - **Great**: a best move that takes the position from roughly equal to clearly winning.
 - **Brilliant**: a real **material sacrifice** that keeps the advantage. See below.
 
-Accuracy uses a weighted power mean, so mistakes pull the score down harder than a plain average would.
+### Accuracy
+
+- **Games reviewed on Chess.com** show **Chess.com's own accuracy**, so the number is exactly the same as on Chess.com. The app reads it from Chess.com's public API: either when you import from Chess.com, or later by looking the game up from its Chess.com link. The card then says *Chess.com accuracy*.
+- **Other games** get an estimate calculated from Stockfish's evaluations, using the published Lichess method (`computeAccuracy` in `analysis.ts`). Each move is scored from the winning chances it lost. Sharp moments are weighted more, and the final number is the average of the weighted mean and the harmonic mean, which is why blunders hurt a lot. The card then says *Accuracy (estimated)*.
+- **Why the estimate can't match Chess.com exactly:** Chess.com's formula (CAPS2) is not public, and its servers search much deeper than Stockfish lite in the browser. `DEPTH_COMPENSATION` in `analysis.ts` partly makes up for that. A higher engine depth brings the estimate closer.
 
 ### Brilliant moves (`src/lib/sacrifice.ts`)
 

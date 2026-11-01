@@ -257,54 +257,67 @@ export function getOpening(moves: AnalyzedMove[]): OpeningInfo | null {
 }
 
 /**
- * Accuracy close to Chess.com:
- * - Per-move score from Lichess curve (on compensated win%-loss)
- * - Power mean p = 0.3 so mistakes hurt more than a plain average
- * - Volatility weights: sharp moments count more
+ * Game accuracy, computed from the engine's evaluations (not from the move labels).
+ *
+ * This is the published Lichess method (lichess.org/page/accuracy), which is the closest public
+ * match to Chess.com's own (secret) CAPS2 number:
+ *   1. Every move gets a score from how much winning chance the mover lost:
+ *        103.1668 * e^(-0.04354 * winLoss) - 3.1669  (+1 for engine uncertainty), clamped 0..100.
+ *      A move that loses nothing scores 100; a move that throws away a won game scores ~0.
+ *   2. Sharp moments count more: each move is weighted by how much the winning chances were swinging
+ *      around it (standard deviation over a sliding window).
+ *   3. The final number is the average of the weighted mean and the HARMONIC mean. The harmonic mean
+ *      is what makes blunders hurt: one move at 5% drags it down far more than a plain average would.
+ *
+ * In-browser Stockfish lite searches less deeply than Chess.com's servers, so it misses many small
+ * losses and calls more moves "best". DEPTH_COMPENSATION scales the win% loss up to make up for it.
+ * Book moves count as perfect (Chess.com does the same). Returned with one decimal, like Chess.com.
  */
+const DEPTH_COMPENSATION = 1.25;
+
+function lichessMoveAccuracy(winLoss: number): number {
+  if (winLoss <= 0) return 100;
+  const raw = 103.1668100711649 * Math.exp(-0.04354415386753951 * winLoss) - 3.166924740191411;
+  return Math.max(0, Math.min(100, raw + 1));
+}
+
+const stdDev = (xs: number[]) => {
+  const mean = xs.reduce((a, b) => a + b, 0) / xs.length;
+  return Math.sqrt(xs.reduce((a, b) => a + (b - mean) ** 2, 0) / xs.length);
+};
+
 export function computeAccuracy(moves: AnalyzedMove[]): { white: number; black: number } {
-  const scored = moves.filter(
-    (m) => m.quality !== 'book' && m.winPercentLoss !== null && m.evalAfter,
-  );
-  if (scored.length === 0) return { white: 0, black: 0 };
+  if (moves.length === 0) return { white: 0, black: 0 };
 
-  const perMoveAccuracy = scored.map((m) =>
-    moveAccuracyFromWinLoss(m.winPercentLoss as number),
-  );
+  // White's win% before the first move and after every move (missing evals reuse the previous value).
+  const wins: number[] = [];
+  const first = moves[0].evalBefore;
+  wins.push(first ? evalToWinChance(first) : 50);
+  for (const m of moves) wins.push(m.evalAfter ? evalToWinChance(m.evalAfter) : wins[wins.length - 1]);
 
-  const winPercents = scored.map((m) => evalToWinChance(m.evalAfter as EngineEval));
-  const windowSize = Math.min(8, Math.max(2, Math.floor(winPercents.length / 10)));
-  const weights = winPercents.map((_, i) => {
-    const start = Math.max(0, i - windowSize);
-    const end = Math.min(winPercents.length, i + windowSize + 1);
-    const windowVals = winPercents.slice(start, end);
-    const mean = windowVals.reduce((a, b) => a + b, 0) / windowVals.length;
-    const variance =
-      windowVals.reduce((a, b) => a + (b - mean) ** 2, 0) / windowVals.length;
-    return Math.max(0.5, Math.min(10, Math.sqrt(variance)));
+  // Volatility weights (Lichess: window = moves/10, between 2 and 8; weight = std dev, between 0.5 and 12).
+  const windowSize = Math.max(2, Math.min(8, Math.floor(moves.length / 10)));
+  const windows: number[][] = [];
+  for (let k = 0; k < Math.min(windowSize - 2, wins.length); k++) windows.push(wins.slice(0, windowSize));
+  for (let k = 0; k + windowSize <= wins.length; k++) windows.push(wins.slice(k, k + windowSize));
+  const weightAt = (i: number) => Math.max(0.5, Math.min(12, stdDev(windows[Math.min(i, windows.length - 1)] ?? [50])));
+
+  const per: Record<PieceColor, { acc: number; w: number }[]> = { w: [], b: [] };
+  moves.forEach((m, i) => {
+    const before = m.color === 'w' ? wins[i] : 100 - wins[i];
+    const after = m.color === 'w' ? wins[i + 1] : 100 - wins[i + 1];
+    const acc = m.quality === 'book' ? 100 : lichessMoveAccuracy((before - after) * DEPTH_COMPENSATION);
+    per[m.color].push({ acc, w: weightAt(i) });
   });
 
-  function aggregate(color: PieceColor): number {
-    const idxs: number[] = [];
-    scored.forEach((m, i) => {
-      if (m.color === color) idxs.push(i);
-    });
-    if (idxs.length === 0) return 0;
-
-    const p = 0.3;
-    let weightedPowerSum = 0;
-    let weightSum = 0;
-    for (const i of idxs) {
-      const a = Math.max(perMoveAccuracy[i], 0.1);
-      const w = weights[i];
-      weightedPowerSum += w * Math.pow(a, p);
-      weightSum += w;
-    }
-    const powerMean = Math.pow(weightedPowerSum / weightSum, 1 / p);
-    return Math.round(Math.max(0, Math.min(100, powerMean)));
-  }
-
-  return { white: aggregate('w'), black: aggregate('b') };
+  const aggregate = (xs: { acc: number; w: number }[]): number => {
+    if (!xs.length) return 0;
+    const wSum = xs.reduce((a, x) => a + x.w, 0);
+    const weighted = xs.reduce((a, x) => a + x.acc * x.w, 0) / wSum;
+    const harmonic = xs.length / xs.reduce((a, x) => a + 1 / Math.max(1, x.acc), 0);
+    return Math.round(((weighted + harmonic) / 2) * 10) / 10;
+  };
+  return { white: aggregate(per.w), black: aggregate(per.b) };
 }
 
 export function computeACPL(moves: AnalyzedMove[]): { white: number; black: number } {

@@ -11,7 +11,8 @@ import { CapturedPieces } from './CapturedPieces';
 import { CoachSquares } from './CoachSquares';
 import { detectKnightFork } from '@/lib/knight-fork';
 import { formatEval, evalToPawns, analyzePosition } from '@/lib/engine';
-import { classifyMove } from '@/lib/analysis';
+import { classifyMove, computeAccuracy } from '@/lib/analysis';
+import { fetchChesscomAccuracy } from '@/lib/chesscom';
 import { useElementSize } from '@/lib/useElementSize';
 import { getUsername, setUsername, youSide as sideOfUser } from '@/lib/player';
 import { offerCoachMove } from '@/lib/coach-bus';
@@ -37,11 +38,6 @@ const QUALITY_META: Record<MoveQuality, { color: string; bg: string; icon: any; 
   miss:      { color: '#e040fb', bg: '#e040fb20', icon: HelpCircle, label: 'Miss' },
 };
 
-const QUALITY_ACCURACY: Record<MoveQuality, number> = {
-  brilliant: 100, best: 100, great: 95, excellent: 90, good: 82, book: 100,
-  // Balanced: errors pull accuracy down, but not crush it
-  inaccuracy: 52, mistake: 32, miss: 28, blunder: 12,
-};
 
 interface ExploreReview {
   status: 'loading' | 'done' | 'error';
@@ -382,34 +378,6 @@ function scoringQuality(move: AnalyzedMove): MoveQuality {
   }
 
   return move.quality;
-}
-
-function computeRealisticAccuracy(
-  moves: AnalyzedMove[],
-  result?: string | null
-): { white: number; black: number } {
-  const whiteScores: number[] = [];
-  const blackScores: number[] = [];
-  for (const m of moves) {
-    const score = QUALITY_ACCURACY[scoringQuality(m)] ?? 70;
-    if (m.color === 'w') whiteScores.push(score);
-    else blackScores.push(score);
-  }
-  const avg = (scores: number[]) => {
-    if (scores.length === 0) return 0;
-    const power = 0.6;
-    const sum = scores.reduce((a, s) => a + Math.pow(Math.max(1, s), power), 0);
-    return Math.max(0, Math.min(100, Math.pow(sum / scores.length, 1 / power)));
-  };
-  let white = avg(whiteScores);
-  let black = avg(blackScores);
-  const res = (result || '').trim();
-  if (res === '1-0' || res.startsWith('1-0')) {
-    white = Math.min(100, white + 2 + Math.min(3, Math.max(0, white - black) * 0.15));
-  } else if (res === '0-1' || res.startsWith('0-1')) {
-    black = Math.min(100, black + 2 + Math.min(3, Math.max(0, black - white) * 0.15));
-  }
-  return { white: Math.round(white * 10) / 10, black: Math.round(black * 10) / 10 };
 }
 
 /**
@@ -829,12 +797,19 @@ export function AnalysisView({ analysis, currentIndex, onIndexChange, depth = 12
   const topColor: 'white' | 'black' = orientation === 'white' ? 'black' : 'white';
   const bottomColor: 'white' | 'black' = orientation === 'white' ? 'white' : 'black';
 
-  const realistic = useMemo(
-    () => computeRealisticAccuracy(moves, analysis.game?.result),
-    [moves, analysis.game?.result]
-  );
-  const whiteAccuracy = moves.length > 0 ? realistic.white : (analysis.accuracy?.white ?? 0);
-  const blackAccuracy = moves.length > 0 ? realistic.black : (analysis.accuracy?.black ?? 0);
+  // Eval-based accuracy (same method as the stored analysis): see computeAccuracy in lib/analysis.ts.
+  const realistic = useMemo(() => computeAccuracy(moves), [moves]);
+  // Games reviewed on Chess.com: show Chess.com's own accuracy, so the number is exactly the same as there.
+  const [officialAcc, setOfficialAcc] = useState<{ white: number; black: number } | null>(analysis.game?.chesscomAccuracy ?? null);
+  useEffect(() => {
+    let alive = true;
+    setOfficialAcc(analysis.game?.chesscomAccuracy ?? null);
+    if (analysis.game) fetchChesscomAccuracy(analysis.game).then((a) => { if (alive && a) setOfficialAcc(a); }).catch(() => {});
+    return () => { alive = false; };
+  }, [analysis.game]);
+  const whiteAccuracy = officialAcc ? officialAcc.white : moves.length > 0 ? realistic.white : (analysis.accuracy?.white ?? 0);
+  const blackAccuracy = officialAcc ? officialAcc.black : moves.length > 0 ? realistic.black : (analysis.accuracy?.black ?? 0);
+  const accuracySource = officialAcc ? 'Chess.com accuracy' : 'Accuracy (estimated)';
 
   const gameAny = analysis.game as any;
   const embeddedWhite: number | null =
@@ -1225,8 +1200,8 @@ export function AnalysisView({ analysis, currentIndex, onIndexChange, depth = 12
                 <span className="w-3 h-3 rounded-full bg-white border border-ink-500" />
                 <span className="text-sm font-semibold text-ink-100 truncate max-w-[120px]">{whiteName}</span>
               </div>
-              <span className="text-3xl font-bold text-ink-100">{Math.round(whiteAccuracy)}</span>
-              <span className="text-[10px] uppercase tracking-wide text-ink-500 mt-0.5">Accuracy</span>
+              <span className="text-3xl font-bold text-ink-100">{whiteAccuracy.toFixed(1)}</span>
+              <span className="text-[10px] uppercase tracking-wide text-ink-500 mt-0.5" title={officialAcc ? 'Taken from Chess.com Game Review' : 'Calculated here from Stockfish evaluations (Chess.com has no review for this game)'}>{accuracySource}</span>
               {whitePlayerRating != null && (
                 <span className="text-xs text-ink-400 mt-0.5 font-mono">{whitePlayerRating}</span>
               )}
@@ -1236,8 +1211,8 @@ export function AnalysisView({ analysis, currentIndex, onIndexChange, depth = 12
                 <span className="w-3 h-3 rounded-full bg-[#16251f] border border-ink-500" />
                 <span className="text-sm font-semibold text-ink-100 truncate max-w-[120px]">{blackName}</span>
               </div>
-              <span className="text-3xl font-bold text-ink-100">{Math.round(blackAccuracy)}</span>
-              <span className="text-[10px] uppercase tracking-wide text-ink-500 mt-0.5">Accuracy</span>
+              <span className="text-3xl font-bold text-ink-100">{blackAccuracy.toFixed(1)}</span>
+              <span className="text-[10px] uppercase tracking-wide text-ink-500 mt-0.5" title={officialAcc ? 'Taken from Chess.com Game Review' : 'Calculated here from Stockfish evaluations (Chess.com has no review for this game)'}>{accuracySource}</span>
               {blackPlayerRating != null && (
                 <span className="text-xs text-ink-400 mt-0.5 font-mono">{blackPlayerRating}</span>
               )}
@@ -1991,7 +1966,7 @@ function PlayerCard({
       </div>
       {fen && <div className="flex justify-center"><CapturedPieces fen={fen} color={color} /></div>}
       <span className="rounded-full bg-ink-800 px-2.5 py-0.5 text-xs text-ink-300">
-        {Math.round(accuracy)}% accuracy
+        {accuracy.toFixed(1)}% accuracy
       </span>
     </div>
   );

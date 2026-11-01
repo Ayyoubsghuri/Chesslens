@@ -73,6 +73,8 @@ export interface ImportedGame {
   timeControl: string;
   site: string;
   url: string;
+  /** Chess.com's own Game Review accuracy, when the game was reviewed there (from the public API). */
+  chesscomAccuracy?: { white: number; black: number } | null;
 }
 
 export interface AnalysisResult {

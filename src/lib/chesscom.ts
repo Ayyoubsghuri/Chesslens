@@ -46,9 +46,49 @@ export async function getGamesForMonth(archiveUrl: string): Promise<ImportedGame
   for (const g of games) {
     if (!g.pgn) continue;
     const imported = pgnToImported(g.pgn, g.url || '');
-    if (imported) result.push(imported);
+    if (!imported) continue;
+    // Chess.com sends its own accuracy for games that were reviewed there: keep it, it is THE number players compare with.
+    const acc = accuraciesOf(g);
+    if (acc) imported.chesscomAccuracy = acc;
+    result.push(imported);
   }
   return result;
+}
+
+function accuraciesOf(g: any): { white: number; black: number } | null {
+  const a = g?.accuracies;
+  return a && typeof a.white === 'number' && typeof a.black === 'number' ? { white: a.white, black: a.black } : null;
+}
+
+const accCache = new Map<string, Promise<{ white: number; black: number } | null>>();
+
+/**
+ * Chess.com's own accuracy for a game imported from Chess.com (or pasted with its Link header).
+ * Looks the game up in the player's monthly archive by its URL. null when the game was never reviewed on
+ * Chess.com, is not a Chess.com game, or the request fails.
+ */
+export function fetchChesscomAccuracy(game: ImportedGame): Promise<{ white: number; black: number } | null> {
+  if (game.chesscomAccuracy) return Promise.resolve(game.chesscomAccuracy);
+  const url = game.url || '';
+  if (!/chess\.com\/(game|live|daily|analysis)/i.test(url)) return Promise.resolve(null);
+  const m = (game.date || '').match(/^(\d{4})[.\-/](\d{2})/);
+  if (!m) return Promise.resolve(null);
+  const id = url.match(/(\d{5,})/)?.[1];
+  const key = `${url}|${game.date}`;
+  if (!accCache.has(key)) {
+    accCache.set(key, (async () => {
+      for (const name of [game.white, game.black]) {
+        if (!name) continue;
+        try {
+          const data = await fetchJson(`${BASE}/pub/player/${name.toLowerCase()}/games/${m[1]}/${m[2]}`);
+          const hit = (data.games || []).find((g: any) => g.url === url || (id && String(g.url || '').endsWith('/' + id)));
+          if (hit) return accuraciesOf(hit);
+        } catch { /* try the other player */ }
+      }
+      return null;
+    })());
+  }
+  return accCache.get(key)!;
 }
 
 export async function getGamesForMonthRaw(archiveUrl: string): Promise<{ pgn: string; url: string }[]> {

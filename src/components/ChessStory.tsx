@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { toPng } from 'html-to-image';
 import { Chess } from 'chess.js';
 import type { ImportedGame } from '@/lib/types';
+import { loadAnalyses } from '@/lib/storage';
 import {
   Crown as ChessIcon, Download, Swords, Flame, Skull, BookOpen, Trophy, Loader2, Clock, Zap, Search, Sparkles,
   X, ChevronLeft, ChevronRight, Play, Target,
@@ -28,7 +29,29 @@ interface Game {
   mate?: string | null;
 }
 
-const MAX_GAMES = 1000;
+const MAX_GAMES = 10000;
+/** Progress while fetching: games found so far. */
+type OnProgress = (found: number) => void;
+
+/**
+ * Brilliant moves this player made, counted from the games analyzed in this app.
+ * Chess.com and Lichess do not publish move labels (brilliant, blunder...) in their APIs, and running Stockfish on
+ * 10,000 games in the browser would take days, so the count comes from the games you have analyzed here.
+ */
+function countBrilliants(name: string): { n: number; games: number; analyzed: number } | null {
+  const me = name.trim().toLowerCase();
+  let n = 0, games = 0, analyzed = 0;
+  try {
+    for (const a of Object.values(loadAnalyses())) {
+      const side = a.game.white?.toLowerCase() === me ? 'w' : a.game.black?.toLowerCase() === me ? 'b' : null;
+      if (!side) continue;
+      analyzed++;
+      const k = a.moves.filter((m) => m.color === side && m.quality === 'brilliant').length;
+      if (k) { n += k; games++; }
+    }
+  } catch { return null; }
+  return analyzed ? { n, games, analyzed } : null;
+}
 
 /* ------------------------------------------------------------------ */
 /* Checkmate pattern recognition (best-effort heuristics)              */
@@ -181,7 +204,7 @@ function family(raw: string): string {
   return ((m ? m[1] : name.split(/\s+/).slice(0, 3).join(' ')).trim()) || 'Unknown';
 }
 
-async function fetchChessCom(user: string): Promise<{ games: Game[]; display: string }> {
+async function fetchChessCom(user: string, onProgress?: OnProgress): Promise<{ games: Game[]; display: string }> {
   const u = user.toLowerCase();
   const arc = await fetch(`https://api.chess.com/pub/player/${encodeURIComponent(u)}/games/archives`);
   if (arc.status === 404) throw new Error(`No Chess.com player called "${user}".`);
@@ -190,11 +213,12 @@ async function fetchChessCom(user: string): Promise<{ games: Game[]; display: st
 
   const games: Game[] = [];
   let display = user;
-  for (const url of [...archives].reverse().slice(0, 36)) {
+  for (const url of [...archives].reverse()) { // newest month first, until MAX_GAMES
     if (games.length >= MAX_GAMES) break;
     const res = await fetch(url);
     if (!res.ok) continue;
     const month = ((await res.json()) as { games?: any[] }).games ?? [];
+    onProgress?.(games.length);
     for (const g of [...month].reverse()) {
       if (games.length >= MAX_GAMES) break;
       if (g.rules && g.rules !== 'chess') continue;
@@ -235,10 +259,11 @@ async function fetchChessCom(user: string): Promise<{ games: Game[]; display: st
       });
     }
   }
+  onProgress?.(games.length);
   return { games, display };
 }
 
-async function fetchLichess(user: string): Promise<{ games: Game[]; display: string }> {
+async function fetchLichess(user: string, onProgress?: OnProgress): Promise<{ games: Game[]; display: string }> {
   const u = user.toLowerCase();
   const res = await fetch(
     `https://lichess.org/api/games/user/${encodeURIComponent(u)}?max=${MAX_GAMES}&opening=true&moves=true&tags=false`,
@@ -246,7 +271,23 @@ async function fetchLichess(user: string): Promise<{ games: Game[]; display: str
   );
   if (res.status === 404) throw new Error(`No Lichess player called "${user}".`);
   if (!res.ok) throw new Error(`Lichess returned ${res.status}. Try again in a moment.`);
-  const lines = (await res.text()).split('\n').filter(Boolean);
+  // Lichess streams one game per line: read it as it arrives so the progress counter moves (10,000 games take a while).
+  let text = '';
+  if (res.body && typeof TextDecoder !== 'undefined') {
+    const reader = res.body.getReader();
+    const dec = new TextDecoder();
+    let seen = 0;
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      const chunk = dec.decode(value, { stream: true });
+      text += chunk;
+      for (let i = 0; i < chunk.length; i++) if (chunk.charCodeAt(i) === 10) seen++;
+      onProgress?.(seen);
+    }
+    text += dec.decode();
+  } else text = await res.text();
+  const lines = text.split('\n').filter(Boolean);
 
   const games: Game[] = [];
   let display = user;
@@ -339,6 +380,8 @@ interface Story {
   mateTotal: number;
   /** Opponent-weakness cards by rating band. */
   bands: BandStat[];
+  /** Brilliant moves found in the games analyzed in this app (null = none analyzed yet). */
+  brilliants: { n: number; games: number; analyzed: number } | null;
 }
 
 interface OppOpening { name: string; n: number; share: number; myScore: number }
@@ -580,6 +623,15 @@ function buildStory(name: string, platform: Platform, all: Game[]): Story {
   if (bestTime && times.length > 1) rows.push({ icon: Clock, title: 'Plays best', value: `${bestTime.label} · ${bestTime.score}%` });
   if (formats[0]) rows.push({ icon: Zap, title: 'Favorite format', value: `${cap(formats[0].speed)} · ${pct(formats[0].n, games.length)}%` });
   if (favoriteColor) rows.push({ icon: BookOpen, title: 'Stronger as', value: favoriteColor === 'w' ? 'White' : 'Black' });
+  const brilliants = countBrilliants(name);
+  if (brilliants) {
+    rows.push({
+      icon: Sparkles, title: 'Brilliant moves !!',
+      value: brilliants.n
+        ? `${brilliants.n} in ${brilliants.games} game${brilliants.games > 1 ? 's' : ''} (${brilliants.analyzed} analyzed)`
+        : `None yet (${brilliants.analyzed} analyzed)`,
+    });
+  }
 
   // Prefer rating from the player's main time control:
   // most-played format first; if that has no rated games, fall back to rapid → blitz → any.
@@ -638,7 +690,7 @@ function buildStory(name: string, platform: Platform, all: Game[]): Story {
     white, black, weapon, identity, giant, nemesis, streak, times, wins, winTotal: winGames.length, formats, ratings,
     avoid, learn, colorPerf, losses, lossTotal, bestVictim, favoriteColor,
     oppWhite: oppW.list, oppBlack: oppB.list, oppWhiteGames: oppW.total, oppBlackGames: oppB.total,
-    mates, mateTotal, bands,
+    mates, mateTotal, bands, brilliants,
   };
 }
 
@@ -890,6 +942,7 @@ export function ChessStory({ games: imported }: { games: ImportedGame[] }) {
   const [platform, setPlatform] = useState<Platform>(last?.platform ?? 'chesscom');
   const [user, setUser] = useState(last?.user ?? guessPlayer(imported));
   const [loading, setLoading] = useState(false);
+  const [found, setFound] = useState(0);
   const [error, setError] = useState('');
   const [story, setStory] = useState<Story | null>(null);
   const [saving, setSaving] = useState<string | null>(null);
@@ -901,9 +954,10 @@ export function ChessStory({ games: imported }: { games: ImportedGame[] }) {
     const name = user.trim();
     if (!name) return;
     setLoading(true);
+    setFound(0);
     setError('');
     try {
-      const { games, display } = platform === 'chesscom' ? await fetchChessCom(name) : await fetchLichess(name);
+      const { games, display } = platform === 'chesscom' ? await fetchChessCom(name, setFound) : await fetchLichess(name, setFound);
       if (games.length === 0) throw new Error(`No standard games found for "${name}" yet.`);
       setStory(buildStory(display, platform, games));
       setOpenAt(0);
@@ -1362,7 +1416,7 @@ export function ChessStory({ games: imported }: { games: ImportedGame[] }) {
       <div className="mb-5">
         <h2 id="story-heading" className="text-xl font-bold">Your chess, as a story</h2>
         <p className="text-sm text-ink-400 mt-0.5">
-          Enter any Chess.com or Lichess username to get a full-screen story from up to 1000 recent games: openings, what checkmated you, what opponents play, their weaknesses by rating and more.
+          Enter any Chess.com or Lichess username to get a full-screen story from up to 10,000 recent games: openings, what checkmated you, what opponents play, their weaknesses by rating and more.
         </p>
       </div>
 
@@ -1401,7 +1455,12 @@ export function ChessStory({ games: imported }: { games: ImportedGame[] }) {
         )}
       </form>
       {error && <p className="text-sm text-red-300 mb-2" role="alert">{error}</p>}
-      {loading && <p className="text-sm text-ink-400 mb-2">Fetching recent games…</p>}
+      {loading && (
+        <p className="text-sm text-ink-400 mb-2">
+          Fetching recent games… {found > 0 && <span className="font-mono text-ink-300">{Math.min(found, MAX_GAMES).toLocaleString()} / {MAX_GAMES.toLocaleString()}</span>}
+          <span className="block text-xs text-ink-500">Big accounts can take a few minutes to load all 10,000 games.</span>
+        </p>
+      )}
 
       {cards.length > 0 && (
         <div className="mt-4">

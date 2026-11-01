@@ -22,7 +22,7 @@ const SETTINGS_KEY = 'chesslens:settings';
  * force a recompute instead of silently serving retired results.
  * ──────────────────────────────────────────────────────────────────────────
  */
-const ANALYSIS_SCHEMA_VERSION = 3;
+const ANALYSIS_SCHEMA_VERSION = 4; // 4: eval-based (Lichess-method) accuracy
 
 interface StoredAnalysis extends AnalysisResult {
   __schemaVersion?: number;
