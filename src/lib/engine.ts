@@ -1,5 +1,6 @@
 import { Chess } from 'chess.js';
 import type { EngineEval } from './types';
+import { isNative } from '../native';
 
 /**
  * ── Setup (unchanged) ────────────────────────────────────────────────────
@@ -23,15 +24,18 @@ import type { EngineEval } from './types';
  * ────────────────────────────────────────────────────────────────────────
  */
 const ENGINE_SCRIPT_PATH = `${import.meta.env.BASE_URL}stockfish/stockfish-18-lite-single.js`;
-const READY_TIMEOUT_MS = 10_000;
-const SEARCH_TIMEOUT_MS = 30_000;
+// A phone is much slower than a PC: loading the WASM and searching take longer, and the old limits made
+// positions fail (they were then skipped, which skewed the accuracy). The app gets generous limits.
+const NATIVE = isNative();
+const READY_TIMEOUT_MS = NATIVE ? 60_000 : 10_000;
+const SEARCH_TIMEOUT_MS = NATIVE ? 120_000 : 30_000;
 const HASH_MB_PER_WORKER = 16;
 const CHUNK_SIZE = 6; // contiguous plies per work unit
 const CACHE_LIMIT = 5_000;
 
 const MAX_WORKERS = Math.max(
   1,
-  Math.min(8, (typeof navigator !== 'undefined' ? navigator.hardwareConcurrency || 2 : 2) - 1),
+  Math.min(NATIVE ? 3 : 8, (typeof navigator !== 'undefined' ? navigator.hardwareConcurrency || 2 : 2) - 1),
 );
 
 /** Result of a search; `second` is the 2nd-best line (only filled when MultiPV >= 2). White-positive like the rest. */
@@ -462,7 +466,15 @@ class EnginePool {
           this.release(w);
           w = await this.acquire();
         }
-        const r = await w.search(fen, depth, multiPv);
+        let r: EngineEvalMulti;
+        try {
+          r = await w.search(fen, depth, multiPv);
+        } catch {
+          // One retry on a fresh worker (the first may have timed out / crashed on a busy phone).
+          this.release(w);
+          w = await this.acquire();
+          r = await w.search(fen, depth, multiPv);
+        }
         cachePut(fen, depth, multiPv, r);
         results[i] = r;
       } catch {
@@ -553,7 +565,17 @@ async function runBatch(
     }),
   );
 
-  // If every runner failed to start, report the remainder as done so progress completes.
+  // Final safety net: anything still missing is searched one by one so no position is silently skipped.
+  for (let i = 0; i < total; i++) {
+    if (results[i]) continue;
+    try {
+      results[i] = await pool.analyze(fens[i], depth, multiPv);
+    } catch {
+      /* stays null */
+    }
+  }
+
+  // Report the remainder as done so progress completes.
   while (done < total) tick();
   return results;
 }

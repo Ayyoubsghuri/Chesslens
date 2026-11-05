@@ -10,18 +10,172 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
-        with: { node-version: 20, cache: npm }
+        with: { node-version: 22, cache: npm }
       - uses: actions/setup-java@v4
-        with: { distribution: temurin, java-version: 17 }
+        with: { distribution: temurin, java-version: 21 }
       - run: npm ci
       - name: Build web app for Android (relative paths)
         run: npm run build:android
-        env: { CAP_BUILD: '1' }
+        env:
+          CAP_BUILD: '1'
+          VITE_ADMOB_BANNER_ID: ${{ vars.ADMOB_BANNER_ID || 'ca-app-pub-1160690986356584/2770385488' }}
+          # Test ads until you set the repo variable ADMOB_TESTING to false
+          VITE_ADMOB_TESTING: ${{ vars.ADMOB_TESTING || 'true' }}
       - name: Add Android project if missing, then sync
         run: |
           [ -d android ] || npx cap add android
           npx @capacitor/assets generate --android --assetPath assets
           npx cap sync android
+
+      # Makes ChessLens appear in Android's Share sheet (Chess.com -> Export PGN -> ChessLens)
+      - name: Add Share-sheet support
+        run: |
+          MAIN=$(find android/app/src/main/java -name MainActivity.java | head -1)
+          DIR=$(dirname "$MAIN")
+          PKG=$(grep -m1 '^package ' "$MAIN" | sed 's/package \(.*\);/\1/')
+          echo "MainActivity: $MAIN  package: $PKG"
+
+          cat > "$DIR/SharePlugin.java" <<JAVA
+          package $PKG;
+
+          import android.content.Context;
+          import android.content.Intent;
+          import android.net.Uri;
+          import com.getcapacitor.JSObject;
+          import com.getcapacitor.Plugin;
+          import com.getcapacitor.PluginCall;
+          import com.getcapacitor.PluginMethod;
+          import com.getcapacitor.annotation.CapacitorPlugin;
+          import java.io.ByteArrayOutputStream;
+          import java.io.InputStream;
+
+          @CapacitorPlugin(name = "SharedText")
+          public class SharePlugin extends Plugin {
+              private static String pending = null;
+              private static SharePlugin instance = null;
+
+              @Override
+              public void load() { instance = this; }
+
+              static String readUri(Context ctx, Uri uri) {
+                  try (InputStream in = ctx.getContentResolver().openInputStream(uri);
+                       ByteArrayOutputStream out = new ByteArrayOutputStream()) {
+                      if (in == null) return null;
+                      byte[] buf = new byte[8192];
+                      int n, total = 0;
+                      while ((n = in.read(buf)) > 0 && total < 2000000) { out.write(buf, 0, n); total += n; }
+                      return out.toString("UTF-8");
+                  } catch (Exception e) { return null; }
+              }
+
+              /** Called by MainActivity for every incoming intent. */
+              static void handle(Context ctx, Intent intent) {
+                  if (intent == null) return;
+                  String action = intent.getAction();
+                  String text = null;
+                  if (Intent.ACTION_SEND.equals(action)) {
+                      text = intent.getStringExtra(Intent.EXTRA_TEXT);
+                      if (text == null || text.trim().isEmpty()) {
+                          Uri uri = (Uri) intent.getParcelableExtra(Intent.EXTRA_STREAM);
+                          if (uri != null) text = readUri(ctx, uri);
+                      }
+                  } else if (Intent.ACTION_VIEW.equals(action) && intent.getData() != null) {
+                      text = readUri(ctx, intent.getData());
+                  }
+                  boolean shared = Intent.ACTION_SEND.equals(action) || Intent.ACTION_VIEW.equals(action);
+                  if (text == null || text.trim().isEmpty()) {
+                      if (!shared) return;
+                      text = "__UNREADABLE__";
+                  }
+                  pending = text;
+                  if (instance != null) {
+                      JSObject o = new JSObject();
+                      o.put("text", text);
+                      instance.notifyListeners("sharedText", o, true);
+                  }
+              }
+
+              @PluginMethod
+              public void getPending(PluginCall call) {
+                  JSObject r = new JSObject();
+                  r.put("text", pending == null ? "" : pending);
+                  pending = null;
+                  call.resolve(r);
+              }
+          }
+          JAVA
+
+          cat > "$MAIN" <<JAVA
+          package $PKG;
+
+          import android.content.Intent;
+          import android.os.Bundle;
+          import com.getcapacitor.BridgeActivity;
+
+          public class MainActivity extends BridgeActivity {
+              @Override
+              public void onCreate(Bundle savedInstanceState) {
+                  registerPlugin(SharePlugin.class);
+                  super.onCreate(savedInstanceState);
+                  if (savedInstanceState == null) SharePlugin.handle(this, getIntent());
+              }
+
+              @Override
+              protected void onNewIntent(Intent intent) {
+                  super.onNewIntent(intent);
+                  setIntent(intent);
+                  SharePlugin.handle(this, intent);
+              }
+          }
+          JAVA
+
+          python3 - <<'PY'
+          p = 'android/app/src/main/AndroidManifest.xml'
+          s = open(p, encoding='utf-8').read()
+          if 'android.intent.action.SEND' not in s:
+              filters = '''
+                      <intent-filter>
+                          <action android:name="android.intent.action.SEND" />
+                          <category android:name="android.intent.category.DEFAULT" />
+                          <data android:mimeType="text/*" />
+                          <data android:mimeType="application/*" />
+                          <data android:mimeType="*/*" />
+                      </intent-filter>
+                      <intent-filter>
+                          <action android:name="android.intent.action.VIEW" />
+                          <category android:name="android.intent.category.DEFAULT" />
+                          <category android:name="android.intent.category.BROWSABLE" />
+                          <data android:scheme="content" />
+                          <data android:scheme="file" />
+                          <data android:mimeType="application/x-chess-pgn" />
+                          <data android:mimeType="application/vnd.chess-pgn" />
+                          <data android:mimeType="application/pgn" />
+                          <data android:mimeType="text/plain" />
+                          <data android:mimeType="application/octet-stream" />
+                      </intent-filter>'''
+              i = s.index('</intent-filter>') + len('</intent-filter>')
+              s = s[:i] + filters + s[i:]
+              open(p, 'w', encoding='utf-8').write(s)
+          print('manifest ok:', 'android.intent.action.SEND' in s)
+          PY
+
+      # AdMob needs its app id inside the manifest. Your AdMob app id is the default; the repo variable ADMOB_APP_ID overrides it.
+      - name: Add AdMob app id
+        env:
+          ADMOB_APP_ID: ${{ vars.ADMOB_APP_ID || 'ca-app-pub-1160690986356584~7462428639' }}
+        run: |
+          python3 - <<'PY'
+          import os, re
+          app_id = os.environ.get('ADMOB_APP_ID') or 'ca-app-pub-3940256099942544~3347511713'
+          p = 'android/app/src/main/AndroidManifest.xml'
+          s = open(p, encoding='utf-8').read()
+          if 'com.google.android.gms.ads.APPLICATION_ID' not in s:
+              meta = '\n        <meta-data android:name="com.google.android.gms.ads.APPLICATION_ID" android:value="' + app_id + '"/>'
+              s = re.sub(r'(<application[^>]*>)', lambda m: m.group(1) + meta, s, count=1)
+              open(p, 'w', encoding='utf-8').write(s)
+          print('AdMob app id set:', app_id.split('~')[0], '(test id)' if app_id.startswith('ca-app-pub-3940256099942544') else '')
+          PY
+
       - name: Build debug APK
         working-directory: android
         run: chmod +x gradlew && ./gradlew assembleDebug

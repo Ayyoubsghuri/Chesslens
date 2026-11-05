@@ -6,6 +6,7 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
+    "build": "vite build",
     "build:android": "vite build",
     "lint": "eslint .",
     "preview": "vite preview",
@@ -14,8 +15,9 @@
     "deploy": "gh-pages -d dist"
   },
   "dependencies": {
+    "@capacitor-community/admob": "^8.3.0",
     "@capacitor/app": "^8.1.2",
-    "@capacitor/clipboard": "^8.0.1",
+    "@capacitor/clipboard": "^8.0.0",
     "@capacitor/core": "^8.6.0",
     "@capacitor/haptics": "^8.0.2",
     "@capacitor/splash-screen": "^8.0.2",

@@ -242,3 +242,5 @@ Games, analyses and settings stay in your browser's `localStorage`. Engine analy
 ## License
 
 Stockfish is licensed under GPL-3.0, so check its terms before you distribute a build that includes the engine files.
+
+- **Settings → End-of-game animations**: switch the resignation / timeout / draw / checkmate announcement and animation on or off (on by default).

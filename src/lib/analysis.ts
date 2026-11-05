@@ -176,6 +176,12 @@ export async function analyzeGame(
   // Results come back in order; a position that failed is null.
   const evals = await analyzePositions(fens, depth, onProgress);
 
+  // Diagnostics: positions the engine could not evaluate are skipped in the accuracy, so tell the app.
+  const failed = evals.filter((e) => !e).length;
+  if (failed > 0 && typeof window !== 'undefined') {
+    window.dispatchEvent(new CustomEvent('chesslens:engine-warning', { detail: { failed, total: evals.length, depth } }));
+  }
+
   // Pass 3: classify (pure CPU, effectively instant).
   const analyzed: AnalyzedMove[] = [];
   const book = new BookWalker();
