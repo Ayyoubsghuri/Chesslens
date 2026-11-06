@@ -19,7 +19,6 @@ import { estimateGameRatings, browserRunner, type MaiaEstimate } from '@/lib/mai
 import { useElementSize } from '@/lib/useElementSize';
 import { getUsername, setUsername, youSide as sideOfUser } from '@/lib/player';
 import { offerCoachMove } from '@/lib/coach-bus';
-import { setAdHold } from '@/lib/ads';
 import { GameCoach, CoachModeTabs, type CoachMode } from '@/components/GameCoach';
 import { sceneSquares, sceneLines, type SceneLine, type ExplainInput, type Scene, type SceneArrow, type SceneEval } from '@/lib/coach-explain';
 import type { AnalysisResult, AnalyzedMove, MoveQuality, PieceColor } from '@/lib/types';
@@ -555,7 +554,6 @@ interface AnalysisViewProps {
 
 export function AnalysisView({ analysis, currentIndex, onIndexChange, depth = 12, advancedCoach = false, coachVoice = false, coachVoiceName, endAnimations = true, onViewChange, onReanalyze }: AnalysisViewProps) {
   const [optionsOpen, setOptionsOpen] = useState(false);
-  useEffect(() => { setAdHold('options', optionsOpen); return () => setAdHold('options', false); }, [optionsOpen]);
   // Newest index, updated immediately so fast repeated steps never use a stale value.
   const idxRef = useRef(currentIndex);
   idxRef.current = currentIndex;

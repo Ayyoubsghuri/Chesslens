@@ -23,7 +23,6 @@ import { loadGames, saveGames, loadAnalyses, saveAnalysis, deleteAnalysis, loadS
 import type { ImportedGame, AnalysisResult, Settings as SettingsType, View } from '@/lib/types';
 import { onBackButton, onAppForeground, onSharedText, readClipboardText, isNative } from './native';
 import { ClipboardPrompt } from '@/components/ClipboardPrompt';
-import { setAdMode, setAdHold } from '@/lib/ads';
 import { looksLikePgn, parsePgnText } from '@/lib/pgn-clean';
 import { Loader2, Plus, Settings as SettingsIcon, BarChart3, GraduationCap, Target, Crown as ChessIcon, Upload, Swords, Home, Trash2, ChevronLeft, ChevronRight, Search, X, BookOpen, MoreHorizontal } from 'lucide-react';
 
@@ -327,9 +326,6 @@ function App() {
 
   // Ads (Android app only): a medium banner while analyzing, then a small banner at the bottom of the review page.
   const inReviewScreen = page === 'home' && !!selectedGame && !!selectedAnalysis;
-  useEffect(() => { setAdMode(analyzing ? 'loading' : inReviewScreen ? 'bottom' : 'none'); }, [analyzing, inReviewScreen]);
-  useEffect(() => { setAdHold('app', showSettings || showImport || !!clipGames); }, [showSettings, showImport, clipGames]);
-  const adPad = isNative() && inReviewScreen && !analyzing;
 
   const PAGE_TITLES: Record<string, string> = { learn: 'Learn Path', openings: 'Openings', puzzles: 'Puzzles', play: 'Play vs Computer' };
   const canGoBack = page !== 'home' || !!selectedGame;
@@ -396,7 +392,7 @@ function App() {
         </div>
       </header>
 
-      <main key={`${page}-${selectedGameId ?? ""}`} className={`page-enter flex-1 max-w-7xl mx-auto w-full px-4 pt-4 sm:pt-6 ${adPad ? 'pb-[calc(env(safe-area-inset-bottom)+9rem)]' : 'pb-[calc(env(safe-area-inset-bottom)+5rem)]'} sm:pb-6`}>
+      <main key={`${page}-${selectedGameId ?? ""}`} className={`page-enter flex-1 max-w-7xl mx-auto w-full px-4 pt-4 sm:pt-6 pb-[calc(env(safe-area-inset-bottom)+5rem)] sm:pb-6`}>
         {missionCtx && page === missionCtx.page && (
           <MissionBanner
             mission={missionCtx.mission}

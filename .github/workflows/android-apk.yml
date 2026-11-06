@@ -16,7 +16,8 @@ jobs:
       - run: npm ci
       - name: Build web app for Android (relative paths)
         run: npm run build:android
-        env: { CAP_BUILD: '1' }
+        env:
+          CAP_BUILD: '1'
       - name: Add Android project if missing, then sync
         run: |
           [ -d android ] || npx cap add android

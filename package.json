@@ -15,7 +15,6 @@
     "deploy": "gh-pages -d dist"
   },
   "dependencies": {
-    "@capacitor-community/admob": "^8.3.0",
     "@capacitor/app": "^8.1.2",
     "@capacitor/clipboard": "^8.0.0",
     "@capacitor/core": "^8.6.0",
