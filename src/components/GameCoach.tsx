@@ -92,18 +92,27 @@ interface Props {
   names?: { white: string; black: string };
   /** The student picked their side: the app saves that name as the user. */
   onPickYou?: (side: 'w' | 'b') => void;
+  /** Who won, when the result is known: the coach then says what lost (or won) the game. */
+  winner?: 'w' | 'b' | 'draw' | null;
 }
+
+const DETAILS: { id: GameDetail; label: string; title: string }[] = [
+  { id: 'key', label: 'Key moments', title: 'The story of the game: only the few moments that decided it' },
+  { id: 'highlights', label: 'All mistakes', title: 'Every inaccuracy, mistake and blunder, plus the brilliant and great moves' },
+  { id: 'every', label: 'Every move', title: 'A comment on every single move' },
+];
 
 /**
  * Whole-game coach: plays the entire game as a spoken-style review.
- *  - every move gets a reaction + why (good moves short, mistakes long)
- *  - mistakes are deepened in the background with the engine (threats, danger, missed shots, why-not-the-others)
- *  - "Highlights" skips the good moves, "Next mistake" jumps straight to the next one
+ *  - "Key moments" (default): how the game went in a few sentences, then only the moves that decided it, then what lost / won it
+ *  - "All mistakes" / "Every move": the longer reviews
+ *  - each moment is deepened in the background with the engine (the cause, why the better move is better, the line that was
+ *    missed, and why the tempting alternative fails too)
  */
 export function GameCoach({
-  moves, currentIndex, onIndexChange, previewActive, onScene, you = null, level, depth, compact, voice = false, voiceName, names, onPickYou,
+  moves, currentIndex, onIndexChange, previewActive, onScene, you = null, level, depth, compact, voice = false, voiceName, names, onPickYou, winner = null,
 }: Props) {
-  const [detail, setDetail] = useState<GameDetail>('every');
+  const [detail, setDetail] = useState<GameDetail>('key');
   const [side, setSide] = useState<SideFilter>('both');
   // The review is built in small slices (not in one blocking pass), so the page stays alive and shows a loading bar.
   const [allBeats, setBeats] = useState<GameBeat[]>([]);
@@ -114,11 +123,11 @@ export function GameCoach({
     let dead = false;
     setBeats([]); setBuilding(moves.length > 0); setBuildFrac(0);
     if (!moves.length) return;
-    prepareGameBeats(moves, { you, level, depth, detail }, (f) => { if (!dead) setBuildFrac(f); }, () => dead)
+    prepareGameBeats(moves, { you, level, depth, detail, winner }, (f) => { if (!dead) setBuildFrac(f); }, () => dead)
       .then((b) => { if (!dead && b) { setBeats(b); setBuilding(false); } })
       .catch(() => { if (!dead) setBuilding(false); });
     return () => { dead = true; };
-  }, [moves, you, level, depth, detail]);
+  }, [moves, you, level, depth, detail, winner]);
   const [deep, setDeep] = useState<Record<string, GameScene[]>>({});
   const [deepBusy, setDeepBusy] = useState<string | null>(null);
   const timeline = useMemo<TimelineItem[]>(() => flattenBeats(beats, deep), [beats, deep]);
@@ -268,7 +277,7 @@ export function GameCoach({
   useEffect(() => {
     if (!started || !item) return;
     const here = beats.findIndex((b) => b.id === item.beatId);
-    const wanted = beats.filter((b, i) => i >= here && b.kind === 'bad' && b.deepInput && !deep[b.id]).slice(0, 2);
+    const wanted = beats.filter((b, i) => i >= here && b.deepInput && !deep[b.id]).slice(0, 2);
     if (!wanted.length || deepBusy) return;
     const b = wanted[0];
     if (inflight.current.has(b.id)) return;
@@ -335,6 +344,7 @@ export function GameCoach({
   const overall = Math.min(1, (idx + (started ? prog : 0)) / total);
   const btn = 'flex items-center justify-center rounded-lg bg-ink-700/60 hover:bg-ink-600/70 text-ink-200 transition-colors disabled:opacity-40 w-9 h-9';
   const badCount = beats.filter((b) => b.kind === 'bad').length;
+  const deepCount = beats.filter((b) => b.deepInput).length;
 
   return (
     <div className="mt-2 w-full min-w-0 max-w-full overflow-hidden rounded-xl bg-ink-800/70 border border-ink-700/60 p-3">
@@ -437,18 +447,29 @@ export function GameCoach({
         >
           <AlertTriangle size={13} /> Next mistake{badCount ? ` (${badCount})` : ''}
         </button>
-        <button
-          onClick={() => setDetail((d) => (d === 'every' ? 'highlights' : 'every'))}
-          className="ml-auto flex items-center gap-1.5 rounded-lg px-2 py-1.5 text-xs text-ink-300 hover:bg-ink-700/70"
-          title={detail === 'every' ? 'Skip the good moves and only talk about the big moments' : 'Explain every move'}
-        >
-          <Filter size={13} /> {detail === 'every' ? 'Every move' : 'Highlights only'}
-        </button>
+      </div>
+
+      {/* How much the coach says: the story of the game, every mistake, or every move */}
+      <div className="mt-2 flex items-center gap-1 rounded-lg bg-ink-900/40 p-0.5" role="group" aria-label="How much the coach comments">
+        <Filter size={12} className="ml-1.5 shrink-0 text-ink-500" />
+        {DETAILS.map((d) => (
+          <button
+            key={d.id}
+            onClick={() => setDetail(d.id)}
+            aria-pressed={detail === d.id}
+            title={d.title}
+            className={`min-w-0 flex-1 truncate rounded-md px-2 py-1 text-[11px] font-semibold transition-colors ${
+              detail === d.id ? 'bg-ink-600 text-white' : 'text-ink-400 hover:bg-ink-700/60 hover:text-ink-200'
+            }`}
+          >
+            {d.label}
+          </button>
+        ))}
       </div>
 
       {deepBusy && (
         <div className="mt-2 flex items-center gap-1.5 text-[11px] text-ink-400">
-          <Loader2 size={11} className="animate-spin" /> Looking ahead on mistakes ({Math.min(badCount, Object.keys(deep).length + 1)}/{badCount})…
+          <Loader2 size={11} className="animate-spin" /> Checking the lines with the engine ({Math.min(deepCount, Object.keys(deep).length + 1)}/{deepCount})…
         </div>
       )}
       {voiceBusy && (

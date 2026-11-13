@@ -24,7 +24,7 @@ import { describeTactics, winnableCaptures, other, NAME, type PlyMove, type Side
 import { lookAhead, missedTactic, threats } from '@/lib/tactics-lookahead';
 import { analyzePhase, movePurpose, moveInsights } from '@/lib/positional';
 import {
-  buildCoreScenes, buildAdvancedExplanation, moveCause, causeSummary, parseSegs,
+  buildCoreScenes, buildAdvancedExplanation, buildFocusedExplanation, moveCause, causeSummary, parseSegs, CAUSE_LABEL,
   type Scene, type SceneArrow, type SceneEval, type ExplainInput, type CoachLevel,
 } from '@/lib/coach-explain';
 import {
@@ -34,6 +34,8 @@ import {
   BIG_SWING, SUMMARY_LEAD, SUMMARY_GOOD_GAME, SUMMARY_ROLLERCOASTER, SUMMARY_ROUGH, HOMEWORK,
   analogyFor, dramaFor, type Phase,
 } from '@/lib/coach-streamer';
+
+import { buildStory, verdictText, gistOf, storyNames, type GameStory, type MomentRole } from '@/lib/coach-story';
 
 // ===========================================================================
 // Types
@@ -58,10 +60,18 @@ export interface GameBeat {
   tail: GameScene[];
   /** Set on bad beats: everything the engine-assisted look-ahead needs. */
   deepInput?: ExplainInput;
+  /** Key-moments review: the look-ahead keeps to the point (cause, better move, the line missed, the tempting move that fails). */
+  focused?: boolean;
+  /** Key-moments review: why the coach stops at this move. */
+  role?: MomentRole;
 }
 
-/** 'every' = explain every move; 'highlights' = only brilliant / great / mistakes (good moves are skipped). */
-export type GameDetail = 'every' | 'highlights';
+/**
+ * 'key'        = the story of the game: only the handful of moments that decided it (the default),
+ * 'highlights' = every brilliant / great move and every inaccuracy, mistake, miss and blunder,
+ * 'every'      = every single move.
+ */
+export type GameDetail = 'key' | 'highlights' | 'every';
 
 export interface GameCoachOptions {
   /** The side the student played. null = narrate "White" and "Black". */
@@ -69,6 +79,8 @@ export interface GameCoachOptions {
   level?: CoachLevel;
   depth: number;
   detail: GameDetail;
+  /** Who won, when the game result is known ('draw' for a draw). Lets the coach say what LOST the game. */
+  winner?: Side | 'draw' | null;
 }
 
 export interface TimelineItem {
@@ -428,6 +440,158 @@ function buildBad(m: AnalyzedMove, c: Ctx, run: Run, prev: AnalyzedMove | null, 
 }
 
 // ===========================================================================
+// Key moments: the coach only stops where the game was decided
+// ===========================================================================
+
+const isBetterScene = (s: Scene) => (s.chip ?? '').startsWith('Better:') || s.chip === 'The idea you missed';
+
+interface KeyRun {
+  /** Index of the last move the coach talked about (-1 = none yet). */
+  lastTold: number;
+  /** cause id -> the move where its habit was first given, so a rule is said once and then only pointed back to. */
+  habits: Map<string, string>;
+  covered: Set<number>;
+}
+
+const STAND_WORD = (p: number | null, who: string, be: string): string => {
+  if (p == null) return '';
+  const a = Math.abs(p);
+  if (a < 0.4) return 'the position is about level';
+  const size = a < 1 ? 'a little' : a < 2.5 ? 'clearly' : '';
+  return p > 0
+    ? `${who} ${be} ${a >= 2.5 ? 'winning' : `${size} better`}`
+    : `${who} ${be} ${a >= 2.5 ? 'losing' : `${size} worse`}`;
+};
+
+/** One sentence that carries the student from the last moment to this one, so the review reads as one game. */
+function bridge(m: AnalyzedMove, c: Ctx, run: KeyRun, moves: AnalyzedMove[]): string {
+  const gap = m.index - run.lastTold;
+  if (run.lastTold < 0 || gap < 6) return '';
+  const focus: Side = c.you ?? m.color;
+  const p = moverPawns(m.evalBefore, focus);
+  const stand = STAND_WORD(p, c.you === null ? (focus === 'w' ? 'White' : 'Black') : 'you', c.you === null ? 'is' : 'are');
+  const quiet = moves.slice(run.lastTold + 1, m.index).every((x) => (x.winPercentLoss ?? 0) < 10);
+  const lead = `${quiet ? 'Nothing dramatic for a while. ' : ''}We pick it up at move ${Math.floor(m.index / 2) + 1}`;
+  if (!stand) return `${lead}.`;
+  return `${lead}: ${stand}.`;
+}
+
+function roleLine(m: AnalyzedMove, role: MomentRole, c: Ctx, lossPts: number): string {
+  const mine = isStudent(c, m.color);
+  const sub = c.you === null ? (m.color === 'w' ? 'White' : 'Black') : mine ? 'you' : 'your opponent';
+  const loss = Math.round(lossPts);
+  switch (role) {
+    case 'decisive': return 'This is the move that decided the game.';
+    case 'slip': return 'This is where the trouble started.';
+    case 'thrown-away': return `${sub === 'you' ? 'You were' : sub + ' was'} winning here, and this is the move that let it go.`;
+    case 'gift': return `Here ${sub} went wrong, and this is what handed ${c.you === null ? 'the other side' : 'you'} the game.`;
+    case 'strong': return m.quality === 'brilliant' ? `A brilliant move from ${sub}. It deserves a proper look.` : `A great move from ${sub}: the kind that is easy to miss.`;
+    default: return loss >= 8 ? `This one cost about ${loss}% of ${sub === 'you' ? 'your' : sub + "'s"} winning chances.` : '';
+  }
+}
+
+function buildKeyBeat(m: AnalyzedMove, role: MomentRole, c: Ctx, run: KeyRun, moves: AnalyzedMove[], story: GameStory): GameBeat {
+  const seed = `${m.index}:${m.san}`;
+  const byStudent = isStudent(c, m.color);
+  const q = m.quality;
+  const inp: ExplainInput = { ...inputFor(m, c.depth, c.level), terse: true };
+  const mv = uciOf(m.fenBefore, m.san);
+  const bad = isBad(q);
+  const Q = q[0].toUpperCase() + q.slice(1);
+
+  // The first step of a moment says it all at once: where we are, why the coach stops here, and the verdict with its reason.
+  const all = buildCoreScenes(inp) as GameScene[];
+  const verdict = all[0];
+  const core = all.slice(1);
+  const headText = [bridge(m, c, run, moves), `**${label(m)}**.`, roleLine(m, role, c, story.loss[m.index - moves[0].index] ?? 0)].filter(Boolean).join(' ');
+  const head: GameScene = {
+    ...scene(m, headText, {
+      arrows: verdict?.arrows ?? (mv ? [{ from: mv.from, to: mv.to, color: bad ? 'red' : 'green' }] : []), chip: `${label(m)} · ${Q}`, quality: q,
+    }),
+  };
+  if (verdict) head.text = [...head.text, { t: ' ' }, ...verdict.text];
+  run.lastTold = m.index;
+  const tail: GameScene[] = [];
+
+  // ---- the opponent's mistake that the student punished: what it allowed, then the student's answer. No lecture.
+  if (role === 'gift' && c.you !== null && !byStudent) {
+    const body = core.filter((s) => !isBetterScene(s) && !(s.chip ?? '').startsWith('Result'));
+    const next = moves[m.index + 1];
+    if (next && isStudent(c, next.color) && !isBad(next.quality)) {
+      const nd = whatItDoes(next, c, seed + ':n');
+      const exact = next.isBestMove || next.quality === 'best' || STRONG.includes(next.quality);
+      tail.push(scene(next, `You answered with **${next.san}**. ${nd.text} ${exact ? 'That is exactly the punishment.' : 'Good enough to take over.'}`, {
+        arrows: nd.arrows, chip: 'Your answer', quality: next.quality, plain: false,
+      }));
+      run.covered.add(next.index);
+      run.lastTold = next.index;
+    }
+    return { id: `m${m.index}`, moveIndex: m.index, kind: 'bad', quality: q, byStudent, head: [head], body, tail, role };
+  }
+
+  // ---- a brilliant / great move: what it does; the engine pass adds why the natural move fails
+  if (!bad) {
+    return { id: `m${m.index}`, moveIndex: m.index, kind: 'good', quality: q, byStudent, head: [head], body: core.slice(0, 2), tail, deepInput: inp, focused: true, role };
+  }
+
+  // ---- a mistake: the rule that would have caught it, said ONCE per kind of mistake
+  const cause = moveCause(inp);
+  if (cause) {
+    const firstAt = run.habits.get(cause.id);
+    if (firstAt) {
+      tail.push(scene(m, `Same kind of mistake as **${firstAt}**: ${CAUSE_LABEL[cause.id].toLowerCase()}. When a mistake repeats, that is the one to fix first.`, {
+        chip: 'Pattern', plain: true,
+      }));
+    } else {
+      run.habits.set(cause.id, label(m));
+      tail.push(scene(m, habitFor(seed + ':h', cause.id), { chip: 'Takeaway', plain: true }));
+    }
+  }
+  // (the engine pass replaces this body: it adds the proven cause, the line that was missed and the tempting move that fails)
+  const body = core.filter((s) => s.chip !== 'The idea you missed');
+  return { id: `m${m.index}`, moveIndex: m.index, kind: 'bad', quality: q, byStudent, head: [head], body, tail, deepInput: inp, focused: true, role };
+}
+
+/** The closing of a key-moments review: what decided the game, what was missed, the one thing to work on. */
+function keySummaryBeat(moves: AnalyzedMove[], c: Ctx, story: GameStory): GameBeat {
+  const last = moves[moves.length - 1];
+  const names = storyNames(c.you);
+  const stu: Side = story.focus;
+  const head: GameScene[] = [];
+  const d = story.decisive;
+  const title = story.outcome === 'lost' ? (c.you ? 'Why you lost' : `Why ${stu === 'w' ? 'White' : 'Black'} lost`)
+    : story.outcome === 'won' ? (c.you ? 'How you won' : 'How the game was won')
+    : 'The verdict';
+  const best = d?.evalBefore?.bestMove;
+  head.push(scene(d ?? last, verdictText(story, c.you, moves), {
+    fen: d ? d.fenBefore : last.fenAfter, chip: title, plain: false, withEval: false,
+    arrows: d && best && best.length >= 4 && !d.isBestMove ? [{ from: best.slice(0, 2) as Square, to: best.slice(2, 4) as Square, color: 'green' }] : [],
+  }));
+
+  // What was on the board and not played: the tactics and wins the student walked past.
+  const mine = moves.filter((m) => isStudent(c, m.color) && isBad(m.quality) && m.quality !== 'inaccuracy');
+  const missed = mine.map((m) => ({ m, g: gistOf(m) ?? '' })).filter((x) => x.g.startsWith('missed')).slice(0, 3);
+  if (missed.length) {
+    const first = missed[0].m;
+    const fb = first.evalBefore?.bestMove;
+    head.push(scene(first, `What was on the board and not played: ${missed.map((x) => `on move ${Math.floor(x.m.index / 2) + 1} ${names.who(x.m.color)} ${x.g}`).join('; ')}. Before every move, look at the checks and captures for BOTH sides. That is where these hide.`, {
+      fen: first.fenBefore, chip: 'What you missed', plain: false, withEval: false,
+      arrows: fb && fb.length >= 4 ? [{ from: fb.slice(0, 2) as Square, to: fb.slice(2, 4) as Square, color: 'green' }] : [],
+    }));
+  }
+
+  const acc = computeAccuracy(moves);
+  const parts: string[] = [];
+  if (c.you) parts.push(`Accuracy: **${acc[stu === 'w' ? 'white' : 'black']}%** for you, **${acc[stu === 'w' ? 'black' : 'white']}%** for your opponent.`);
+  else parts.push(`Accuracy: White **${acc.white}%**, Black **${acc.black}%**.`);
+  const ids = mine.map((m) => moveCause(inputFor(m, c.depth, c.level))?.id).filter(Boolean) as any[];
+  const cs = ids.length ? causeSummary(ids) : null;
+  parts.push(cs ?? 'No recurring mistake in this game. Keep doing what you are doing, and check the moments above once more.');
+  head.push(scene(last, parts.join(' '), { chip: 'One thing to work on', plain: true }));
+  return { id: 'summary', moveIndex: d ? Math.max(0, d.index - 1) : last.index, kind: 'summary', byStudent: true, head, body: [], tail: [] };
+}
+
+// ===========================================================================
 // The whole game
 // ===========================================================================
 
@@ -499,15 +663,30 @@ function* beatSteps(moves: AnalyzedMove[], opt: GameCoachOptions): Generator<num
   // intro
   const side = c.you === 'w' ? 'You are White.' : c.you === 'b' ? 'You are Black.' : '';
   const opening = [...moves].reverse().find((m) => m.opening)?.opening;
-  beats.push({
+  const story = opt.detail === 'key' ? buildStory(moves, c.you, opt.winner ?? null) : null;
+  if (story) {
+    // The whole game in a few sentences first, so every moment that follows has its place in the story.
+    const colour = story.focus === 'w' ? 'White' : 'Black';
+    const result = c.you
+      ? (story.outcome === 'won' ? `You won this game with ${colour}.` : story.outcome === 'lost' ? `You lost this game with ${colour}.` : story.outcome === 'draw' ? `A draw, with you playing ${colour}.` : side)
+      : (story.outcome === 'draw' ? 'This game was drawn.' : opt.winner ? `${opt.winner === 'w' ? 'White' : 'Black'} won this game.` : '');
+    const n = [...story.picks.values()].length;
+    const plan = n === 0 ? 'No big swings to stop at, so this will be short.'
+      : `I will stop at the ${n === 1 ? 'one moment' : `${n} moments`} that decided it and skip the rest.`;
+    beats.push({
+      id: 'intro', moveIndex: 0, kind: 'intro', byStudent: true, body: [], tail: [],
+      head: [scene(first, [result, opening ? `Opening: **${opening.name}**.` : '', story.overview, plan].filter(Boolean).join(' '), { chip: 'The game in short', plain: true, withEval: false })],
+    });
+  } else beats.push({
     id: 'intro', moveIndex: 0, kind: 'intro', byStudent: true, body: [], tail: [],
     head: [scene(first, [vary('intro', GAME_INTRO, 'i'), side, opening ? `Opening: **${opening.name}**.` : ''].filter(Boolean).join(' '), { chip: 'Game review', plain: true, withEval: false })],
   });
+  const keyRun: KeyRun = { lastTold: -1, habits: new Map(), covered: run.covered };
 
   // leading book moves collapse into ONE beat
   let i = 0;
   while (i < moves.length && moves[i].quality === 'book') i++;
-  if (i >= 2) beats.push(bookBeat(moves.slice(0, i), c));
+  if (i >= 2) { if (!story) beats.push(bookBeat(moves.slice(0, i), c)); }
   else i = 0;
   if (i > 0) run.bookEnded = false;
   else run.bookEnded = true;
@@ -530,6 +709,11 @@ function* beatSteps(moves: AnalyzedMove[], opt: GameCoachOptions): Generator<num
       if (!m.opening) run.bookEnded = true;
       continue;
     }
+    if (story) {
+      const role = story.picks.get(i);
+      if (role) beats.push(buildKeyBeat(m, role, c, keyRun, moves, story));
+      continue;
+    }
     const bad = isBad(m.quality);
     const strong = STRONG.includes(m.quality);
     if (opt.detail === 'highlights' && !bad && !strong) { if (!m.opening) run.bookEnded = true; continue; }
@@ -541,7 +725,7 @@ function* beatSteps(moves: AnalyzedMove[], opt: GameCoachOptions): Generator<num
 
   const end = endBeat(moves[moves.length - 1], c);
   if (end) beats.push(end);
-  beats.push(summaryBeat(moves, c));
+  beats.push(story ? keySummaryBeat(moves, c, story) : summaryBeat(moves, c));
   return beats;
 }
 
@@ -597,14 +781,18 @@ export function flattenBeats(beats: GameBeat[], deep: Record<string, GameScene[]
 export async function deepenBeat(beat: GameBeat, isCancelled: () => boolean): Promise<GameScene[] | null> {
   if (!beat.deepInput) return null;
   try {
-    const all = await buildAdvancedExplanation(beat.deepInput, isCancelled);
+    const all = beat.focused
+      ? await buildFocusedExplanation(beat.deepInput, isCancelled)
+      : await buildAdvancedExplanation(beat.deepInput, isCancelled);
     if (isCancelled() || !all.length) return null;
+    // A focused beat already tells the verdict in its first step.
+    if (beat.focused) return all.slice(1) as GameScene[];
     return all as GameScene[]; // every scene, including the "extra" ones: this is the deep dive on a mistake
   } catch { return null; }
 }
 
 /** The beats that are worth deepening, in game order (bad moves by the student first, then the opponent's). */
-export const deepCandidates = (beats: GameBeat[]) => beats.filter((b) => b.kind === 'bad' && b.deepInput);
+export const deepCandidates = (beats: GameBeat[]) => beats.filter((b) => !!b.deepInput);
 
 /** Same scene on the board? (Keeps the learner on the same step when the body is replaced mid-playback.) */
 export const sameGameScene = (a: Scene, b: Scene) =>

@@ -16,7 +16,8 @@ ChessLens is a chess game review app that runs in your browser. Import a game an
   - **what happens next**, played out move by move,
   - **why the better move is better**, comparing your move with it side by side,
   - **the idea you missed**: the long-term plan the position was asking for.
-- **Whole-game coach**: a spoken review of the full game. Choose **Every move** or **Highlights only**, jump with **Next mistake**, and review **Both sides**, **White only** or **Black only**.
+- **Whole-game coach**: a spoken review of the full game. By default it only talks when it matters (**Key moments**): how the game went in a few sentences, then the handful of moves that decided it, then **why you lost (or won)**: the move that decided the game, where the trouble started, the chances and tactics you missed, and the one habit to work on. Switch to **All mistakes** or **Every move** for the longer reviews, jump with **Next mistake**, and review **Both sides**, **White only** or **Black only**.
+- **"What if I had played…?"**: for each key moment the coach also checks the move you were most likely to consider instead (the natural capture, the check, the other recapture) and shows the exact refutation when it fails.
 - **Coach voice**: a deep, calm coach voice reads each step out loud, and the board lights up each square as it is spoken.
 - **Best move**: shows the engine's best move on the board, then how the game would continue.
 - **Why not this move?**: try any move on the board and the coach explains it the same way.

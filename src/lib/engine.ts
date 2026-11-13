@@ -538,7 +538,9 @@ async function runBatch(
   const total = fens.length;
   const results: (EngineEvalMulti | null)[] = new Array(total).fill(null);
   let done = 0;
-  const tick = () => onProgress?.(++done, total);
+  // `done` must advance even without a callback: `onProgress?.(++done)` would skip the increment and the
+  // wrap-up loop below would never end.
+  const tick = () => { done += 1; onProgress?.(done, total); };
 
   const chunkCount = Math.ceil(total / CHUNK_SIZE);
   let nextChunk = 0;
