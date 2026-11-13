@@ -1,6 +1,8 @@
 /**
  * Coach voice.
  *
+ * 0. In the Android app the WebView has NO speech engine (window.speechSynthesis does not exist there), so the phone's
+ *    own text-to-speech is used through the Capacitor plugin (@capacitor-community/text-to-speech).
  * 1. Puter.js neural voices (free) - used only if the listener is already signed in to Puter,
  *    because Puter's sign-in popup is blocked by browsers when it isn't opened from a click.
  *    The default "Coach (deep)" voice is OpenAI's deep "onyx" voice, given delivery instructions so it sounds like a
@@ -10,7 +12,11 @@
  *
  * AdvancedCoach just calls speak(); the fallback is automatic.
  */
+import { Capacitor } from '@capacitor/core';
+
 declare global { interface Window { puter?: any } }
+
+const isNativeApp = () => { try { return Capacitor.isNativePlatform(); } catch { return false; } };
 
 /**
  * The coach's voices. "Coach (deep)" is the default: a deep baritone (OpenAI "onyx" through Puter) told to speak like a
@@ -250,57 +256,198 @@ function pickBrowserVoice(lang: 'en-GB' | 'en-US'): SpeechSynthesisVoice | undef
   return [...en].sort((a, b) => score(b) - score(a))[0];
 }
 
+/**
+ * Cuts the text into pieces of whole sentences (about 160 characters at most). Joined back together they are exactly
+ * the original text, so a position inside a piece is `offset + index`.
+ * Why: Chrome silently stops an utterance after about 15 seconds with its "Google" voices and never says it ended,
+ * which left the coach waiting forever on long explanations. Short pieces never hit that limit.
+ */
+export function speechChunks(spoken: string, max = 160): string[] {
+  const sentences = spoken.match(/[^.!?]+[.!?]*["')\]]*\s*/g) ?? [spoken];
+  const pieces: string[] = [];
+  for (const sen of sentences) {
+    if (sen.length <= max) { pieces.push(sen); continue; }
+    // one very long sentence: break at commas, then at spaces
+    let rest = sen;
+    while (rest.length > max) {
+      let cut = rest.lastIndexOf(', ', max);
+      if (cut < max * 0.4) cut = rest.lastIndexOf(' ', max);
+      if (cut <= 0) cut = max - 1;
+      pieces.push(rest.slice(0, cut + 1));
+      rest = rest.slice(cut + 1);
+    }
+    if (rest) pieces.push(rest);
+  }
+  const out: string[] = [];
+  for (const p of pieces) {
+    const last = out[out.length - 1];
+    if (last !== undefined && last.length + p.length <= max) out[out.length - 1] = last + p;
+    else out.push(p);
+  }
+  return out.filter((c) => c.length > 0);
+}
+
+const wait = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
+
 function speakBrowser(spoken: string, voice: string, opts: SpeakOptions): SpeakHandle {
   let cancelled = false;
   let tick: number | undefined;
-  const done = new Promise<void>((resolve, reject) => {
-    (async () => {
-      if (typeof window === 'undefined' || !('speechSynthesis' in window)) throw new Error('This browser has no speech support');
-      await voicesReady();
-      if (cancelled) return resolve();
-      const u = new SpeechSynthesisUtterance(spoken);
-      const prof = profileOf(voice);
-      const v = pickBrowserVoice(prof.lang);
+  let guard: number | undefined;
+  const stopTimers = () => { window.clearInterval(tick); window.clearTimeout(guard); };
+  const done = (async () => {
+    if (typeof window === 'undefined' || !('speechSynthesis' in window)) throw new Error('This browser has no speech support');
+    const synth = window.speechSynthesis;
+    await voicesReady();
+    if (cancelled) return;
+    // Something is still queued (the silent "unlock" sound, or the previous sentence): clear it, and give the engine a
+    // moment. speak() straight after cancel() is dropped by Chrome and Safari, and the coach then stays silent.
+    if (synth.speaking || synth.pending) { synth.cancel(); await wait(80); }
+    try { synth.resume(); } catch { /* ignore */ }
+    if (cancelled) return;
+
+    const prof = profileOf(voice);
+    const picked = pickBrowserVoice(prof.lang);
+    const chunks = speechChunks(spoken);
+    const total = Math.max(1, spoken.length);
+    const rate = opts.rate ?? prof.rate;
+    let best = 0;
+    let started = false;
+    const progress = (chars: number) => {
+      const p = Math.min(0.98, chars / total);
+      if (p > best) { best = p; opts.onProgress?.(p); }
+    };
+
+    /** Speaks one piece. Resolves when it ends (or stalls), rejects when the voice fails. `useVoice` false = the device default voice. */
+    const sayChunk = (text: string, offset: number, useVoice: boolean) => new Promise<void>((resolve, reject) => {
+      const u = new SpeechSynthesisUtterance(text);
+      const v = useVoice ? picked : undefined;
       if (v) { u.voice = v; u.lang = v.lang; } else u.lang = prof.lang;
       // Deeper and calmer than the default system voice. A device with only female voices gets pitched down further.
       u.pitch = v && isMaleVoice(v) ? prof.pitch : Math.max(0.5, prof.pitch - 0.12);
-      u.rate = opts.rate ?? prof.rate;
-      let best = 0;
-      const t0 = performance.now();
-      const estMs = Math.max(1200, spoken.length * 65); // ~15 chars/second, only used if no boundary events arrive
+      u.rate = rate;
+      const estMs = Math.max(900, text.length * 70 / Math.max(0.5, rate));
       let gotBoundary = false; // real word positions from the voice; the timer is only a fallback for voices without them
+      let t0 = performance.now();
+      let settled = false;
+      const finish = (err?: Error) => {
+        if (settled) return;
+        settled = true;
+        stopTimers();
+        u.onstart = u.onend = u.onerror = u.onboundary = null;
+        if (err) reject(err); else resolve();
+      };
       u.onstart = () => {
-        opts.onStart?.();
-        opts.onWord?.(0, spoken.length);
+        t0 = performance.now();
+        window.clearTimeout(guard);
+        if (!started) { started = true; opts.onStart?.(); }
+        opts.onWord?.(offset, spoken.length);
         tick = window.setInterval(() => {
-          const p = Math.min(0.95, (performance.now() - t0) / estMs);
-          if (p > best) { best = p; opts.onProgress?.(p); }
-          if (!gotBoundary) opts.onWord?.(Math.floor(p * spoken.length), spoken.length);
+          const el = performance.now() - t0;
+          const p = Math.min(0.97, el / estMs);
+          progress(offset + p * text.length);
+          if (!gotBoundary) opts.onWord?.(offset + Math.floor(p * text.length), spoken.length);
+          // The voice went quiet without saying it ended (Chrome does this): move on instead of hanging.
+          if (el > estMs * 2.2 + 4000) { try { synth.cancel(); } catch { /* ignore */ } finish(); }
         }, 100);
       };
       u.onboundary = (e) => {
         gotBoundary = true;
-        const p = Math.min(0.97, e.charIndex / Math.max(1, spoken.length));
-        if (p > best) { best = p; opts.onProgress?.(p); }
-        opts.onWord?.(e.charIndex, spoken.length);
+        progress(offset + e.charIndex);
+        opts.onWord?.(offset + e.charIndex, spoken.length);
       };
-      u.onend = () => { window.clearInterval(tick); opts.onProgress?.(1); opts.onWord?.(spoken.length, spoken.length); resolve(); };
+      u.onend = () => finish();
       u.onerror = (e) => {
-        window.clearInterval(tick);
-        if (cancelled || e.error === 'canceled' || e.error === 'interrupted') resolve();
-        else reject(new Error(e.error || 'Speech failed'));
+        if (cancelled || e.error === 'canceled' || e.error === 'interrupted') finish();
+        else finish(new Error(e.error || 'Speech failed'));
       };
-      window.speechSynthesis.cancel();
-      window.speechSynthesis.resume();
-      window.speechSynthesis.speak(u);
-    })().catch(reject);
-  });
+      // A voice that never starts (blocked sound, a broken or still-downloading voice) must not freeze the coach.
+      guard = window.setTimeout(() => { if (!settled) { try { synth.cancel(); } catch { /* ignore */ } finish(new Error('The voice did not start')); } }, 6000);
+      synth.speak(u);
+    });
+
+    let offset = 0;
+    let useVoice = true;
+    for (let i = 0; i < chunks.length; i++) {
+      if (cancelled) return;
+      try {
+        await sayChunk(chunks[i], offset, useVoice);
+      } catch (e) {
+        // The chosen voice failed before a single word: try once more with the device's default voice.
+        if (cancelled) return;
+        if (!started && useVoice && picked) { useVoice = false; await wait(120); i -= 1; continue; }
+        throw e;
+      }
+      offset += chunks[i].length;
+    }
+    if (cancelled) return;
+    opts.onProgress?.(1);
+    opts.onWord?.(spoken.length, spoken.length);
+  })();
   return {
     done,
     cancel() {
       cancelled = true;
-      window.clearInterval(tick);
+      stopTimers();
       try { window.speechSynthesis.cancel(); } catch { /* ignore */ }
+    },
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Android app: the phone's own text-to-speech (the WebView cannot speak)
+// ---------------------------------------------------------------------------
+let nativeTts: Promise<any> | null = null;
+const loadNativeTts = () => (nativeTts ??= import('@capacitor-community/text-to-speech').then((m) => m.TextToSpeech));
+
+function speakNative(spoken: string, voice: string, opts: SpeakOptions): SpeakHandle {
+  let cancelled = false;
+  let tick: number | undefined;
+  let listener: { remove?: () => void } | null = null;
+  const cleanup = () => { window.clearInterval(tick); try { listener?.remove?.(); } catch { /* ignore */ } listener = null; };
+  const done = (async () => {
+    const tts = await loadNativeTts();
+    if (cancelled) return;
+    const prof = profileOf(voice);
+    const rate = opts.rate ?? prof.rate;
+    const total = Math.max(1, spoken.length);
+    let gotRange = false;
+    try {
+      listener = await tts.addListener('onRangeStart', (info: { start: number }) => {
+        gotRange = true;
+        opts.onProgress?.(Math.min(0.98, info.start / total));
+        opts.onWord?.(info.start, spoken.length);
+      });
+    } catch { /* word positions are optional */ }
+    if (cancelled) return cleanup();
+    const t0 = performance.now();
+    const estMs = Math.max(1200, spoken.length * 70 / Math.max(0.5, rate));
+    opts.onStart?.();
+    opts.onWord?.(0, spoken.length);
+    tick = window.setInterval(() => {
+      if (gotRange) return;
+      const p = Math.min(0.95, (performance.now() - t0) / estMs);
+      opts.onProgress?.(p);
+      opts.onWord?.(Math.floor(p * spoken.length), spoken.length);
+    }, 100);
+    try {
+      // queueStrategy 0 = replace whatever is being said. The promise resolves when the sentence is finished.
+      await tts.speak({ text: spoken, lang: prof.lang, rate, pitch: prof.pitch, volume: 1, category: 'playback', queueStrategy: 0 });
+    } catch (e: any) {
+      cleanup();
+      if (cancelled) return;
+      throw new Error(e?.message ? String(e.message) : 'The phone has no text-to-speech voice installed');
+    }
+    cleanup();
+    if (cancelled) return;
+    opts.onProgress?.(1);
+    opts.onWord?.(spoken.length, spoken.length);
+  })();
+  return {
+    done,
+    cancel() {
+      cancelled = true;
+      cleanup();
+      loadNativeTts().then((tts) => tts.stop()).catch(() => {});
     },
   };
 }
@@ -349,7 +496,16 @@ export function speak(text: string, voice: string = DEFAULT_COACH_VOICE, opts: S
   let cancelled = false;
   let current: SpeakHandle | null = null;
   const done = (async () => {
-    const puter = await puterReady();
+    // The Android app speaks with the phone's own voice (its WebView has no speech engine, and Puter needs a sign-in popup).
+    if (isNativeApp()) {
+      current = speakNative(spoken, voice, opts);
+      await current.done;
+      return;
+    }
+    // Only wait for Puter when its script is already there or speech is not available at all: the browser voice must
+    // start right after the click, or phones refuse to play it.
+    const puter = window.puter || !('speechSynthesis' in window) ? await puterReady() : null;
+    if (!window.puter) void loadPuter().catch(() => {});
     if (cancelled) return;
     if (puter) {
       try {
@@ -370,6 +526,7 @@ export function speak(text: string, voice: string = DEFAULT_COACH_VOICE, opts: S
 /** Call from the Play button (a real click) so browsers allow sound afterwards. */
 export function unlockSpeech(): void {
   try {
+    if (isNativeApp()) { void loadNativeTts().catch(() => {}); return; }
     if (typeof window !== 'undefined' && 'speechSynthesis' in window) {
       window.speechSynthesis.getVoices();
       const u = new SpeechSynthesisUtterance(' ');

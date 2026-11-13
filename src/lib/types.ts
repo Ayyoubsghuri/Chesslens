@@ -113,7 +113,7 @@ export interface Settings {
   coachModel: string;
   /** Advanced coach mode: step-by-step move explanations under the coach bubble. */
   advancedCoach?: boolean;
-  /** Advanced coach reads each step aloud (Puter.js text-to-speech, free). */
+  /** The coach reads each step aloud. On unless set to false (the phone's / browser's own voice; Puter.js voices when signed in). */
   coachVoice?: boolean;
   /** Voice used for the spoken explanation (e.g. 'Joanna'). */
   coachVoiceName?: string;

@@ -106,22 +106,22 @@ export function SettingsModal({ settings, onSave, onClose }: SettingsModalProps)
               <button
                 type="button"
                 role="switch"
-                aria-checked={!!local.coachVoice}
-                onClick={() => setLocal({ ...local, coachVoice: !local.coachVoice })}
+                aria-checked={local.coachVoice !== false}
+                onClick={() => setLocal({ ...local, coachVoice: local.coachVoice === false })}
                 className="w-full flex items-center gap-3 text-left"
               >
                 <Volume2 size={18} className="text-brand-400 shrink-0" />
                 <span className="flex-1">
                   <span className="block text-sm font-medium text-ink-100">Speak explanations</span>
                   <span className="block text-xs text-ink-400 mt-0.5">
-                    The coach reads each step out loud in a deep, calm coach voice (free, via Puter.js; Puter may ask you to sign in the first time). Without Puter, your browser's most natural male voice is used, pitched down and slowed.
+                    The coach reads each step out loud, and the board lights up each square as it is said. It uses your phone's or browser's own voice (the most natural male voice it finds, pitched down and slowed). You can also mute it with the speaker button on the coach.
                   </span>
                 </span>
-                <span className={`relative h-6 w-11 shrink-0 rounded-full transition-colors ${local.coachVoice ? 'bg-brand-500' : 'bg-ink-600'}`}>
-                  <span className={`absolute top-0.5 h-5 w-5 rounded-full bg-white transition-all ${local.coachVoice ? 'left-[22px]' : 'left-0.5'}`} />
+                <span className={`relative h-6 w-11 shrink-0 rounded-full transition-colors ${local.coachVoice !== false ? 'bg-brand-500' : 'bg-ink-600'}`}>
+                  <span className={`absolute top-0.5 h-5 w-5 rounded-full bg-white transition-all ${local.coachVoice !== false ? 'left-[22px]' : 'left-0.5'}`} />
                 </span>
               </button>
-              {local.coachVoice && (
+              {local.coachVoice !== false && (
                 <select
                   value={local.coachVoiceName ?? DEFAULT_COACH_VOICE}
                   onChange={(e) => setLocal({ ...local, coachVoiceName: e.target.value })}
