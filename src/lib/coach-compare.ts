@@ -47,6 +47,8 @@ export interface CompareInput {
   threat?: { uci: string; gain: number } | null;
   narrate?: Narrator;
   level?: 'beginner' | 'intermediate' | 'advanced';
+  /** Key-moments review: the two strongest arguments only, no recap sentence. */
+  terse?: boolean;
 }
 
 export interface Comparison {
@@ -452,8 +454,17 @@ export function compareMoves(i: CompareInput): Comparison | null {
   }
 
   reasons.sort((a, b) => b.weight - a.weight);
+  if (i.terse) {
+    // When there is something concrete (a threat, material, a tactic), that IS the reason: no positional small talk next to it.
+    const concrete = reasons.filter((r) => r.crit === 'threat' || r.crit === 'material' || r.crit === 'tactic');
+    if (concrete.length) {
+      reasons.length = 0;
+      // what the played move loses has already been said by the verdict
+      reasons.push(...concrete.map((r) => (r.crit === 'material' && r.best ? { ...r, played: undefined } : r)).filter((r) => r.best || r.played));
+    }
+  }
   const bestSays = reasons.filter((r) => r.best).slice(0, 2);
-  const playedSays = reasons.filter((r) => r.played).slice(0, 2);
+  const playedSays = reasons.filter((r) => r.played).slice(0, i.terse ? 1 : 2);
   if (!bestSays.length && !playedSays.length) return null;
 
   const bSan = best.san.replace(/[+#]/g, '');
@@ -486,13 +497,13 @@ export function compareMoves(i: CompareInput): Comparison | null {
   // The verdict in human terms: which of the four criteria tip the balance, then the size of it.
   const wins = [...new Set([...playedSays, ...bestSays].sort((a, b) => b.weight - a.weight).map((r) => r.crit))].slice(0, 3);
   const words = wins.map((c) => CRIT_WORD[c]);
-  if (words.length && i.level !== 'beginner') {
+  if (words.length && i.level !== 'beginner' && !i.terse) {
     parts.push(v(seed + 'W', [
       `So ${bSan} wins on ${joinWords(words)}${pSan ? `, and that is the whole difference from ${pSan}` : ''}.`,
       `Add it up: ${bSan} is better on ${joinWords(words)}.`,
     ]));
   }
-  if (i.evalBefore != null && i.evalAfter != null) {
+  if (i.evalBefore != null && i.evalAfter != null && !i.terse) {
     const ew = evalWords(i.evalBefore - i.evalAfter);
     if (ew) parts.push(ew);
   }

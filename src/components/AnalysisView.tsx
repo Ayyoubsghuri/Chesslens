@@ -20,6 +20,7 @@ import { useElementSize } from '@/lib/useElementSize';
 import { getUsername, setUsername, youSide as sideOfUser } from '@/lib/player';
 import { offerCoachMove } from '@/lib/coach-bus';
 import { GameCoach, CoachModeTabs, type CoachMode } from '@/components/GameCoach';
+import { getGameOutcome } from '@/lib/outcome';
 import { sceneSquares, sceneLines, type SceneLine, type ExplainInput, type Scene, type SceneArrow, type SceneEval } from '@/lib/coach-explain';
 import type { AnalysisResult, AnalyzedMove, MoveQuality, PieceColor } from '@/lib/types';
 import {
@@ -580,6 +581,11 @@ export function AnalysisView({ analysis, currentIndex, onIndexChange, depth = 12
     setUsernameState(name);
   }
   const gameNames = { white: analysis.game.white || 'White', black: analysis.game.black || 'Black' };
+  /** Who won (from the PGN result), so the whole-game coach can say what lost the game. */
+  const gameWinner = useMemo<'w' | 'b' | 'draw' | null>(() => {
+    const w = getGameOutcome(analysis.game).winner;
+    return w === 'white' ? 'w' : w === 'black' ? 'b' : w;
+  }, [analysis.game]);
 
   const [orientation, setOrientation] = useState<'white' | 'black'>(() => (sideOfUser(analysis.game, getUsername()) === 'b' ? 'black' : 'white'));
   // Opening a game (or picking who you are): you are at the bottom of the board, the opponent on top.
@@ -1701,6 +1707,7 @@ export function AnalysisView({ analysis, currentIndex, onIndexChange, depth = 12
                   you={youSide}
                   names={gameNames}
                   onPickYou={pickYou}
+                  winner={gameWinner}
                   voice={coachVoice}
                   voiceName={coachVoiceName}
                   compact
@@ -1911,6 +1918,7 @@ export function AnalysisView({ analysis, currentIndex, onIndexChange, depth = 12
             you={youSide}
             names={gameNames}
             onPickYou={pickYou}
+            winner={gameWinner}
             voice={coachVoice}
             voiceName={coachVoiceName}
             compact
@@ -1999,6 +2007,7 @@ export function AnalysisView({ analysis, currentIndex, onIndexChange, depth = 12
             you={youSide}
             names={gameNames}
             onPickYou={pickYou}
+            winner={gameWinner}
             voice={coachVoice}
             voiceName={coachVoiceName}
           />

@@ -82,6 +82,11 @@ export interface ExplainInput {
   sequence?: 'full' | 'forcing';
   /** Who is learning: beginners get the short, simple version; advanced players get everything. Default: intermediate. */
   level?: CoachLevel;
+  /**
+   * Whole-game "key moments" review: facts only. No opening reaction, no analogy, no rule of thumb after every sentence
+   * (the review says each habit once, at the end of the moment).
+   */
+  terse?: boolean;
 }
 
 export type CoachLevel = 'beginner' | 'intermediate' | 'advanced';
@@ -302,7 +307,8 @@ function pickTactic(fenBefore: string, m: PlyMove, fenAfter: string) {
     return describeTactics(fenBefore, m as any, fenAfter).find(
       (t) =>
         t.kind !== 'promotion' &&
-        !(t.kind === 'fork' && !/king|queen|rook|knight|bishop/.test(t.text)) &&
+        // a fork needs two real targets: "the king and a pawn" is just a check
+        !(t.kind === 'fork' && (t.text.match(/king|queen|rook|knight|bishop/g) ?? []).length < 2) &&
         // a pawn "pinned" to a rook is not worth announcing: only pins against the king or queen
         !(t.kind === 'pin' && !/to the (king|queen)/.test(t.text)),
     ) ?? null;
@@ -342,6 +348,11 @@ const moverPawns = (ev: any, c: 'w' | 'b'): number | null => {
 
 
 // ---------- Stockfish checks, how a line ENDS, and the story of the position ----------
+
+/** Does the engine see a forced mate for `side`? */
+function mateFor(ev: any, side: 'w' | 'b'): boolean {
+  return typeof ev?.mate === 'number' && ev.mate !== 0 && (side === 'w') === (ev.mate > 0);
+}
 
 const uciMove = (u: string) => ({ from: u.slice(0, 2), to: u.slice(2, 4), promotion: u.length > 4 ? u[4] : undefined });
 const pvOf = (ev: any): string[] => ((ev?.continuation ?? '') as string).split(/\s+/).filter(Boolean);
@@ -619,6 +630,17 @@ async function buildCause(inp: ExplainInput, isCancelled: () => boolean): Promis
   return deep ?? base;
 }
 
+/**
+ * Material for the mover once the exchanges after the PLAYED move settle, counted from before the move:
+ * what the move itself captured is part of the bill (bishop takes knight, queen takes bishop = a trade, not a lost bishop).
+ */
+function settlePlayed(inp: ExplainInput, refu: string[]) {
+  try {
+    const m: any = new Chess(inp.fenBefore).move(inp.san);
+    return settleLine(inp.fenBefore, [m.from + m.to + (m.promotion ?? ''), ...refu], inp.color, 5, 13);
+  } catch { return settleLine(inp.fenAfter, refu, inp.color); }
+}
+
 /** Keeps the legal part of an engine line, and asks the engine to carry on when it is shorter than `minPlies`. */
 async function extendLine(fen: string, ucis: string[], minPlies: number, isCancelled: () => boolean): Promise<string[]> {
   const line: string[] = [];
@@ -651,7 +673,13 @@ function firstShot(fen: string, line: string[], side: 'w' | 'b'): { n: Narrated;
   for (let i = 0; i < Math.min(line.length, 7); i++) {
     if (c.turn() === side) {
       const n = narrateMove(c.fen(), line[i], line.slice(i + 1));
-      if (n && n.tactical) return { n, ply: i };
+      if (n && n.tactical) {
+        if (n.kind !== 'capture') return { n, ply: i };
+        // A plain capture only counts when it really wins something: not a recapture, and still ahead once the trades settle.
+        const recapture = i > 0 && line[i - 1].slice(2, 4) === line[i].slice(2, 4);
+        const net = settleLine(c.fen(), line.slice(i), side);
+        if (!recapture && net.settled && net.swing >= 2) return { n, ply: i };
+      }
     }
     try { c.move(uciMove(line[i])); } catch { break; }
   }
@@ -680,7 +708,7 @@ async function deepCause(inp: ExplainInput, isCancelled: () => boolean): Promise
     // ---- the line after the move that was played
     const refu = await extendLine(inp.fenAfter, pvOf(inp.evalAfter), 6, isCancelled);
     if (isCancelled()) return null;
-    const lm = settleLine(inp.fenAfter, refu, mover);
+    const lm = settlePlayed(inp, refu);
     const mateN = typeof inp.evalAfter?.mate === 'number' ? inp.evalAfter.mate : 0;
     const mated = mateN !== 0 && (mover === 'w' ? mateN < 0 : mateN > 0);
     const loses = lm.settled && lm.swing <= -1 && !!lm.worst;
@@ -716,7 +744,7 @@ async function deepCause(inp: ExplainInput, isCancelled: () => boolean): Promise
           ? ` and ${oppName} gets no such shot`
           : '';
         const gain = bm.settled && bm.swing >= 1 && bm.best ? `, and ${side} ends ++up ${article(NAME[bm.best])} ${NAME[bm.best]}++` : '';
-        sentences.push(`${bn.san === played.san ? '' : 'Instead, '}${how}${avoids}${gain}; ${keeps}.`);
+        sentences.push(`${sentences.length ? 'Instead, ' : 'The stronger move: '}${how}${avoids}${gain}; ${keeps}.`);
         arrows.push({ from: bn.from, to: bn.to, color: 'green' });
       }
     }
@@ -748,7 +776,7 @@ async function deepCause(inp: ExplainInput, isCancelled: () => boolean): Promise
 
   const b = moverPawns(inp.evalBefore, mover), a = moverPawns(inp.evalAfter, mover);
   if (!sentences.length) return null;
-  if (b != null && a != null && b - a >= 0.2) {
+  if (b != null && a != null && b - a >= 0.2 && !inp.terse) {
     sentences.push(`That costs about **${(b - a).toFixed(1)}** pawns of evaluation (${formatEval(inp.evalBefore)} to ${formatEval(inp.evalAfter)}).`);
   }
   const id: CauseId = tacticFound ? 'allowed-tactic' : 'positional';
@@ -903,7 +931,7 @@ export function buildCoreScenes(inp: ExplainInput): Scene[] {
   const after = moverPawns(inp.evalAfter, mover);
   const refutation = (inp.evalAfter?.continuation ?? '').split(/\s+/).filter(Boolean) as string[];
   // Material is counted where the exchange SETTLES (a trade is never cut in half); an unsettled line counts as unknown (0).
-  const lineMat = settleLine(inp.fenAfter, refutation, mover);
+  const lineMat = settlePlayed(inp, refutation);
   // How does the engine's line END? (stalemate, mate, repetition...) and did the move save / waste a game?
   const lineEnd = lineOutcome(inp.fenAfter, refutation);
   const drawSaved = savesDraw(before, after);
@@ -911,12 +939,17 @@ export function buildCoreScenes(inp: ExplainInput): Scene[] {
   let drawTold = false;
 
   // ---- Scene 1: the verdict and the reason
-  let text = `${bad ? badOpen(inp.quality, inp.fenAfter + inp.san) + ' ' : ''}${describeMove(played)} is ${WORD[inp.quality] ?? 'a move'}`;
+  let text = `${bad && !inp.terse ? badOpen(inp.quality, inp.fenAfter + inp.san) + ' ' : ''}${describeMove(played)} is ${WORD[inp.quality] ?? 'a move'}`;
   const arrows: SceneArrow[] = [playedArrow];
   if (bad) {
-    const hang = hangingInfo(inp.fenAfter, played.to, mover);
+    const hang0 = hangingInfo(inp.fenAfter, played.to, mover);
+    // What the move itself captured counts: taking a knight and being taken back is a trade, not a piece left hanging.
+    const hang = hang0 && hang0.gain - (played.captured ? VAL[played.captured] : 0) >= 1 ? hang0 : null;
+    const matedNow = mateFor(inp.evalAfter, opp);
     if (stalemateWaste && lineEnd) {
       text += ` because the game ends in **stalemate**: ${sideName(lineEnd.stuck)} has no legal move and is not in check, so a won position (about ${pawnGap(inp.evalBefore, mover)} pawns up) becomes a draw.`;
+    } else if (matedNow) {
+      text += ` because it allows ${oppName} to force **checkmate**${mateFor(inp.evalBefore, mover) ? `, when ${side} had a forced mate of its own` : ''}.`;
     } else if (hang && (!refutation.length || verifyClaim(inp.fenAfter, refutation, { kind: 'wins-material', side: opp }).ok)) {
       text += ` because ${oppName} can ${hang.free ? 'win' : 'trade favorably for'} the **${NAME[played.piece]}** on ${played.to}`;
       text += hang.free ? ' for free.' : ` with the ${NAME[hang.attacker]}.`;
@@ -932,7 +965,7 @@ export function buildCoreScenes(inp: ExplainInput): Scene[] {
     let tacG = pickTactic(inp.fenBefore, played, inp.fenAfter);
     // "That's a fork" only when the engine's line really collects something afterwards.
     if (tacG?.kind === 'fork' && !verifyClaim(inp.fenAfter, refutation, { kind: 'fork', side: mover }).ok) tacG = null;
-    const opener = goodOpen(inp.quality, inp.fenAfter + inp.san);
+    const opener = inp.terse ? `${cap(WORD[inp.quality] ?? 'a good move')}:` : goodOpen(inp.quality, inp.fenAfter + inp.san);
     if (tacG && tacG.kind === 'mate') {
       const expl = tacG.text.split(': ')[1];
       text = `${describeMove(played)} — that's ${named(tacG.name)}${expl ? `: ${expl}` : ''}.`;
@@ -972,9 +1005,9 @@ export function buildCoreScenes(inp: ExplainInput): Scene[] {
     if (inp.isPlayedBest && inp.quality !== 'book' && tacG?.kind !== 'mate') {
       // Not just "the engine agrees": say the human reason it was the right move, when the board shows one.
       const virtue = bestMoveVirtue(inp.fenBefore, played.from + played.to + (played.promotion ?? ''), mover);
-      text += virtue && !text.includes(virtue) ? ` Even better, ${virtue}.` : topChoice(inp.fenAfter + inp.san);
+      text += virtue && !text.includes(virtue) ? ` Even better, ${virtue}.` : inp.terse ? '' : topChoice(inp.fenAfter + inp.san);
     }
-    try { text += principleTail(inp.quality, analyzePhase(inp.fenAfter), inp.fenAfter + inp.san); } catch { /* ignore */ }
+    if (!inp.terse) try { text += principleTail(inp.quality, analyzePhase(inp.fenAfter), inp.fenAfter + inp.san); } catch { /* ignore */ }
   }
   // Lines on the board: the tactic (fork / pin / skewer / ...) or, failing that, what the moved piece now attacks.
   // A bad move whose piece just hangs is explained by "can win the piece for free", not by a tactic.
@@ -990,7 +1023,12 @@ export function buildCoreScenes(inp: ExplainInput): Scene[] {
 
   // ---- What happens next (punishment if bad, follow-up if good)
   // After the best move there is nothing to warn about: explain why it is good and stop (no "the game could go...").
+  const lead = (kind: Parameters<typeof resultLead>[0]) => (inp.terse ? '' : resultLead(kind, inp.fenAfter + inp.san) + ' ');
+  const analogy = inp.quality === 'blunder' && !inp.terse ? blunderAnalogy(inp.fenAfter + inp.san, inp.level) : '';
   const lineSc = (!bad && inp.isPlayedBest && !drawSaved) || (bad && quietLine(inp)) ? [] : lineScenes(inp.fenAfter, refutation, mover, bad ? 5 : 3, bad ? 'reply' : 'then');
+  if (inp.terse && bad && lineSc.length > 1 && !lineEnd) {
+    lineSc.length = payoffLength(lineSc) || 1;
+  }
   scenes.push(...lineSc);
   if (bad && lineSc.length) {
     const phrase = materialPhrase(lineMat);
@@ -1000,22 +1038,22 @@ export function buildCoreScenes(inp: ExplainInput): Scene[] {
     const wasText = before != null ? ` (it was ${formatEval(inp.evalBefore)} before the move)` : '';
     let resultText: string;
     if (stalemateWaste) {
-      resultText = `${resultLead('stalemate', inp.fenAfter + inp.san)} The game ends in **stalemate**: a draw. ${side} was winning (about ${pawnGap(inp.evalBefore, mover)} pawns up) before this move.`;
+      resultText = `${lead('stalemate')}The game ends in **stalemate**: a draw. ${side} was winning (about ${pawnGap(inp.evalBefore, mover)} pawns up) before this move.`;
     } else if (mateAgainst) {
       // The engine sees a forced mate: this move loses the game, not just "a bit of advantage".
       const n = Math.abs(mateN);
-      resultText = `${resultLead('mate', inp.fenAfter + inp.san)} This loses the game: ${oppName} has a forced **checkmate in ${n}**${n === 1 ? ' — it comes on the very next move' : ''}.${before != null ? ` The position was ${formatEval(inp.evalBefore)} before the move.` : ''}`;
+      resultText = `${lead('mate')}This loses the game: ${oppName} has a forced **checkmate in ${n}**${n === 1 ? ' — it comes on the very next move' : ''}.${mateFor(inp.evalBefore, mover) ? ` ${side} had a forced checkmate before this move.` : before != null ? ` The position was ${formatEval(inp.evalBefore)} before the move.` : ''}`;
     } else if (after != null && after <= -5) {
-      resultText = `${resultLead('lost', inp.fenAfter + inp.san)} After this, ${side} is **completely lost**${phrase ? ` and ${phrase}` : ''}. The engine now shows **${formatEval(inp.evalAfter)}**${wasText}.${inp.quality === 'blunder' ? blunderAnalogy(inp.fenAfter + inp.san, inp.level) : ''}`;
+      resultText = `${lead('lost')}After this, ${side} is **completely lost**${phrase ? ` and ${phrase}` : ''}. The engine now shows **${formatEval(inp.evalAfter)}**${wasText}.${analogy}`;
     } else if (after != null && after <= -2.5) {
-      resultText = `${resultLead('losing', inp.fenAfter + inp.san)} After this, ${side} is **clearly losing**${phrase ? ` and ${phrase}` : ''}. The engine now shows **${formatEval(inp.evalAfter)}**${wasText}.${inp.quality === 'blunder' ? blunderAnalogy(inp.fenAfter + inp.san, inp.level) : ''}`;
+      resultText = `${lead('losing')}After this, ${side} is **clearly losing**${phrase ? ` and ${phrase}` : ''}. The engine now shows **${formatEval(inp.evalAfter)}**${wasText}.${analogy}`;
     } else {
       // Say what is really left: an inaccuracy at +0.4 is not "clearly worse".
       const standing = after == null || after <= -1 ? 'is clearly worse'
         : after < -0.3 ? 'is a little worse now'
         : after <= 0.3 ? 'has let the position drift back to equal'
         : 'is still a bit better, but a good part of the edge is gone';
-      resultText = `${resultLead('worse', inp.fenAfter + inp.san)} After this, ${side} ${phrase ?? standing}. The engine now shows **${formatEval(inp.evalAfter)}**${wasText || ''}.`;
+      resultText = `${lead('worse')}After this, ${side} ${phrase ?? standing}. The engine now shows **${formatEval(inp.evalAfter)}**${wasText || ''}.`;
     }
     scenes.push({
       ...last,
@@ -1028,6 +1066,12 @@ export function buildCoreScenes(inp: ExplainInput): Scene[] {
   // ---- The better move: compared side by side with the played move, the way a coach does it
   scenes.push(...betterMoveScenes(inp, null, restAfter(inp.evalBefore, inp.bestUci ?? '') ?? []));
   return scenes;
+}
+
+/** How many scenes of a line to play so it ends on the payoff (the first capture that is not taken back). 0 = the line shows no payoff. */
+function payoffLength(line: Scene[]): number {
+  const at = line.slice(0, 6).findIndex((sc) => /wins the/.test(plainText(sc.text)));
+  return at < 0 ? 0 : at + 1;
 }
 
 /** Threat the opponent had before the move (from buildCause's "pass" search), kept so the better-move scene can use it. */
@@ -1052,10 +1096,17 @@ function betterMoveScenes(inp: ExplainInput, threat: { uci: string; gain: number
     const cmp = playedUci ? compareMoves({
       fenBefore: inp.fenBefore, mover, playedUci, playedLine: pvOf(inp.evalAfter), bestUci: inp.bestUci, bestLine,
       evalBefore: moverPawns(inp.evalBefore, mover), evalAfter: moverPawns(inp.evalAfter, mover), bad, threat,
-      narrate: (f, u, l) => narrateMove(f, u, l), level: inp.level,
+      narrate: (f, u, l) => narrateMove(f, u, l), level: inp.level, terse: inp.terse,
     }) : null;
     const out: Scene[] = [];
-    if (cmp) {
+    if (bm.san.endsWith('#') || mateFor(inp.evalBefore, mover)) {
+      const n = Math.abs(inp.evalBefore?.mate ?? 1);
+      out.push(mk(bestFen, bm,
+        bm.san.endsWith('#')
+          ? `**${bm.san}** was checkmate. The game ends right there.`
+          : `**${bm.san.replace(/[+#]/g, '')}** starts a forced **checkmate in ${n}**. When the king can be hunted down, nothing else on the board matters.`,
+        [{ from: bm.from, to: bm.to, color: 'green' }], `Better: ${bm.san}`));
+    } else if (cmp) {
       const sc = mk(bestFen, bm, cmp.text, cmp.arrows, `Better: ${bm.san} · why`);
       sc.squares = cmp.squares;
       out.push(sc);
@@ -1356,9 +1407,9 @@ function causeScene(inp: ExplainInput, pre: { threatBefore?: { uci: string; gain
   let played: any;
   try { played = new Chess(inp.fenBefore).move(inp.san); } catch { return null; }
   const refu = pvOf(inp.evalAfter);
-  const mat = settleLine(inp.fenAfter, refu, mover);
+  const mat = settlePlayed(inp, refu);
   const make = (id: CauseId, text: string, arrows: SceneArrow[]): Scene => {
-    const sc = mk(inp.fenAfter, played, `${text} ${habitFor(id, inp.fenAfter + inp.san)}`, arrows, `Why · ${CAUSE_LABEL[id]}`);
+    const sc = mk(inp.fenAfter, played, inp.terse ? text : `${text} ${habitFor(id, inp.fenAfter + inp.san)}`, arrows, `Why · ${CAUSE_LABEL[id]}`);
     sc.cause = { id, label: CAUSE_LABEL[id] };
     return sc;
   };
@@ -1375,7 +1426,7 @@ function causeScene(inp: ExplainInput, pre: { threatBefore?: { uci: string; gain
 
     // 1. The piece that just moved can be won, and the engine's reply really does it.
     const hang = hangingInfo(inp.fenAfter, played.to, mover);
-    if (hang && hang.gain >= 2 && (!refu.length || (refu[0].slice(2, 4) === played.to && verifyClaim(inp.fenAfter, refu, { kind: 'wins-material', side: opp }).ok))) {
+    if (hang && hang.gain - (played.captured ? VAL[played.captured] : 0) >= 2 && (!refu.length || (refu[0].slice(2, 4) === played.to && verifyClaim(inp.fenAfter, refu, { kind: 'wins-material', side: opp }).ok))) {
       return make('hung-piece',
         `${causeLead(inp.fenAfter + inp.san)}the ${NAME[played.piece]} on ${played.to} ${hang.free ? 'has no protection there' : 'can be taken by a cheaper piece'}, so ${oppName} simply wins material.`,
         [{ from: hang.from, to: played.to, color: 'red' }]);
@@ -1688,22 +1739,10 @@ export async function buildAdvancedExplanation(
   // Every "why" / threat / missed tactic is confirmed by Stockfish before it is shown.
   const cause = await buildCause(inp, isCancelled);
   const head: Scene[] = [core[0], ...(cause ? [cause] : [])];
-  // Now that the opponent's threat is known (and the engine line after the better move can be made longer),
-  // rebuild the "why the better move is better" scenes with that extra knowledge.
-  if (!inp.isPlayedBest && inp.bestUci && inp.bestUci.length >= 4 && !isCancelled()) {
-    try {
-      const bestFen = new Chess(inp.fenBefore); bestFen.move(uciMove(inp.bestUci));
-      const longer = await extendLine(bestFen.fen(), restAfter(inp.evalBefore, inp.bestUci) ?? [], 6, isCancelled);
-      const fresh = betterMoveScenes(inp, threatCache.get(threatKey(inp)) ?? null, longer);
-      if (fresh.length) {
-        const at = core.findIndex(isBetterScene);
-        if (at >= 0) core.splice(at, core.filter(isBetterScene).length, ...fresh);
-      }
-    } catch { /* keep the first version */ }
-  }
+  await refreshBetter(core, inp, isCancelled);
   if (isCancelled()) return core;
   // Nothing forcing behind this inaccuracy / mistake: the verdict, the why and the better move say it all. No sequence, no side lines.
-  if (quietLine(inp)) return [...head, ...core.slice(1)];
+  if (quietLine(inp)) return [...head, ...core.slice(1), ...(await whatIfScenes(inp, isCancelled))];
   const ex = (s: Scene[]): Scene[] => s.map((x) => ({ ...x, extra: true }));
   let ideas: Scene[] = [];
   let positional: Scene[] = [];
@@ -1722,6 +1761,8 @@ export async function buildAdvancedExplanation(
   const bestLine = await bestLineScenes(inp);
   if (isCancelled()) return fallback();
   const alsoGood = await alternativeScenes(inp);
+  // "What if I had played X?": the tempting move that does NOT work, with the refutation.
+  const whatIf = isCancelled() ? [] : await whatIfScenes(inp, isCancelled);
   const oppName = sideName(other(inp.color));
   const wasBad = BAD.includes(inp.quality);
   // If the look-ahead found something the played move THREATENS, the scenes that follow must know about it:
@@ -1750,6 +1791,7 @@ export async function buildAdvancedExplanation(
     ...(beginner ? [] : ex(positional)),
     ...ex(ideas),
     ...rest,
+    ...whatIf,
     ...(beginner ? [] : bestLine),
     ...(beginner ? [] : ex(alsoGood)),
   ];
@@ -1792,4 +1834,234 @@ export async function whyNotScenes(
     text: [{ t: lead, hl: 'key' }, ...core[0].text],
   };
   return withEngineInfo([head, ...(cause ? [cause] : []), ...core.slice(1)], inp.depth, isCancelled);
+}
+
+// ---------- "What if I had played X?" (the tempting move that fails) and the focused review ----------
+
+/**
+ * Now that the opponent's threat is known (and the engine line after the better move can be made longer),
+ * rebuild the "why the better move is better" scenes of `core` in place with that extra knowledge.
+ */
+async function refreshBetter(core: Scene[], inp: ExplainInput, isCancelled: () => boolean): Promise<void> {
+  if (inp.isPlayedBest || !inp.bestUci || inp.bestUci.length < 4 || isCancelled()) return;
+  try {
+    const bestFen = new Chess(inp.fenBefore); bestFen.move(uciMove(inp.bestUci));
+    const longer = await extendLine(bestFen.fen(), restAfter(inp.evalBefore, inp.bestUci) ?? [], 6, isCancelled);
+    const fresh = betterMoveScenes(inp, threatCache.get(threatKey(inp)) ?? null, longer);
+    if (fresh.length) {
+      const at = core.findIndex(isBetterScene);
+      if (at >= 0) core.splice(at, core.filter(isBetterScene).length, ...fresh);
+    }
+  } catch { /* keep the first version */ }
+}
+
+
+/**
+ * A mistake in a few words, as a verb phrase that fits after "you" or "White": "lost a knight", "allowed a **fork** with **Nc7**",
+ * "missed a forced **checkmate**". Used to tell the story of the whole game. No engine call; null when nothing concrete can be proven.
+ */
+export function mistakeGist(inp: ExplainInput): string | null {
+  if (!BAD.includes(inp.quality)) return null;
+  const mover = inp.color;
+  let played: any;
+  try { played = new Chess(inp.fenBefore).move(inp.san); } catch { return null; }
+  try {
+    const refu = pvOf(inp.evalAfter);
+    let bestSan = '';
+    try { if (inp.bestUci) bestSan = new Chess(inp.fenBefore).move(uciMove(inp.bestUci)).san.replace(/[+#]/g, ''); } catch { /* ignore */ }
+    if (mateFor(inp.evalAfter, other(mover)) && !mateFor(inp.evalBefore, other(mover))) {
+      return mateFor(inp.evalBefore, mover) && bestSan
+        ? `had a forced mate with **${bestSan}** and walked into a forced **checkmate** instead`
+        : 'walked into a forced **checkmate**';
+    }
+    if (mateFor(inp.evalBefore, mover) && !mateFor(inp.evalAfter, mover) && bestSan) {
+      return `missed a forced **checkmate** starting with **${bestSan}**`;
+    }
+    const id = causeScene(inp)?.cause?.id;
+    const lm = settlePlayed(inp, refu);
+    const lost = lm.settled && lm.swing <= -1 && lm.worst ? `${article(NAME[lm.worst])} ${NAME[lm.worst]}` : '';
+    if (id === 'stalemate-trap') return 'stalemated a won game';
+    if (id === 'hung-piece') return `left the ${NAME[played.piece]} on ${played.to} hanging`;
+    if (id === 'greedy' && played.captured && lost) return `grabbed the ${NAME[played.captured]} on ${played.to}, which cost ${lost}`;
+    if (id === 'allowed-tactic' && refu[0]) {
+      const n = narrateMove(inp.fenAfter, refu[0], refu.slice(1));
+      if (n) {
+        return n.kind === 'capture'
+          ? `allowed **${n.san}**, which ${n.does}`
+          : `allowed ${named(KIND_LABEL[n.kind] ?? 'tactic')} with **${n.san}**${lost ? `, losing ${lost}` : ''}`;
+      }
+    }
+    if (id === 'missed-tactic' && inp.bestUci) {
+      const n = narrateMove(inp.fenBefore, inp.bestUci, restAfter(inp.evalBefore, inp.bestUci));
+      if (n) return `missed ${named(KIND_LABEL[n.kind] ?? 'tactic')}: **${n.san}**`;
+    }
+    if (lost) return `lost ${lost}`;
+    if (inp.bestUci && inp.bestUci.length >= 4 && bestSan) {
+      const bm = settleLine(inp.fenBefore, [inp.bestUci, ...(restAfter(inp.evalBefore, inp.bestUci) ?? [])], mover, 5, 14);
+      if (bm.settled && bm.swing >= 2 && bm.best) return `missed the win of ${article(NAME[bm.best])} ${NAME[bm.best]} with **${bestSan}**`;
+    }
+  } catch { /* nothing provable */ }
+  return null;
+}
+
+/**
+ * "What if I had played X?" — the question every student asks, answered for the move they are most likely to ask about:
+ * the natural capture, the check, or the obvious way to answer the threat. Each candidate is searched by Stockfish and is
+ * only shown when its failure can be PROVEN on the board (a forced mate, a tactic in the engine's reply, material lost
+ * once the trades settle). After a mistake, a second sound move is mentioned instead when there was one.
+ */
+export async function whatIfScenes(inp: ExplainInput, isCancelled: () => boolean = () => false, max = 1): Promise<Scene[]> {
+  if (inp.quality === 'book' || inp.san.endsWith('#')) return [];
+  const mover = inp.color, opp = other(mover);
+  const side = sideName(mover), oppName = sideName(opp);
+  const bad = BAD.includes(inp.quality);
+  const ref = moverPawns(inp.evalBefore, mover);
+  if (ref == null) return [];
+  // The engine's own first choice was played and still got flagged: the evaluation before the move was too shallow to compare against.
+  if (bad && inp.isPlayedBest) return [];
+  let played: any, legal: any[];
+  try {
+    played = new Chess(inp.fenBefore).move(inp.san);
+    legal = new Chess(inp.fenBefore).moves({ verbose: true });
+  } catch { return []; }
+  const skip = new Set<string>([played.from + played.to]);
+  if (inp.bestUci && inp.bestUci.length >= 4) skip.add(inp.bestUci.slice(0, 4));
+  let bestSan = '';
+  try { if (inp.bestUci) bestSan = new Chess(inp.fenBefore).move(uciMove(inp.bestUci)).san.replace(/[+#]/g, ''); } catch { /* ignore */ }
+
+  // How "natural" a move looks to a human: captures first (bigger = more tempting), then checks, promotions,
+  // and the obvious answers to the opponent's threat (run away with the attacked piece, or take the attacker).
+  const threat = threatCache.get(threatKey(inp)) ?? null;
+  const bestTo = inp.bestUci && inp.bestUci.length >= 4 ? inp.bestUci.slice(2, 4) : '';
+  const cands = legal
+    .filter((m) => !skip.has(m.from + m.to) && (!m.promotion || m.promotion === 'q'))
+    .map((m) => {
+      let score = (m.captured ? 10 + VAL[m.captured] * 10 - VAL[m.piece] : 0) + (m.san.includes('+') ? 8 : 0) + (m.promotion ? 8 : 0);
+      if (threat && threat.gain >= 1 && (m.from === threat.uci.slice(2, 4) || m.to === threat.uci.slice(0, 2))) score += 9;
+      // "why not take with the other piece?": another capture on the square the played / best move captured on
+      if (m.captured && ((played.captured && m.to === played.to) || m.to === bestTo)) score += 14;
+      // the same piece going somewhere else is the move the player was choosing between
+      if (bad && m.from === played.from && score > 0) score += 3;
+      if (score > 0) {
+        // Nobody asks about a move that simply drops the piece on the spot: it has to LOOK playable.
+        try {
+          const c = new Chess(inp.fenBefore);
+          c.move({ from: m.from, to: m.to, promotion: m.promotion });
+          const h = c.isCheckmate() ? null : hangingInfo(c.fen(), m.to as Square, mover);
+          if (h && h.gain - (m.captured ? VAL[m.captured] : 0) >= 2) score = 0;
+        } catch { score = 0; }
+      }
+      return { m, score };
+    })
+    .filter((x) => x.score > 0)
+    .sort((a, b) => b.score - a.score)
+    .slice(0, 4);
+
+  const out: Scene[] = [];
+  let alsoFine: { san: string; ev: any } | null = null;
+  const depth = Math.min(inp.depth, 12);
+  for (const { m } of cands) {
+    if (out.length >= max || isCancelled()) break;
+    try {
+      const uci = m.from + m.to + (m.promotion ?? '');
+      const c = new Chess(inp.fenBefore);
+      c.move(uciMove(uci));
+      const fen = c.fen();
+      if (c.isGameOver()) continue;
+      const ev = await engineEval(fen, depth);
+      if (isCancelled()) break;
+      const alt = moverPawns(ev, mover);
+      if (alt == null) continue;
+      const san = (m.san as string).replace(/[+#]/g, '');
+      const mated = mateFor(ev, opp);
+      const loss = ref - alt;
+      if (!mated && loss <= 0.3) { if (!alsoFine) alsoFine = { san, ev }; continue; }
+      // It has to be clearly worse than the best move AND leave the mover in real trouble (not "wins a bit less").
+      if (!mated && (loss < 1 || alt > 1.5)) continue;
+      const refu = await extendLine(fen, pvOf(ev), 6, isCancelled);
+      if (isCancelled() || !refu.length) break;
+      const lm = settleLine(inp.fenBefore, [uci, ...refu], mover, 5, 14);
+      const loses = lm.settled && lm.swing <= -1 && !!lm.worst;
+      const shot = firstShot(fen, refu, opp);
+      const first = narrateMove(fen, refu[0], refu.slice(1));
+      if (!first || !(mated || loses || (shot && shot.n.kind !== 'capture' && loss >= 1.5))) continue;
+
+      const hook = m.captured ? `, taking the ${NAME[m.captured]} on ${m.to}` : m.san.includes('+') ? ', with check' : '';
+      const ask = bad
+        ? `What about **${san}** instead${hook}? It does not work either.`
+        : `Why not **${san}**${hook}? It looks natural, but it fails.`;
+      let why: string;
+      let shown: Narrated = first;
+      if (mated) {
+        const n = Math.abs(ev.mate);
+        why = `${oppName} has a forced **checkmate in ${n}**, starting with **${first.san}**.`;
+      } else if (shot && (shot.n.kind !== 'capture' || loses)) {
+        shown = shot.n;
+        const what = shot.n.kind === 'capture' ? `which ${shot.n.does}` : `${named(KIND_LABEL[shot.n.kind] ?? 'tactic')}: ${howClause({ kind: shot.n.kind, text: shot.n.does })}`;
+        why = shot.ply === 0
+          ? `${oppName} answers **${shot.n.san}**, ${what}.`
+          : `After **${first.san}**, ${oppName} gets **${shot.n.san}**, ${what}.`;
+      } else {
+        why = `${oppName} answers **${first.san}**, which ${first.does}.`;
+      }
+      const cost = !mated && loses ? ` When the trades end, ${side} is ~~down ${article(NAME[lm.worst!])} ${NAME[lm.worst!]}~~.` : '';
+      const nums = mated ? '' : ` The engine gives **${formatEval(ev)}**${bestSan ? `, against **${formatEval(inp.evalBefore)}** after ${bestSan}` : ''}.`;
+      const sc = mk(shown.fen, shown, `${ask} ${why}${cost}${nums}`, itemArrows(shown, 'red'), `What if ${san}?`);
+      sc.squares = [m.to as Square];
+      out.push(sc);
+    } catch { /* next candidate */ }
+  }
+  // After a mistake with no tempting failure to show: say when the best move was not the only good one.
+  if (bad && !out.length && alsoFine && bestSan && !isCancelled() && !mateFor(inp.evalBefore, mover)) {
+    try {
+      const c = new Chess(inp.fenBefore);
+      const m: any = c.move(alsoFine.san);
+      out.push(mk(c.fen(), m,
+        `${bestSan} was not the only way: **${alsoFine.san}** was fine too (**${formatEval(alsoFine.ev)}**). The position was not asking for one precise move, so this was a slip of attention, not of calculation.`,
+        [{ from: m.from, to: m.to, color: 'green' }], `Also fine: ${alsoFine.san}`));
+    } catch { /* ignore */ }
+  }
+  return out;
+}
+
+/**
+ * The focused explanation for the whole-game "key moments" review: only what a coach would say out loud.
+ *   mistake  -> verdict, the cause, the punishment (only when it is forcing), why the better move is better,
+ *               the line that was missed when the better move was a tactic, and the tempting move that fails too.
+ *   strong   -> what the move does (the sacrifice / the only move) and why the natural alternative fails.
+ * No structure notes, no four-criteria table, no side lines.
+ */
+export async function buildFocusedExplanation(inp0: ExplainInput, isCancelled: () => boolean = () => false): Promise<Scene[]> {
+  const inp: ExplainInput = { ...inp0, terse: true, sequence: 'forcing' };
+  const core = buildCoreScenes(inp);
+  if (!core.length || isCancelled()) return core;
+  const bad = BAD.includes(inp.quality);
+  if (!bad) {
+    const whatIf = await whatIfScenes(inp, isCancelled);
+    return [...core.slice(0, 3), ...whatIf];
+  }
+  const cause = await buildCause(inp, isCancelled);
+  if (isCancelled()) return core;
+  await refreshBetter(core, inp, isCancelled);
+  const better = core.filter((s) => (s.chip ?? '').startsWith('Better:'));
+  // The verdict already says what is lost: keep the closing "Result" step only when the game itself ends there.
+  const line = core.slice(1).filter((s) => !isBetterScene(s) && (s.chip !== 'Result'));
+  // "The piece hangs" is already the verdict's own reason.
+  const why = cause && cause.cause?.id !== 'hung-piece' ? [cause] : [];
+  // The better move was a tactic (or a forced mate): play it out, so the student SEES what was missed.
+  let missed: Scene[] = [];
+  try {
+    const n = inp.bestUci ? narrateMove(inp.fenBefore, inp.bestUci, restAfter(inp.evalBefore, inp.bestUci)) : null;
+    const bm = inp.bestUci ? settleLine(inp.fenBefore, [inp.bestUci, ...(restAfter(inp.evalBefore, inp.bestUci) ?? [])], inp.color, 5, 13) : null;
+    const mating = mateFor(inp.evalBefore, inp.color);
+    const bestSan = n?.san ?? '';
+    // Only when the win comes LATER in the line (a fork, a pin, a mating net): a plain capture is already shown by "Better".
+    if (n && !isCancelled() && !/#/.test(bestSan) && ((mating && Math.abs(inp.evalBefore?.mate ?? 0) > 1) || (n.kind !== 'capture' && !!bm && bm.settled && bm.swing >= 2))) {
+      const all = await bestLineScenes(inp);
+      missed = all.slice(0, mating ? 9 : payoffLength(all)).map((s, i) => (i === 0 ? { ...s, chip: `After ${bestSan}` } : s));
+    }
+  } catch { /* ignore */ }
+  const whatIf = isCancelled() ? [] : await whatIfScenes(inp, isCancelled);
+  const rest = await withEngineInfo([...line, ...better, ...missed, ...whatIf], inp.depth, isCancelled);
+  return [core[0], ...why, ...rest];
 }
