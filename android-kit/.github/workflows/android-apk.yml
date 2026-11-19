@@ -159,6 +159,27 @@ jobs:
           print('manifest ok:', 'android.intent.action.SEND' in s)
           PY
 
+      # The coach's voice in the app uses the phone's text-to-speech. Android 11+ only lets an app see the
+      # text-to-speech service when the manifest asks for it; without this the coach stays silent.
+      - name: Allow text-to-speech (coach voice)
+        run: |
+          python3 - <<'PY'
+          p = 'android/app/src/main/AndroidManifest.xml'
+          s = open(p, encoding='utf-8').read()
+          if 'android.intent.action.TTS_SERVICE' not in s:
+              q = '''
+              <queries>
+                  <intent>
+                      <action android:name="android.intent.action.TTS_SERVICE" />
+                  </intent>
+              </queries>
+          '''
+              i = s.rindex('</manifest>')
+              s = s[:i] + q + s[i:]
+              open(p, 'w', encoding='utf-8').write(s)
+          print('tts queries ok:', 'android.intent.action.TTS_SERVICE' in s)
+          PY
+
       # AdMob needs its app id inside the manifest. Your AdMob app id is the default; the repo variable ADMOB_APP_ID overrides it.
       - name: Add AdMob app id
         env:

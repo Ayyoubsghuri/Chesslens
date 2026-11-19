@@ -514,7 +514,7 @@ function App() {
                 onIndexChange={setCurrentMoveIndex}
                 depth={settings.analysisDepth}
                 advancedCoach={!!settings.advancedCoach}
-                coachVoice={!!settings.coachVoice}
+                coachVoice={settings.coachVoice !== false}
                 coachVoiceName={settings.coachVoiceName}
                 endAnimations={settings.endAnimations !== false}
                 onViewChange={setView}
