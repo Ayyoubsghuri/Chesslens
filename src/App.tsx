@@ -25,6 +25,7 @@ import { onBackButton, onAppForeground, onSharedText, readClipboardText, isNativ
 import { ClipboardPrompt } from '@/components/ClipboardPrompt';
 import { looksLikePgn, parsePgnText } from '@/lib/pgn-clean';
 import { Loader2, Plus, Settings as SettingsIcon, BarChart3, GraduationCap, Target, Crown as ChessIcon, Upload, Swords, Home, Trash2, ChevronLeft, ChevronRight, Search, X, BookOpen, MoreHorizontal } from 'lucide-react';
+import { Analytics } from '@vercel/analytics/react';
 
 const CLIP_KEY = 'chesslens.clipboardHandled';
 /** Small stable hash of the clipboard text, so the same PGN is only offered once. */
@@ -687,6 +688,7 @@ function GameLibrary({ games, analyses, onSelect, onDelete, onDeleteMany }: { ga
           </button>
         </div>
       )}
+      <Analytics />
     </div>
   );
 }
