@@ -25,6 +25,7 @@
     "@lichess-org/chessground": "^10.1.1",
     "@supabase/supabase-js": "^2.57.4",
     "@vercel/analytics": "^2.0.1",
+    "@vercel/speed-insights": "^2.1.0",
     "chess.js": "^1.0.0-beta.8",
     "html-to-image": "^1.11.13",
     "lucide-react": "^0.446.0",
