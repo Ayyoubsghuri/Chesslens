@@ -35,6 +35,8 @@ function hashText(t: string): string {
   return `${t.length}:${h}`;
 }
 const rememberClip = (h: string) => { try { localStorage.setItem(CLIP_KEY, h); } catch { /* ignore */ } };
+/** The game whose analysis was running, so it can be picked up again after the app is closed. */
+const ANALYZING_KEY = 'chesslens:analyzing';
 
 function App() {
   const [games, setGames] = useState<ImportedGame[]>([]);
@@ -48,6 +50,10 @@ function App() {
   const [showImport, setShowImport] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
   const [analyzing, setAnalyzing] = useState(false);
+  /** The game being analyzed right now. The analysis keeps running when you open another game or another page. */
+  const [analyzingId, setAnalyzingId] = useState<string | null>(null);
+  /** An analysis that finished while you were somewhere else: shown as a card until you open it or close it. */
+  const [readyNote, setReadyNote] = useState<{ id: string; title: string } | null>(null);
   const [analysisProgress, setAnalysisProgress] = useState({ current: 0, total: 0 });
   const [pendingAnalyzeId, setPendingAnalyzeId] = useState<string | null>(null);
   const [clipGames, setClipGames] = useState<ImportedGame[] | null>(null);
@@ -104,37 +110,68 @@ function App() {
     }
   }, []);
 
-  const handleAnalyze = useCallback(async () => {
-    if (!selectedGame) return;
+  // Where the user is now, read by an analysis that finishes later (it must not use the values from when it started).
+  const whereRef = useRef({ selectedGameId: null as string | null, page: 'home' as string });
+
+  /** Analyzes one game. Keeps going when you leave the game; tells you when it is ready if you are elsewhere. */
+  const analyzeOne = useCallback(async (game: ImportedGame, resumed = false) => {
     setAnalyzing(true);
+    setAnalyzingId(game.id);
     setAnalysisProgress({ current: 0, total: 0 });
+    // Remembered on the device: if the app is closed half way, the analysis starts again on the next launch.
+    try { localStorage.setItem(ANALYZING_KEY, game.id); } catch { /* ignore */ }
+    let ok = false;
     try {
-      const moves = await analyzeGame(selectedGame, settings.analysisDepth, (current, total) => {
+      const moves = await analyzeGame(game, settings.analysisDepth, (current, total) => {
         setAnalysisProgress({ current, total });
       });
       const accuracy = computeAccuracy(moves);
       const counts = countByQuality(moves);
       const result: AnalysisResult = {
-        game: selectedGame,
+        game,
         moves,
         accuracy,
         blunders: counts.blunders,
         mistakes: counts.mistakes,
         inaccuracies: counts.inaccuracies,
         bestMoves: counts.bestMoves,
-      };
+      } as AnalysisResult;
       setAnalyses(prev => {
-        const updated = { ...prev, [selectedGame.id]: result };
-        saveAnalysis(selectedGame.id, result, settings.analysisDepth);
+        const updated = { ...prev, [game.id]: result };
+        saveAnalysis(game.id, result, settings.analysisDepth);
         return updated;
       });
       logEvent('review');
+      ok = moves.length > 0;
     } catch (e) {
       console.error('Analysis failed', e);
     } finally {
+      try { localStorage.removeItem(ANALYZING_KEY); } catch { /* ignore */ }
       setAnalyzing(false);
+      setAnalyzingId(null);
     }
-  }, [selectedGame, settings.analysisDepth]);
+    const here = whereRef.current;
+    if (ok && (resumed || here.selectedGameId !== game.id || here.page !== 'home')) {
+      setReadyNote({ id: game.id, title: `${game.white || 'White'} vs ${game.black || 'Black'}` });
+    }
+  }, [settings.analysisDepth]);
+
+  const handleAnalyze = useCallback(() => {
+    if (!selectedGame || analyzing) return;
+    void analyzeOne(selectedGame);
+  }, [selectedGame, analyzing, analyzeOne]);
+
+  // The app was closed (or the page reloaded) in the middle of an analysis: pick it up again.
+  const resumeTried = useRef(false);
+  useEffect(() => {
+    if (resumeTried.current || !games.length) return;
+    resumeTried.current = true;
+    let id: string | null = null;
+    try { id = localStorage.getItem(ANALYZING_KEY); } catch { /* ignore */ }
+    const game = id ? games.find((g) => g.id === id) : null;
+    if (!game || analyses[game.id]) { try { localStorage.removeItem(ANALYZING_KEY); } catch { /* ignore */ } return; }
+    void analyzeOne(game, true);
+  }, [games, analyses, analyzeOne]);
 
   const handlePlayedGame = useCallback((g: PlayedGame) => {
     const id = `play-${Date.now()}`;
@@ -213,6 +250,13 @@ function App() {
   };
 
   const currentMove = selectedAnalysis?.moves[currentMoveIndex] || null;
+  whereRef.current = { selectedGameId, page };
+  // Opening the game that just finished is the same as reading the note.
+  useEffect(() => { if (readyNote && page === 'home' && selectedGameId === readyNote.id) setReadyNote(null); }, [readyNote, page, selectedGameId]);
+  /** This game is the one being analyzed (another game's analysis must not show its progress here). */
+  const analyzingThis = analyzing && analyzingId === selectedGameId;
+  const analyzingGame = analyzingId ? games.find((g) => g.id === analyzingId) ?? null : null;
+  const pct = analysisProgress.total > 0 ? Math.round((analysisProgress.current / analysisProgress.total) * 100) : 0;
 
   // Android back button: close a dialog, then leave the game, then go Home, and only then exit.
   const backState = useRef({ showImport, showSettings, selectedGameId, page, missionCtx });
@@ -462,10 +506,14 @@ function App() {
                 <div className="flex items-center gap-2 w-full sm:w-auto">
                   {!selectedAnalysis ? (
                     <button onClick={handleAnalyze} disabled={analyzing} className="btn-primary w-full sm:w-auto h-12 sm:h-auto text-base sm:text-sm">
-                      {analyzing ? (
+                      {analyzingThis ? (
                         <>
                           <Loader2 size={16} className="animate-spin" />
                           Analyzing... {analysisProgress.total > 0 && `${analysisProgress.current}/${analysisProgress.total}`}
+                        </>
+                      ) : analyzing ? (
+                        <>
+                          <Loader2 size={16} className="animate-spin" /> Another game is being analyzed…
                         </>
                       ) : (
                         <>
@@ -475,14 +523,14 @@ function App() {
                     </button>
                   ) : (
                     <button onClick={handleAnalyze} disabled={analyzing} className="btn-secondary text-sm ml-auto">
-                      {analyzing ? <Loader2 size={14} className="animate-spin" /> : <BarChart3 size={14} />}
+                      {analyzingThis ? <Loader2 size={14} className="animate-spin" /> : <BarChart3 size={14} />}
                       Re-analyze
                     </button>
                   )}
                 </div>
               </div>
 
-              {analyzing && analysisProgress.total > 0 && (
+              {analyzingThis && analysisProgress.total > 0 && (
                 <div className="mb-4">
                   <div className="h-1.5 rounded-full bg-ink-800 overflow-hidden">
                     <div
@@ -506,7 +554,7 @@ function App() {
               <div className="card p-8 sm:p-12 text-center">
                 <BarChart3 size={32} className="mx-auto mb-3 text-ink-500" />
                 <p className="text-ink-400 mb-1">No analysis yet.</p>
-                <p className="text-sm text-ink-500">Click "Analyze Game" to run the engine on every move.</p>
+                <p className="text-sm text-ink-500">{analyzingThis ? 'The engine is working. You can open other games or pages meanwhile: the analysis keeps going and you will be told when it is ready.' : 'Click "Analyze Game" to run the engine on every move.'}</p>
               </div>
             ) : view === 'analysis' ? (
               <AnalysisView
@@ -544,6 +592,29 @@ function App() {
         </div>
       </nav>
 
+      {/* An analysis running for a game you are not looking at: its progress follows you everywhere. */}
+      {analyzing && analyzingGame && !(page === 'home' && selectedGameId === analyzingGame.id) && (
+        <button
+          onClick={() => handleSelectGame(analyzingGame.id)}
+          className="fixed right-4 bottom-[calc(env(safe-area-inset-bottom)+5.5rem)] sm:bottom-6 z-[70] flex max-w-[calc(100vw-2rem)] items-center gap-2 rounded-full border border-ink-700 bg-ink-800/95 px-3.5 py-2 text-xs text-ink-100 shadow-xl hover:bg-ink-700"
+          title="Open this game"
+        >
+          <Loader2 size={14} className="shrink-0 animate-spin text-brand-400" />
+          <span className="truncate">Analyzing {analyzingGame.white} vs {analyzingGame.black}</span>
+          {pct > 0 && <span className="shrink-0 font-mono text-ink-400">{pct}%</span>}
+        </button>
+      )}
+      {readyNote && !analyzing && games.some((g) => g.id === readyNote.id) && (
+        <div role="status" className="fixed left-4 right-4 sm:left-auto sm:right-6 sm:max-w-sm bottom-[calc(env(safe-area-inset-bottom)+5.5rem)] sm:bottom-6 z-[75] flex items-center gap-3 rounded-xl border border-brand-500/40 bg-ink-800 px-4 py-3 text-sm text-ink-100 shadow-xl animate-fade-in">
+          <BarChart3 size={18} className="shrink-0 text-brand-400" />
+          <div className="min-w-0 flex-1">
+            <p className="font-semibold">Analysis ready</p>
+            <p className="truncate text-xs text-ink-400">{readyNote.title}: every move checked while you were away.</p>
+          </div>
+          <button onClick={() => { const id = readyNote.id; setReadyNote(null); handleSelectGame(id); }} className="btn-primary shrink-0 px-3 py-1.5 text-xs">Open</button>
+          <button onClick={() => setReadyNote(null)} className="shrink-0 rounded p-1 text-ink-400 hover:text-ink-200" aria-label="Close"><X size={14} /></button>
+        </div>
+      )}
       {toast && (
         <div role="status" className="fixed left-4 right-4 sm:left-1/2 sm:right-auto sm:-translate-x-1/2 sm:max-w-md bottom-[calc(env(safe-area-inset-bottom)+5.5rem)] sm:bottom-6 z-[80] rounded-xl bg-[#f5ecd9] px-4 py-3 text-sm font-medium text-[#1a2a24] shadow-xl animate-fade-in">
           {toast}

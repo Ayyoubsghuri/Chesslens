@@ -68,6 +68,27 @@ const QUALITY_PILL: Record<string, { label: string; color: string }> = {
 const sceneKey = (s: Scene) => `${s.fen.split(' ').slice(0, 4).join(' ')}|${s.uci}`;
 
 
+/**
+ * Finished explanations, by move. The engine work for a move is kept when you go to another move (or another tab),
+ * so coming back shows the full explanation at once instead of starting the checks again.
+ */
+const finished = new Map<string, Scene[]>();
+const explainKey = (inp: ExplainInput) => `${inp.fenBefore}|${inp.san}|${inp.quality}|${inp.level ?? ''}|${inp.depth}|${inp.bestUci ?? ''}`;
+/** Explanations being worked on right now, so leaving and coming back does not start a second search. */
+const working = new Map<string, Promise<Scene[]>>();
+function explainOnce(inp: ExplainInput): Promise<Scene[]> {
+  const k = explainKey(inp);
+  let p = working.get(k);
+  if (!p) {
+    // Never cancelled: if you leave, the work still finishes and is kept for when you come back.
+    p = buildAdvancedExplanation(inp, () => false)
+      .then((all) => { if (all.length) { finished.set(k, all); if (finished.size > 60) finished.delete(finished.keys().next().value as string); } return all; })
+      .finally(() => working.delete(k));
+    working.set(k, p);
+  }
+  return p;
+}
+
 /** Which squares the voice has said so far, for ONE scene (idx = its position, so a stale value never leaks onto the next scene). */
 interface SpokenState { idx: number; named: Square[]; current: Square[]; done: boolean }
 interface RetryState { hints: number; checking: boolean; result: { ok: boolean; text: string } | null }
@@ -76,7 +97,8 @@ interface RetryState { hints: number; checking: boolean; result: { ok: boolean; 
 export function AdvancedCoach({
   input, moveKey, previewActive, onScene, compact, voice = false, voiceName, onRetry, retryMove, onRetryEnd,
 }: Props) {
-  const core = useMemo(() => (input ? buildCoreScenes(input) : []), [input]);
+  // Already explained earlier (this visit)? Then the full version is ready straight away.
+  const core = useMemo(() => (input ? finished.get(explainKey(input)) ?? buildCoreScenes(input) : []), [input]);
   /** Every scene, including the optional ones. `shown` is what actually plays. */
   const [scenes, setScenes] = useState<Scene[]>(core);
   const [showMore, setShowMore] = useState(false);
@@ -288,9 +310,10 @@ export function AdvancedCoach({
     const key = `${moveKey}`;
     if (extrasFor.current === key) return;
     extrasFor.current = key;
+    if (finished.has(explainKey(input))) return; // done on an earlier visit: `core` already is the full version
     const my = ++token.current;
     setLoadingExtras(true);
-    buildAdvancedExplanation(input, () => token.current !== my)
+    explainOnce(input)
       .then((all) => {
         if (token.current !== my || !all.length) return;
         // Keep the learner on the same scene when new steps are inserted before it.
