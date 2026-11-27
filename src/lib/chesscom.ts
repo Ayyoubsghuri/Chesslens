@@ -62,28 +62,78 @@ function accuraciesOf(g: any): { white: number; black: number } | null {
 
 const accCache = new Map<string, Promise<{ white: number; black: number } | null>>();
 
+/** A PGN header's value, or ''. */
+const header = (pgn: string, tag: string) => pgn.match(new RegExp(`\\[${tag}\\s+"([^"]*)"\\]`, 'i'))?.[1]?.trim() ?? '';
+
+/** Just the moves of a PGN ("e4 e5 Nf3 ..."): no headers, clocks, comments, move numbers or result. Two copies of the same game give the same string. */
+export function movesKey(pgn: string): string {
+  return pgn
+    .replace(/\[[^\]]*\]/g, ' ')
+    .replace(/\{[^}]*\}/g, ' ')
+    .replace(/\([^()]*\)/g, ' ')
+    .replace(/\$\d+/g, ' ')
+    .replace(/\d+\.(\.\.)?/g, ' ')
+    .replace(/(1-0|0-1|1\/2-1\/2|\*)\s*$/, ' ')
+    .replace(/[?!]+/g, '')
+    .split(/\s+/)
+    .filter(Boolean)
+    .join(' ');
+}
+
+/** Does this game come from Chess.com? (its link, its Site header, or Chess.com-only headers such as ECOUrl). */
+export function isChesscomGame(game: ImportedGame): boolean {
+  const pgn = game.pgn || '';
+  const site = header(pgn, 'Site') || game.site || '';
+  // No site at all (a bare "copy PGN"): worth one look on Chess.com, unless it clearly comes from somewhere else.
+  if ((!site || site === '?') && !/lichess|chess24|chessbase/i.test(game.url || '')) return true;
+  return /chess\.com/i.test(game.url || '') || /chess\.com/i.test(game.site || '')
+    || /chess\.com/i.test(header(pgn, 'Site')) || /chess\.com/i.test(header(pgn, 'ECOUrl')) || /chess\.com/i.test(header(pgn, 'Link'));
+}
+
+/** The archive months to look in: the month the game ended (Chess.com files games by end date), then the month it started. */
+function monthsOf(game: ImportedGame): string[] {
+  const pgn = game.pgn || '';
+  const out: string[] = [];
+  for (const d of [header(pgn, 'EndDate'), header(pgn, 'UTCDate'), game.date || '', header(pgn, 'Date')]) {
+    const m = d.match(/^(\d{4})[.\-/](\d{2})/);
+    if (!m) continue;
+    const ym = `${m[1]}/${m[2]}`;
+    if (!out.includes(ym)) out.push(ym);
+    // a game started on the last evening of a month can end in the next one
+    const next = Number(m[2]) === 12 ? `${Number(m[1]) + 1}/01` : `${m[1]}/${String(Number(m[2]) + 1).padStart(2, '0')}`;
+    if (!out.includes(next)) out.push(next);
+  }
+  return out.slice(0, 3);
+}
+
 /**
- * Chess.com's own accuracy for a game imported from Chess.com (or pasted with its Link header).
- * Looks the game up in the player's monthly archive by its URL. null when the game was never reviewed on
- * Chess.com, is not a Chess.com game, or the request fails.
+ * Chess.com's own accuracy for a Chess.com game, wherever it came from: imported with your username, or pasted as PGN.
+ * The game is looked up in either player's monthly archive, by its link when the PGN has one, otherwise by its moves
+ * (so a pasted PGN without a [Link] header is found too). null when the game was never reviewed on Chess.com,
+ * is not a Chess.com game, or the request fails.
  */
 export function fetchChesscomAccuracy(game: ImportedGame): Promise<{ white: number; black: number } | null> {
   if (game.chesscomAccuracy) return Promise.resolve(game.chesscomAccuracy);
-  const url = game.url || '';
-  if (!/chess\.com\/(game|live|daily|analysis)/i.test(url)) return Promise.resolve(null);
-  const m = (game.date || '').match(/^(\d{4})[.\-/](\d{2})/);
-  if (!m) return Promise.resolve(null);
-  const id = url.match(/(\d{5,})/)?.[1];
-  const key = `${url}|${game.date}`;
+  if (!isChesscomGame(game)) return Promise.resolve(null);
+  const url = game.url || header(game.pgn || '', 'Link');
+  const id = /chess\.com/i.test(url) ? url.match(/(\d{5,})/)?.[1] : undefined;
+  const moves = movesKey(game.pgn || '');
+  const months = monthsOf(game);
+  if (!months.length || (!id && !moves)) return Promise.resolve(null);
+  const key = `${id ?? moves}|${months[0]}`;
   if (!accCache.has(key)) {
     accCache.set(key, (async () => {
-      for (const name of [game.white, game.black]) {
-        if (!name) continue;
-        try {
-          const data = await fetchJson(`${BASE}/pub/player/${name.toLowerCase()}/games/${m[1]}/${m[2]}`);
-          const hit = (data.games || []).find((g: any) => g.url === url || (id && String(g.url || '').endsWith('/' + id)));
-          if (hit) return accuraciesOf(hit);
-        } catch { /* try the other player */ }
+      for (const ym of months) {
+        for (const name of [game.white, game.black]) {
+          if (!name || /^(white|black|\?)$/i.test(name)) continue;
+          try {
+            const data = await fetchJson(`${BASE}/pub/player/${encodeURIComponent(name.toLowerCase())}/games/${ym}`);
+            const list: any[] = data.games || [];
+            const hit = (id && list.find((g) => String(g.url || '').endsWith('/' + id)))
+              || list.find((g) => g.pgn && movesKey(g.pgn) === moves);
+            if (hit) return accuraciesOf(hit);
+          } catch { /* try the other player / month */ }
+        }
       }
       return null;
     })());
