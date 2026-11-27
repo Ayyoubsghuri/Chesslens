@@ -1,13 +1,13 @@
 import { useMemo } from 'react';
 import {
-  Plus, ClipboardPaste, Swords, Dices, GraduationCap, Target, BookOpen, ChevronRight, Crown, Zap, Timer, Flame, Sun, CalendarDays, Sparkles,
+  Plus, ClipboardPaste, Swords, Dices, GraduationCap, Target, BookOpen, ChevronRight, Crown, Zap, Timer, Flame, Sun, CalendarDays, Sparkles, BookMarked,
   type LucideIcon,
 } from 'lucide-react';
 import type { AnalysisResult, ImportedGame } from '@/lib/types';
 import { loadLearnProgress, getOverallProgress } from '@/lib/learnStorage';
 import { getUsername, youSide } from '@/lib/player';
 
-export type NeonTarget = 'learn' | 'openings' | 'puzzles' | 'play' | 'variants';
+export type NeonTarget = 'learn' | 'openings' | 'puzzles' | 'play' | 'variants' | 'story' | 'library';
 
 /** Speed of a game from its time control ("180+2" = 3 minutes): the label and icon the recent list shows. */
 function speedOf(tc: string | undefined): { label: string; icon: LucideIcon } {
@@ -35,7 +35,7 @@ export function NeonHome({ games, analyses, onImport, onPaste, onGo, onOpenGame 
 }) {
   const learn = useMemo(() => getOverallProgress(loadLearnProgress()), []);
   const me = getUsername();
-  const recent = useMemo(() => games.slice(0, 5).map((g) => {
+  const recent = useMemo(() => games.slice(0, 40).map((g) => {
     const side = youSide(g, me);
     const r = g.result;
     const outcome = r === '1/2-1/2' || r === '½-½' ? 'Draw' : !side || (r !== '1-0' && r !== '0-1') ? null : (r === '1-0') === (side === 'w') ? 'Win' : 'Loss';
@@ -49,28 +49,32 @@ export function NeonHome({ games, analyses, onImport, onPaste, onGo, onOpenGame 
     { key: 'learn', title: 'Learn path', sub: `${learn.percent}% done`, icon: GraduationCap },
     { key: 'puzzles', title: 'Puzzles', sub: 'Tactics training', icon: Target },
     { key: 'openings', title: 'Openings', sub: 'Build a repertoire', icon: BookOpen },
+    { key: 'story', title: 'Your story', sub: 'Your chess in numbers', icon: BookMarked },
   ];
 
   return (
-    <div className="sm:hidden -mx-4 -mt-4 mb-5 space-y-5">
+    <div className="sm:hidden fixed inset-x-0 top-[var(--appbar-h)] bottom-[calc(env(safe-area-inset-bottom)+84px)] z-10 flex flex-col gap-4 bg-ink-950">
       {/* Mint panel */}
-      <section className="relative overflow-hidden rounded-b-[2rem] bg-brand-500 px-4 pb-4 pt-5 text-ink-950">
+      <section className="relative shrink-0 overflow-hidden rounded-b-[2rem] bg-brand-500 px-4 pb-4 pt-4 text-ink-950">
         <div className="flex items-center justify-between">
           <span className="flex h-11 w-11 items-center justify-center rounded-2xl bg-ink-950 text-brand-400"><Crown size={22} /></span>
           <span className="rounded-full bg-ink-950/10 px-3 py-1 text-xs font-bold">
             {me ? `Hi, ${me}` : 'ChessLens'}
           </span>
         </div>
-        <h2 className="mt-4 !text-[3.4rem] !leading-[0.9] !text-ink-950">Play it.</h2>
+        <h2 className="mt-3 !text-[2.9rem] !leading-[0.9] !text-ink-950">Play it.</h2>
         <Crown size={150} strokeWidth={1.4} className="pointer-events-none absolute -right-6 top-6 text-ink-950/10" aria-hidden />
 
-        <div className="relative mt-5 grid grid-cols-2 gap-2.5">
+        <div className="relative mt-4 grid grid-cols-2 gap-2.5">
           <button onClick={onImport} className="row-span-2 flex flex-col justify-between rounded-[1.6rem] bg-ink-950 p-4 text-left text-ink-100 active:scale-[0.98] transition-transform">
-            <span className="flex h-10 w-10 items-center justify-center rounded-full bg-brand-500/15 text-brand-400"><Sparkles size={20} /></span>
+            <span className="flex h-9 w-9 items-center justify-center rounded-full bg-brand-500/15 text-brand-400"><Sparkles size={18} /></span>
             <span>
               <span className="block text-lg font-extrabold leading-tight">Analyze a game</span>
-              <span className="mt-1 block text-xs text-ink-400">Import from Chess.com or paste a PGN</span>
-              <span className="mt-3 inline-flex items-center gap-1 rounded-full bg-brand-500 px-3 py-1.5 text-xs font-bold text-ink-950"><Plus size={14} /> Import</span>
+              <span className="mt-1 block text-[11px] text-ink-400">From Chess.com or a PGN</span>
+              <span className="mt-2 flex gap-1.5">
+                <span className="inline-flex items-center gap-1 rounded-full bg-brand-500 px-3 py-1.5 text-xs font-bold text-ink-950"><Plus size={14} /> Import</span>
+                <span role="button" tabIndex={0} onClick={(e) => { e.stopPropagation(); onPaste(); }} className="inline-flex items-center gap-1 rounded-full bg-ink-800 px-3 py-1.5 text-xs font-bold text-ink-100" aria-label="Paste a game"><ClipboardPaste size={14} /></span>
+              </span>
             </span>
           </button>
           <button onClick={() => onGo('play')} className="rounded-[1.4rem] bg-ink-900 p-3.5 text-left text-ink-100 active:scale-[0.98] transition-transform">
@@ -84,13 +88,10 @@ export function NeonHome({ games, analyses, onImport, onPaste, onGo, onOpenGame 
             <span className="block text-[11px] text-ink-400">Bots, power-ups, drawbacks</span>
           </button>
         </div>
-        <button onClick={onPaste} className="relative mt-2.5 flex w-full items-center justify-center gap-2 rounded-full bg-ink-950/10 py-2.5 text-sm font-bold active:bg-ink-950/20">
-          <ClipboardPaste size={16} /> Paste a game from the clipboard
-        </button>
       </section>
 
       {/* Learn more */}
-      <section className="px-4">
+      <section className="shrink-0 px-4">
         <div className="mb-2 flex items-baseline justify-between">
           <h3 className="!text-lg">Learn more</h3>
           <button onClick={() => onGo('learn')} className="rounded-full border border-ink-700 px-3 py-1 text-[11px] font-semibold text-ink-300">View all</button>
@@ -109,17 +110,17 @@ export function NeonHome({ games, analyses, onImport, onPaste, onGo, onOpenGame 
       </section>
 
       {/* Recent games */}
-      <section className="mx-4 rounded-[1.8rem] border border-white/5 bg-ink-800 p-4">
-        <div className="mb-1 flex items-baseline justify-between">
-          <p className="text-xs font-bold uppercase tracking-[0.14em] text-ink-400">Recent games</p>
-          <span className="text-[11px] font-semibold text-ink-500">{games.length} total</span>
+      <section className="mx-4 flex min-h-0 flex-1 flex-col rounded-[1.8rem] border border-white/5 bg-ink-800 px-4 pt-3">
+        <div className="mb-1 flex shrink-0 items-center justify-between">
+          <p className="text-xs font-bold uppercase tracking-[0.14em] text-ink-400">Your games <span className="ml-1 font-semibold normal-case tracking-normal text-ink-500">{games.length}</span></p>
+          {games.length > 0 && <button onClick={() => onGo('library')} className="rounded-full border border-ink-700 px-3 py-1 text-[11px] font-semibold text-ink-300">Manage</button>}
         </div>
         {recent.length === 0 ? (
           <button onClick={onImport} className="mt-2 flex w-full items-center justify-between rounded-2xl bg-ink-900 p-3 text-left text-sm text-ink-300">
             Import your first game to see it here <ChevronRight size={16} />
           </button>
         ) : (
-          <ul className="divide-y divide-white/5">
+          <ul className="min-h-0 flex-1 divide-y divide-white/5 overflow-y-auto overscroll-contain pb-2">
             {recent.map(({ g, outcome, opp, acc, speed }) => (
               <li key={g.id}>
                 <button onClick={() => onOpenGame(g.id)} className="flex w-full items-center gap-3 py-2.5 text-left">

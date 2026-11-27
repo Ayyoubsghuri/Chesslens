@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Chess } from 'chess.js';
 import type { Square } from 'chess.js';
 import { ChessBoard } from '@/components/ChessBoard';
+import { isNeon } from '@/skin';
 import {
   clearPuzzleBank,
   fetchBundledPuzzles,
@@ -53,6 +54,17 @@ export function PuzzleTrainer({ initialCategory }: { initialCategory?: string } 
   const [fen, setFen] = useState('rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1');
   const [orientation, setOrientation] = useState<'white' | 'black'>('white');
   const [boardKey, setBoardKey] = useState(0); // remount the board to snap a wrong move back
+  // App (neon skin) on a phone: the whole puzzle screen fits the screen; the board takes the space that is left.
+  const [fitBox, setFitBox] = useState<HTMLDivElement | null>(null);
+  const [fit, setFit] = useState({ w: typeof window !== 'undefined' ? window.innerWidth : 400, h: 0 });
+  useEffect(() => {
+    if (!fitBox) return;
+    const ro = new ResizeObserver(() => setFit({ w: fitBox.clientWidth, h: fitBox.clientHeight }));
+    ro.observe(fitBox);
+    return () => ro.disconnect();
+  }, [fitBox]);
+  const [vw, setVw] = useState(typeof window !== 'undefined' ? window.innerWidth : 1024);
+  useEffect(() => { const on = () => setVw(window.innerWidth); window.addEventListener('resize', on); return () => window.removeEventListener('resize', on); }, []);
   const [lastMove, setLastMove] = useState<{ from: string; to: string } | null>(null);
   const [hint, setHint] = useState<string | null>(null);
   const [wrong, setWrong] = useState<string | null>(null);
@@ -378,6 +390,101 @@ export function PuzzleTrainer({ initialCategory }: { initialCategory?: string } 
     .filter(t => t.failed > 0 && t.total >= 2)
     .sort((a, b) => b.failed / b.total - a.failed / a.total)
     .slice(0, 3);
+
+  if (isNeon && vw < 640) {
+    const TOP = 46, PANEL = 196;
+    const boardPx = Math.max(220, Math.min(fit.w - 16, (fit.h || 600) - TOP - PANEL));
+    return (
+      <div ref={setFitBox} className="fixed inset-x-0 top-[var(--appbar-h)] bottom-[calc(env(safe-area-inset-bottom)+84px)] z-20 flex flex-col bg-ink-950">
+        {/* source + category in one slim row */}
+        <div className="flex shrink-0 items-center gap-2 px-3" style={{ height: TOP }}>
+          <div className="flex shrink-0 gap-0.5 rounded-full bg-ink-800 p-0.5 text-[11px] font-bold">
+            <button onClick={() => switchSource('lichess')} className={`rounded-full px-3 py-1.5 ${source === 'lichess' ? 'bg-brand-500 text-ink-950' : 'text-ink-300'}`}>Random</button>
+            <button onClick={() => switchSource('bank')} className={`rounded-full px-3 py-1.5 ${source === 'bank' ? 'bg-brand-500 text-ink-950' : 'text-ink-300'}`}>Database</button>
+          </div>
+          <select
+            value={category}
+            onChange={(e) => changeFilter(e.target.value)}
+            disabled={bank.length === 0}
+            className="min-w-0 flex-1 rounded-full border border-ink-700 bg-ink-800 px-3 py-1.5 text-xs text-ink-100 disabled:opacity-50"
+            aria-label="Category"
+          >
+            <option value="all">All themes</option>
+            {categoryOptions.map((o) => <option key={o.key} value={o.key}>{prettyTheme(o.key)}</option>)}
+          </select>
+        </div>
+
+        <div className="relative mx-auto shrink-0" style={{ width: boardPx }}>
+          <ChessBoard
+            key={boardKey}
+            fen={fen}
+            orientation={orientation}
+            size={boardPx}
+            interactive={status === 'playing' && !busy}
+            onUserMove={handleUserMove}
+            lastMove={lastMove as { from: Square; to: Square } | null}
+            highlightSquare={hint as Square | null}
+            annotationSquare={wrong as Square | null}
+            annotationColor={wrong ? '#fa412d' : null}
+          />
+          {status === 'loading' && (
+            <div className="absolute inset-0 flex items-center justify-center rounded-lg bg-ink-900/60">
+              <Loader2 className="animate-spin text-brand-300" size={28} />
+            </div>
+          )}
+        </div>
+
+        <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain px-3 pt-3">
+          {status === 'error' ? (
+            <div className="card p-3">
+              <p className="font-semibold text-red-300">Couldn't load a puzzle</p>
+              <p className="mt-0.5 text-xs text-ink-400">{error}</p>
+              <button onClick={() => loadNext()} className="btn-primary mt-2 text-sm"><RotateCcw size={14} /> Try again</button>
+            </div>
+          ) : (
+            <>
+              <div className="flex items-center justify-between gap-2">
+                <div className="min-w-0">
+                  <p className="text-base font-extrabold">
+                    {status === 'loading' ? 'Loading…' : finished ? (status === 'solved' ? 'Solved!' : 'Not solved') : `${toMove} to move`}
+                  </p>
+                  <p className={`truncate text-xs ${message.startsWith("That's not") ? 'text-red-300' : status === 'solved' && !failedRef.current ? 'text-brand-300' : 'text-ink-400'}`} role="status">
+                    {message || (status === 'playing' ? (busy ? 'Opponent is moving…' : 'Find the best move.') : finished && puzzle ? `Puzzle rated ${puzzle.rating}` : '')}
+                  </p>
+                </div>
+                {progress.streak >= 2 && <span className="chip shrink-0 bg-brand-500/20 text-brand-300"><Flame size={12} /> {progress.streak}</span>}
+              </div>
+              <div className="no-scrollbar -mx-3 mt-2 flex gap-2 overflow-x-auto px-3">
+                {status === 'playing' && (
+                  <>
+                    <button onClick={showHint} disabled={busy} className="btn-secondary shrink-0 text-sm"><Lightbulb size={14} /> Hint</button>
+                    <button onClick={showSolution} className="btn-secondary shrink-0 text-sm"><Eye size={14} /> Solution</button>
+                  </>
+                )}
+                <button onClick={() => loadNext()} disabled={status === 'loading'} className={`${finished ? 'btn-primary' : 'btn-secondary'} shrink-0 text-sm`}>
+                  <SkipForward size={14} /> {finished ? 'Next' : 'Skip'}
+                </button>
+                <button type="button" onClick={toggleAutoNext} aria-pressed={autoNext} className={`${autoNext ? 'btn-primary' : 'btn-secondary'} shrink-0 text-sm`}>
+                  <Zap size={14} /> Auto {autoNext ? 'on' : 'off'}
+                </button>
+              </div>
+              <div className="mt-3 grid grid-cols-4 gap-2 rounded-2xl bg-ink-800 px-2 py-2.5 text-center">
+                <Stat label="Rating" value={progress.rating} />
+                <Stat label="Solved" value={progress.solved} />
+                <Stat label="Accuracy" value={attempts > 0 ? `${accuracy}%` : '–'} />
+                <Stat label="Streak" value={progress.bestStreak} />
+              </div>
+              {finished && puzzle && puzzle.themes.length > 0 && (
+                <div className="mt-2 flex flex-wrap gap-1.5 pb-3">
+                  {puzzle.themes.slice(0, 6).map((t) => <span key={t} className="chip bg-ink-700 text-ink-300">{prettyTheme(t)}</span>)}
+                </div>
+              )}
+            </>
+          )}
+        </div>
+      </div>
+    );
+  }
 
   return (
     <section className="mt-12 w-full" aria-labelledby="puzzles-heading">

@@ -283,3 +283,19 @@ html.skin-neon .appbar { border-bottom-color: transparent; }
 }
 .neon-bar-main:active { transform: scale(0.93); }
 html.skin-neon .font-display { font-family: 'Inter', system-ui, sans-serif; font-weight: 800; letter-spacing: -0.03em; }
+
+/* ---- App (neon) motion: pages slide in, tab panels fade up, buttons and cards press down ---- */
+@keyframes neon-page-in { from { opacity: 0; transform: translateX(18px); } to { opacity: 1; transform: none; } }
+@keyframes neon-panel-in { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: none; } }
+@keyframes neon-pop { 0% { transform: scale(.94); opacity: 0; } 100% { transform: scale(1); opacity: 1; } }
+html.skin-neon .page-enter { animation: neon-page-in .28s cubic-bezier(.2, .8, .2, 1); }
+.neon-tab-panel { animation: neon-panel-in .22s cubic-bezier(.2, .8, .2, 1); }
+html.skin-neon .card { animation: neon-pop .3s cubic-bezier(.2, .8, .2, 1) both; }
+html.skin-neon button, html.skin-neon .card[role="button"] { transition: transform .12s ease, background-color .15s, color .15s; }
+html.skin-neon button:active:not(:disabled) { transform: scale(0.96); }
+html.skin-neon .neon-bar-item svg { transition: transform .2s cubic-bezier(.2, .8, .2, 1); }
+html.skin-neon .neon-bar-item[aria-current="page"] svg { transform: translateY(-2px) scale(1.1); }
+@media (prefers-reduced-motion: reduce) {
+  html.skin-neon .page-enter, .neon-tab-panel, html.skin-neon .card { animation: none; }
+  html.skin-neon button:active:not(:disabled) { transform: none; }
+}
