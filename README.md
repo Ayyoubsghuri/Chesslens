@@ -24,7 +24,11 @@ ChessLens is a chess game review app that runs in your browser. Import a game an
 - **Find a better move**: after a mistake, retry the position, with hints.
 - **Chess Story**: enter any Chess.com or Lichess username to get a shareable story from up to **1,000** recent games: record, openings, nemesis, how you win and lose, checkmates that beat you, opponents' weaknesses by rating. It also shows your **brilliant moves (!!)**, counted from the games you have analyzed in the app, because Chess.com and Lichess don't publish move labels in their APIs.
 - **Learn Path, Openings trainer, Practice puzzles, Studies, Masters games, Play vs Computer.**
-- **Secret Drawbacks**: a chess variant where each side plays with a hidden handicap ("your knights can't capture", "your queen moves one square at a time"...). There is no check: you win by capturing the king, and you lose if your drawback leaves you no move. Play the computer (easy / medium / hard, it plays under its own secret drawback) or a friend on the same device, guess the computer's drawback, and see both revealed at the end. 23 drawbacks in three levels; an unfinished game is saved and resumes when you come back.
+- **Chess variants** (the Variants page):
+  - **Chess, but…**: 15 Stockfish bots with one twist each: it loses 300 Elo every time you check it, it always plays its 2nd-best move, it copies the rank of your move, it must give check when it can, it thinks your pawns are queens, and more.
+  - **Power-ups** against Stockfish: sniper bishops, a pawn catapult, portals, and pawn drops ("move and add a pawn" or "move or add a pawn"). Past 8 pawns a side, Stockfish refuses the position, so ChessLens's own engine plays Black from then on.
+  - **Secret Drawbacks**: each side plays with a hidden handicap ("your knights can't capture"...). There is no check: you win by capturing the king, and you lose if your drawback leaves you no move. Play the computer or a friend on the same device, guess the computer's drawback, and see both revealed at the end.
+  - Games in progress are saved and resume when you come back.
 - **Drills**: practice positions built from your own mistakes.
 - **Explore mode**: play your own moves on the board and get instant engine feedback.
 - **Local storage**: games, analyses and settings are saved in your browser (`localStorage`).

@@ -392,6 +392,46 @@ function negamax(s: State, depth: number, alpha: number, beta: number, c: Search
 
 export type Strength = 'easy' | 'medium' | 'hard';
 
+/** A normal FEN as a State (for positions Stockfish refuses, like more than 8 pawns a side). */
+export function stateFromFen(fen: string): State {
+  const [place, turn, cast, ep] = fen.split(' ');
+  const board: (Piece | null)[] = new Array(64).fill(null);
+  place.split('/').forEach((row, i) => {
+    let f = 0;
+    for (const ch of row) {
+      if (/\d/.test(ch)) { f += Number(ch); continue; }
+      const t = ch.toLowerCase() as PieceType;
+      board[(7 - i) * 8 + f] = { t, c: ch === t ? 'b' : 'w' };
+      f++;
+    }
+  });
+  const s: State = {
+    board, turn: turn === 'b' ? 'b' : 'w',
+    castling: { wk: cast.includes('K'), wq: cast.includes('Q'), bk: cast.includes('k'), bq: cast.includes('q') },
+    ep: ep && ep !== '-' ? sqIndex(ep) : -1, quiet: 0, played: { w: 0, b: 0 }, lastTo: { w: -1, b: -1 }, lastCapture: { w: false, b: false }, seen: {},
+  };
+  return s;
+}
+
+/**
+ * Best move among `allowed` (UCI strings, e.g. the legal moves chess.js gives) for the side to move, searched with
+ * this file's engine. Below the root, losing the king ends the line, which for normal chess plays like checkmate.
+ */
+export function searchMoveAmong(fen: string, allowed: string[], depth = 3): string | null {
+  const s = stateFromFen(fen);
+  const ok = new Set(allowed);
+  const moves = pseudoMoves(s).filter((m) => ok.has(sqName(m.from) + sqName(m.to) + (m.promo ?? '')));
+  if (!moves.length) return allowed[0] ?? null;
+  const c: SearchCtx = { me: s.turn, mine: null, nodes: 0, limit: 250_000 };
+  let best: Move | null = null;
+  let bestV = -Infinity;
+  for (const m of order(moves)) {
+    const v = -negamax(play(s, m), depth - 1, -Infinity, -bestV, c, 1);
+    if (v > bestV) { bestV = v; best = m; }
+  }
+  return best ? sqName(best.from) + sqName(best.to) + (best.promo ?? '') : null;
+}
+
 /** The computer's move for the side to move, which has drawback `mine`. null when it has no move. */
 export function computerMove(s: State, mine: Drawback | null, strength: Strength, rnd: () => number = Math.random): Move | null {
   const c: SearchCtx = { me: s.turn, mine, nodes: 0, limit: strength === 'hard' ? 220_000 : 80_000 };

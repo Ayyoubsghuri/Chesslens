@@ -1,9 +1,8 @@
 import type { LucideIcon } from 'lucide-react';
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Chessground } from '@lichess-org/chessground';
-import type { Api } from '@lichess-org/chessground/api';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import type { Key } from '@lichess-org/chessground/types';
 import type { DrawShape } from '@lichess-org/chessground/draw';
+import { VariantBoard } from './VariantBoard';
 import { Dices, EyeOff, Eye, Flag, RotateCcw, Shuffle, Crown, Users, Cpu, HelpCircle, Check, X, AlertTriangle } from 'lucide-react';
 import {
   DRAWBACKS, initialState, legalMoves, play, ending, notation, computerMove, placement, dealDrawback, drawbackById,
@@ -44,57 +43,6 @@ function saveGame(g: Game | null) {
 const sideName = (c: Color) => (c === 'w' ? 'White' : 'Black');
 const LEVEL_LABEL: Record<number, string> = { 1: 'Mild', 2: 'Medium', 3: 'Harsh' };
 const LEVEL_COLOR: Record<number, string> = { 1: 'text-emerald-300 bg-emerald-500/10', 2: 'text-amber-300 bg-amber-500/10', 3: 'text-red-300 bg-red-500/10' };
-
-/* ------------------------------------------------------------------ */
-/* Board                                                               */
-/* ------------------------------------------------------------------ */
-interface BoardProps {
-  fen: string;
-  orientation: 'white' | 'black';
-  turn: Color;
-  /** Who may move pieces right now (null = nobody: the computer is thinking or the game is over). */
-  movable: Color | null;
-  dests: Map<Key, Key[]>;
-  lastMove: [Key, Key] | null;
-  shapes: DrawShape[];
-  onMove: (from: Key, to: Key) => void;
-}
-
-function VariantBoard({ fen, orientation, turn, movable, dests, lastMove, shapes, onMove }: BoardProps) {
-  const el = useRef<HTMLDivElement>(null);
-  const api = useRef<Api | null>(null);
-  const moveRef = useRef(onMove);
-  moveRef.current = onMove;
-
-  useEffect(() => {
-    if (!el.current) return;
-    api.current = Chessground(el.current, {
-      coordinates: true,
-      animation: { enabled: true, duration: 180 },
-      highlight: { lastMove: true, check: false },
-      premovable: { enabled: false },
-      drawable: { enabled: true, visible: true },
-      movable: { free: false, showDests: true, events: { after: (o, d) => moveRef.current(o, d) } },
-    });
-    const ro = new ResizeObserver(() => api.current?.redrawAll());
-    ro.observe(el.current);
-    return () => { ro.disconnect(); api.current?.destroy(); api.current = null; };
-  }, []);
-
-  useEffect(() => {
-    api.current?.set({
-      fen,
-      orientation,
-      turnColor: turn === 'w' ? 'white' : 'black',
-      lastMove: lastMove ?? undefined,
-      check: false,
-      movable: { color: movable ? (movable === 'w' ? 'white' : 'black') : undefined, dests },
-    });
-    api.current?.setAutoShapes(shapes);
-  }, [fen, orientation, turn, movable, dests, lastMove, shapes]);
-
-  return <div ref={el} className="w-full aspect-square" />;
-}
 
 /* ------------------------------------------------------------------ */
 /* The page                                                            */
