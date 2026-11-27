@@ -1,8 +1,17 @@
 name: Build Android APK
 on:
   workflow_dispatch:
+    inputs:
+      release:
+        description: 'Publish the APK as a GitHub Release'
+        type: boolean
+        default: true
   push:
     tags: ['v*']
+
+# needed to create the GitHub Release
+permissions:
+  contents: write
 
 jobs:
   apk:
@@ -197,10 +206,42 @@ jobs:
           print('AdMob app id set:', app_id.split('~')[0], '(test id)' if app_id.startswith('ca-app-pub-3940256099942544') else '')
           PY
 
+      # Every build is signed with the SAME key (android-kit/signing), so a new release installs over the old one
+      # and keeps your saved games. (The runner would otherwise make a new random key each time, and Android
+      # refuses an update signed with a different key.) It is a debug key, not a Play Store key.
+      - name: Use the app's fixed signing key
+        run: mkdir -p ~/.android && cp android-kit/signing/chesslens-debug.keystore ~/.android/debug.keystore
+
+      # Version shown in Android's app info: 1.<build number>
+      - name: Set the app version
+        run: |
+          G=android/app/build.gradle
+          sed -i -E "s/versionCode [0-9]+/versionCode ${{ github.run_number }}/" $G
+          sed -i -E "s/versionName \"[^\"]*\"/versionName \"1.${{ github.run_number }}\"/" $G
+          grep -E "versionCode|versionName" $G
+
       - name: Build debug APK
         working-directory: android
         run: chmod +x gradlew && ./gradlew assembleDebug
+      - name: Name the APK
+        run: cp android/app/build/outputs/apk/debug/app-debug.apk ChessLens-1.${{ github.run_number }}.apk
       - uses: actions/upload-artifact@v4
         with:
           name: ChessLens-debug-apk
-          path: android/app/build/outputs/apk/debug/app-debug.apk
+          path: ChessLens-1.${{ github.run_number }}.apk
+
+      - name: Publish a GitHub Release
+        if: github.event_name == 'push' || inputs.release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          TAG=android-v1.${{ github.run_number }}
+          gh release create "$TAG" "ChessLens-1.${{ github.run_number }}.apk" \
+            --repo "${{ github.repository }}" --target "${{ github.sha }}" \
+            --title "ChessLens for Android 1.${{ github.run_number }}" \
+            --notes "Android app (own design: dark, mint green, lime). Download ChessLens-1.${{ github.run_number }}.apk below and open it on your phone (allow installing from this source if asked).
+
+          From this version on, every release is signed with the same key, so new versions install over the old one and keep your games. If an older ChessLens is already installed and Android says the app can't be installed, uninstall the old one once.
+
+          Built from ${{ github.ref_name }} @ ${{ github.sha }}."
+

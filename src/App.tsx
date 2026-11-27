@@ -11,6 +11,8 @@ import { PlayVsComputer, type PlayedGame } from '@/components/PlayVsComputer';
 import { OpeningsTrainer } from '@/components/OpeningsTrainer';
 import { registerAnalyzeHandler } from '@/components/MastersGames';
 import { MobileHome } from '@/components/MobileHome';
+import { NeonHome, NeonBar } from '@/components/NeonHome';
+import { isNeon } from './skin';
 import { ChessVariants } from '@/components/ChessVariants';
 import { MissionBanner } from '@/components/MissionBanner';
 import type { Mission } from '@/lib/mission';
@@ -459,7 +461,14 @@ function App() {
           <PuzzleTrainer initialCategory={puzzleTheme} />
         ) : !selectedGame ? (
           <div className="flex flex-col">
-          <MobileHome onImport={() => setShowImport(true)} onPaste={() => checkClipboard(true)} onGo={(t) => { setPuzzleTheme(undefined); setMissionCtx(null); setPage(t); }} />
+          {isNeon ? (
+            <NeonHome
+              games={games} analyses={analyses} onImport={() => setShowImport(true)} onPaste={() => checkClipboard(true)}
+              onGo={(t) => { setPuzzleTheme(undefined); setMissionCtx(null); setPage(t); }} onOpenGame={handleSelectGame}
+            />
+          ) : (
+            <MobileHome onImport={() => setShowImport(true)} onPaste={() => checkClipboard(true)} onGo={(t) => { setPuzzleTheme(undefined); setMissionCtx(null); setPage(t); }} />
+          )}
           <div className="order-2 sm:order-1"><ChessStory games={games} /></div>
           <div className={`order-1 sm:order-2 ${games.length === 0 ? 'hidden sm:flex' : 'flex'} flex-col items-center justify-center text-center ${games.length === 0 ? 'sm:min-h-[50vh]' : 'sm:min-h-[30vh]'}`}>
             {games.length === 0 ? (
@@ -582,11 +591,18 @@ function App() {
         )}
       </main>
 
-      {page === 'home' && !selectedGame && games.length > 0 && (
+      {!isNeon && page === 'home' && !selectedGame && games.length > 0 && (
         <button onClick={() => setShowImport(true)} className="fab sm:hidden" aria-label="Import games"><Plus size={28} /></button>
       )}
 
-      <nav className={`tabbar sm:hidden ${inGame && view === 'analysis' ? 'hidden' : ''}`} aria-label="Main">
+      {/* The Android app has its own floating bar (neon skin); the website keeps the classic tab bar. */}
+      {isNeon && (
+        <NeonBar
+          page={page} hidden={inGame && view === 'analysis'} onImport={() => setShowImport(true)}
+          onGo={(p) => { setPuzzleTheme(undefined); setMissionCtx(null); if (p === 'home') setSelectedGameId(null); setPage(p); }}
+        />
+      )}
+      <nav className={`tabbar sm:hidden ${isNeon || (inGame && view === 'analysis') ? 'hidden' : ''}`} aria-label="Main">
         <div className="flex">
           <BottomTab active={page === 'home'} onClick={() => setPage('home')} icon={Home} label="Home" />
           <BottomTab active={page === 'learn'} onClick={() => setPage('learn')} icon={GraduationCap} label="Learn" />

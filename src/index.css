@@ -7,6 +7,31 @@
 @layer base {
   :root {
     --cl-font-display: 'Cormorant Garamond', 'Cormorant', Georgia, serif;
+    /* Classic skin (the website): emerald-black ink, champagne gold. Values are "r g b" for Tailwind's opacity classes. */
+    --ink-50: 251 246 234;
+    --ink-100: 245 236 217;
+    --ink-200: 228 220 200;
+    --ink-300: 185 196 187;
+    --ink-400: 143 163 152;
+    --ink-500: 95 122 112;
+    --ink-600: 47 69 62;
+    --ink-700: 34 53 48;
+    --ink-800: 23 38 34;
+    --ink-900: 15 27 24;
+    --ink-950: 10 20 17;
+    --brand-50: 250 245 234;
+    --brand-100: 241 230 207;
+    --brand-200: 231 214 178;
+    --brand-300: 220 196 155;
+    --brand-400: 208 177 133;
+    --brand-500: 196 165 116;
+    --brand-600: 169 138 90;
+    --brand-700: 138 111 69;
+    --brand-800: 106 84 53;
+    --brand-900: 74 59 37;
+    --accent-400: 217 145 95;
+    --accent-500: 194 122 70;
+    --accent-600: 168 100 58;
   }
   html {
     -webkit-font-smoothing: antialiased;
@@ -191,3 +216,70 @@ html.native ::-webkit-scrollbar { display: none; }
 }
 .gtool-main:active { transform: scale(0.95); }
 .gtool-main:disabled { opacity: .45; }
+
+
+/* ===========================================================================
+   NEON SKIN: the Android app's own design (the website keeps the classic skin).
+   Near-black surfaces, dark rounded cards, mint-green highlights, a lime action button, bold sans-serif headings.
+   Turned on by html.skin-neon (see src/skin.ts).
+   =========================================================================== */
+html.skin-neon {
+  --ink-50: 247 248 247;
+  --ink-100: 242 244 243;
+  --ink-200: 217 221 219;
+  --ink-300: 180 185 183;
+  --ink-400: 141 146 144;
+  --ink-500: 98 103 101;
+  --ink-600: 59 62 61;
+  --ink-700: 42 44 43;
+  --ink-800: 27 28 28;
+  --ink-900: 20 21 21;
+  --ink-950: 10 10 10;
+  --brand-50: 233 255 246;
+  --brand-100: 201 253 232;
+  --brand-200: 155 249 211;
+  --brand-300: 108 244 191;
+  --brand-400: 69 239 175;
+  --brand-500: 44 230 159;
+  --brand-600: 31 196 134;
+  --brand-700: 24 155 107;
+  --brand-800: 19 116 82;
+  --brand-900: 13 77 55;
+  --neon-lime: 215 247 91;
+  --cl-font-display: 'Inter', system-ui, sans-serif;
+}
+html.skin-neon h1, html.skin-neon h2, html.skin-neon h3 {
+  font-family: 'Inter', system-ui, sans-serif; font-weight: 800; letter-spacing: -0.03em;
+}
+html.skin-neon h1 em, html.skin-neon h2 em, html.skin-neon h3 em { font-style: normal; }
+html.skin-neon .card { border-radius: 1.6rem; border-color: rgba(255, 255, 255, 0.05); box-shadow: none; }
+html.skin-neon .btn-primary { box-shadow: 0 6px 18px rgb(var(--brand-500) / 0.25); }
+html.skin-neon .eyebrow { letter-spacing: 0.14em; }
+html.skin-neon .appbar { border-bottom-color: transparent; }
+
+/* Floating bottom bar with a raised lime centre button */
+.neon-bar {
+  position: fixed; left: 14px; right: 14px; bottom: calc(env(safe-area-inset-bottom) + 10px); z-index: 50;
+  display: grid; grid-template-columns: 1fr 1fr 1.2fr 1fr 1fr; align-items: center;
+  height: 62px; border-radius: 999px; padding: 0 6px;
+  background: rgb(var(--ink-800) / 0.92); border: 1px solid rgba(255, 255, 255, 0.06);
+  -webkit-backdrop-filter: blur(16px); backdrop-filter: blur(16px);
+  box-shadow: 0 14px 34px rgba(0, 0, 0, 0.55);
+}
+.neon-bar-item {
+  position: relative; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 3px;
+  height: 100%; font-size: 0.6rem; font-weight: 700; color: rgb(var(--ink-400)); transition: color .15s;
+}
+.neon-bar-item[aria-current="page"] { color: rgb(var(--brand-400)); }
+.neon-bar-item[aria-current="page"]::after {
+  content: ''; position: absolute; bottom: 7px; width: 4px; height: 4px; border-radius: 99px; background: rgb(var(--brand-400));
+}
+.neon-bar-main {
+  justify-self: center; width: 58px; height: 58px; margin-top: -26px; border-radius: 999px;
+  display: flex; align-items: center; justify-content: center;
+  background: rgb(var(--neon-lime)); color: #0A0A0A;
+  box-shadow: 0 10px 24px rgb(var(--neon-lime) / 0.35), 0 0 0 6px rgb(var(--ink-950));
+  transition: transform .12s;
+}
+.neon-bar-main:active { transform: scale(0.93); }
+html.skin-neon .font-display { font-family: 'Inter', system-ui, sans-serif; font-weight: 800; letter-spacing: -0.03em; }
