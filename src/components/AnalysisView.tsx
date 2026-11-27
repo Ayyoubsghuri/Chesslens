@@ -882,7 +882,12 @@ export function AnalysisView({ analysis, currentIndex, onIndexChange, depth = 12
     const known = analysis.game?.chesscomAccuracy ?? readManual();
     setOfficialAcc(known);
     if (known) learnFrom(known);
-    else if (analysis.game) fetchChesscomAccuracy(analysis.game).then((a) => { if (alive && a) { setOfficialAcc(a); learnFrom(a); } }).catch(() => {});
+    // Found on Chess.com (also for pasted PGNs): keep it, so the game shows Chess.com's number from now on, even offline.
+    else if (analysis.game) fetchChesscomAccuracy(analysis.game).then((a) => {
+      if (!alive || !a) return;
+      try { localStorage.setItem(manualKey, JSON.stringify(a)); } catch { /* ignore */ }
+      setOfficialAcc(a); learnFrom(a);
+    }).catch(() => {});
     return () => { alive = false; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [analysis.game, moves.length]);
