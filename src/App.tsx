@@ -11,7 +11,7 @@ import { PlayVsComputer, type PlayedGame } from '@/components/PlayVsComputer';
 import { OpeningsTrainer } from '@/components/OpeningsTrainer';
 import { registerAnalyzeHandler } from '@/components/MastersGames';
 import { MobileHome } from '@/components/MobileHome';
-import { DrawbackChess } from '@/components/DrawbackChess';
+import { ChessVariants } from '@/components/ChessVariants';
 import { MissionBanner } from '@/components/MissionBanner';
 import type { Mission } from '@/lib/mission';
 import { LearnPath, type LearnNavigate } from '@/components/LearnPath';
@@ -46,7 +46,7 @@ function App() {
   const [selectedGameId, setSelectedGameId] = useState<string | null>(null);
   const [currentMoveIndex, setCurrentMoveIndex] = useState(0);
   const [view, setView] = useState<View>('analysis');
-  const [page, setPage] = useState<'home' | 'play' | 'puzzles' | 'openings' | 'learn' | 'drawbacks'>('home');
+  const [page, setPage] = useState<'home' | 'play' | 'puzzles' | 'openings' | 'learn' | 'variants'>('home');
   const [puzzleTheme, setPuzzleTheme] = useState<string | undefined>(undefined);
   const [showImport, setShowImport] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
@@ -425,7 +425,7 @@ function App() {
             <NavTab active={page === 'openings'} onClick={() => setPage('openings')} icon={BookOpen} label="Openings" />
             <NavTab active={page === 'puzzles'} onClick={() => setPage('puzzles')} icon={Target} label="Practice Puzzles" />
             <NavTab active={page === 'play'} onClick={() => setPage('play')} icon={Swords} label="Play vs Computer" />
-            <NavTab active={page === 'drawbacks'} onClick={() => setPage('drawbacks')} icon={Dices} label="Secret Drawbacks" />
+            <NavTab active={page === 'variants'} onClick={() => setPage('variants')} icon={Dices} label="Variants" />
           </nav>
 
           <div className="flex items-center gap-2">
@@ -451,8 +451,8 @@ function App() {
           <LearnPath onNavigate={handleLearnNavigate} />
         ) : page === 'openings' ? (
           <OpeningsTrainer />
-        ) : page === 'drawbacks' ? (
-          <DrawbackChess />
+        ) : page === 'variants' ? (
+          <ChessVariants />
         ) : page === 'play' ? (
           <PlayVsComputer settings={settings} onAnalyze={handlePlayedGame} />
         ) : page === 'puzzles' ? (

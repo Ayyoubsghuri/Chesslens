@@ -3,7 +3,7 @@ import { Plus, ClipboardPaste, GraduationCap, Target, Swords, BookOpen, ChevronR
 import { loadLearnProgress, getOverallProgress, getSkillStatus } from '@/lib/learnStorage';
 import { LEVELS } from '@/lib/learnTypes';
 
-export type HomeTarget = 'learn' | 'openings' | 'puzzles' | 'play' | 'drawbacks';
+export type HomeTarget = 'learn' | 'openings' | 'puzzles' | 'play' | 'variants';
 
 /**
  * Phone Home header (hidden from `sm:` up): hero card, quick-action tiles and a "Continue learning" card.
@@ -53,11 +53,11 @@ export function MobileHome({ onImport, onPaste, onGo }: { onImport: () => void; 
         ))}
       </section>
 
-      <button onClick={() => onGo('drawbacks')} className="card w-full p-3.5 flex items-center gap-3 text-left active:bg-ink-700 transition-colors">
+      <button onClick={() => onGo('variants')} className="card w-full p-3.5 flex items-center gap-3 text-left active:bg-ink-700 transition-colors">
         <span className="w-12 h-12 shrink-0 rounded-xl bg-brand-500/15 text-brand-300 flex items-center justify-center"><Dices size={22} /></span>
         <span className="min-w-0 flex-1">
-          <span className="block text-sm font-semibold text-ink-100">Secret Drawbacks</span>
-          <span className="block text-xs text-ink-400">Chess with a hidden handicap for each side. Take the king to win.</span>
+          <span className="block text-sm font-semibold text-ink-100">Chess variants</span>
+          <span className="block text-xs text-ink-400">Stockfish with a twist, power-ups, and Secret Drawbacks.</span>
         </span>
         <ChevronRight size={18} className="text-ink-500 shrink-0" />
       </button>

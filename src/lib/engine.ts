@@ -41,7 +41,12 @@ const MAX_WORKERS = Math.max(
 /** Result of a search; `second` is the 2nd-best line (only filled when MultiPV >= 2). White-positive like the rest. */
 export interface EngineEvalMulti extends EngineEval {
   second: { evaluation: number | null; mate: number | null } | null;
+  /** Every line of a MultiPV search, best first (White-positive scores like the rest). */
+  lines?: EngineLine[];
 }
+
+/** One line of a MultiPV search: the move that starts it and its score. */
+export interface EngineLine { uci: string; evaluation: number | null; mate: number | null }
 
 /* ───────────────────────── Terminal positions + cache ───────────────────── */
 
@@ -244,6 +249,7 @@ class EngineWorker {
       let mate: number | null = null;
       let second: { evaluation: number | null; mate: number | null } | null = null;
       let reachedDepth = depth;
+      const lines = new Map<number, EngineLine>();
 
       const sideToMoveSign = fen.split(' ')[1] === 'b' ? -1 : 1;
 
@@ -271,6 +277,14 @@ class EngineWorker {
 
           const mateMatch = line.match(/score mate (-?\d+)/);
           const cpMatch = line.match(/score cp (-?\d+)/);
+          const pvFirst = line.match(/\bpv (\S+)/);
+          if (multiPv > 2 && pvFirst && (mateMatch || cpMatch) && !/\b(lowerbound|upperbound)\b/.test(line)) {
+            lines.set(pvIdx, {
+              uci: pvFirst[1],
+              evaluation: mateMatch ? null : (Number(cpMatch![1]) / 100) * sideToMoveSign,
+              mate: mateMatch ? Number(mateMatch[1]) * sideToMoveSign : null,
+            });
+          }
 
           if (pvIdx === 1) {
             if (mateMatch) {
@@ -303,6 +317,7 @@ class EngineWorker {
             depth: reachedDepth,
             success: bestMove !== null,
             second,
+            ...(multiPv > 2 ? { lines: [...lines.entries()].sort((a, b) => a[0] - b[0]).map(([, l]) => l) } : {}),
           });
         }
       };
@@ -580,6 +595,17 @@ async function runBatch(
   // Report the remainder as done so progress completes.
   while (done < total) tick();
   return results;
+}
+
+/**
+ * The top `n` moves of a position, best first, each with its score (White-positive). Used by the "Chess, but…" bots,
+ * which pick the 2nd best move, the move closest to 0.00, the best check... `n` is capped at the number of legal moves.
+ */
+export async function analyzeLines(fen: string, depth: number, n: number): Promise<EngineLine[]> {
+  const mpv = Math.max(3, Math.min(64, n));
+  const r = await pool.analyze(fen, depth, mpv);
+  if (r.lines && r.lines.length) return r.lines;
+  return r.bestMove ? [{ uci: r.bestMove, evaluation: r.evaluation, mate: r.mate }] : [];
 }
 
 /**
