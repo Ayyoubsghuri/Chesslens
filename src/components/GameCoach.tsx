@@ -1,15 +1,16 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
 import type { Square } from 'chess.js';
 import {
   Play, Pause, RotateCcw, SkipBack, SkipForward, ChevronsLeft, ChevronsRight, Sparkles, Loader2,
-  Volume2, VolumeX, Filter, AlertTriangle,
+  Volume2, VolumeX, Filter, AlertTriangle, History, X,
 } from 'lucide-react';
 import type { AnalyzedMove } from '@/lib/types';
 import { sceneDuration, plainText, type CoachLevel, type Seg } from '@/lib/coach-explain';
 import {
-  prepareGameBeats, flattenBeats, deepenBeat, sameGameScene,
+  flattenBeats, sameGameScene,
   type GameBeat, type GameScene, type GameDetail, type TimelineItem,
 } from '@/lib/coach-game';
+import { ensureReview, getReview, subscribeReview, focusReview, loadPlace, savePlace, type CoachPlace } from '@/lib/coach-memory';
 import { speak, unlockSpeech, squareCues, litSquares } from '@/lib/tts';
 
 /* ------------------------------------------------------------------ */
@@ -94,7 +95,12 @@ interface Props {
   onPickYou?: (side: 'w' | 'b') => void;
   /** Who won, when the result is known: the coach then says what lost (or won) the game. */
   winner?: 'w' | 'b' | 'draw' | null;
+  /** The game's id: the review's work and your place in it are kept per game, even after you leave. */
+  gameId?: string;
 }
+
+/** What the coach tells you when you come back to a review you had left. */
+interface WelcomeBack { text: string; at: number }
 
 const DETAILS: { id: GameDetail; label: string; title: string }[] = [
   { id: 'key', label: 'Key moments', title: 'The story of the game: only the few moments that decided it' },
@@ -110,26 +116,29 @@ const DETAILS: { id: GameDetail; label: string; title: string }[] = [
  *    missed, and why the tempting alternative fails too)
  */
 export function GameCoach({
-  moves, currentIndex, onIndexChange, previewActive, onScene, you = null, level, depth, compact, voice = false, voiceName, names, onPickYou, winner = null,
+  moves, currentIndex, onIndexChange, previewActive, onScene, you = null, level, depth, compact, voice = false, voiceName, names, onPickYou, winner = null, gameId,
 }: Props) {
-  const [detail, setDetail] = useState<GameDetail>('key');
-  const [side, setSide] = useState<SideFilter>('both');
-  // The review is built in small slices (not in one blocking pass), so the page stays alive and shows a loading bar.
-  const [allBeats, setBeats] = useState<GameBeat[]>([]);
+  // Where you stopped last time in this game (kept on the device).
+  const gid = gameId ?? `moves:${moves.length}:${moves[0]?.fenAfter ?? ''}:${moves[moves.length - 1]?.fenAfter ?? ''}`;
+  const saved = useMemo(() => loadPlace(gid), [gid]);
+  const [detail, setDetail] = useState<GameDetail>(saved?.detail ?? 'key');
+  const [side, setSide] = useState<SideFilter>(saved?.side ?? 'both');
+  // The review is written and checked by the engine in the BACKGROUND (coach-memory.ts): it keeps going when you
+  // leave this screen, and what is done is saved, so it is all still here when you come back.
+  const key = useMemo(
+    () => (moves.length ? ensureReview(gid, moves, { you, level, depth, detail, winner }) : ''),
+    [gid, moves, you, level, depth, detail, winner],
+  );
+  const review = useSyncExternalStore(
+    (fn) => (key ? subscribeReview(key, fn) : () => {}),
+    () => (key ? getReview(key) : null),
+  );
+  const building = !!review && review.status === 'building';
+  const buildFrac = review?.frac ?? 0;
+  const allBeats = useMemo<GameBeat[]>(() => review?.beats ?? [], [review?.beats]);
   const beats = useMemo(() => allBeats.filter((b) => keepBeat(b, side)), [allBeats, side]);
-  const [building, setBuilding] = useState(moves.length > 0);
-  const [buildFrac, setBuildFrac] = useState(0);
-  useEffect(() => {
-    let dead = false;
-    setBeats([]); setBuilding(moves.length > 0); setBuildFrac(0);
-    if (!moves.length) return;
-    prepareGameBeats(moves, { you, level, depth, detail, winner }, (f) => { if (!dead) setBuildFrac(f); }, () => dead)
-      .then((b) => { if (!dead && b) { setBeats(b); setBuilding(false); } })
-      .catch(() => { if (!dead) setBuilding(false); });
-    return () => { dead = true; };
-  }, [moves, you, level, depth, detail, winner]);
-  const [deep, setDeep] = useState<Record<string, GameScene[]>>({});
-  const [deepBusy, setDeepBusy] = useState<string | null>(null);
+  const deep = useMemo<Record<string, GameScene[]>>(() => review?.deep ?? {}, [review?.deep]);
+  const deepBusy = review?.busy ?? null;
   const timeline = useMemo<TimelineItem[]>(() => flattenBeats(beats, deep), [beats, deep]);
 
   const [idx, setIdx] = useState(0);
@@ -148,27 +157,62 @@ export function GameCoach({
   const curIndexRef = useRef(currentIndex); curIndexRef.current = currentIndex;
   const sawActive = useRef(false);
   const commanded = useRef<number | null>(null);
-  const deepGen = useRef(0);
-  const inflight = useRef<Set<string>>(new Set());
   const prevTl = useRef<TimelineItem[]>(timeline);
 
   const item = timeline[Math.min(idx, timeline.length - 1)];
   const beatsById = useMemo(() => new Map(beats.map((b) => [b.id, b])), [beats]);
 
-  // New game / new settings -> start over.
+  // New game / new settings -> start over. Not when the screen merely opens again: that picks up where you left off.
+  const lastSetup = useRef<{ moves: AnalyzedMove[]; detail: GameDetail; you: 'w' | 'b' | null; side: SideFilter } | null>(null);
   useEffect(() => {
-    deepGen.current++;
-    inflight.current.clear();
-    setDeep({});
-    setDeepBusy(null);
+    const prev = lastSetup.current;
+    lastSetup.current = { moves, detail, you, side };
+    if (!prev || (prev.moves === moves && prev.detail === detail && prev.you === you && prev.side === side)) return;
+    restored.current = true; // a choice made now is a fresh start, not a return
     setIdx(0); setProg(0); setPlaying(false);
     if (startedRef.current) onScene(null);
     setStarted(false);
     setSpoken(null);
+    setWelcome(null);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [moves, detail, you, side]);
 
-  // Leaving: clear the preview.
+  // ---- Coming back: put you on the step you left, and say what was finished while you were away.
+  const [welcome, setWelcome] = useState<WelcomeBack | null>(null);
+  const everStarted = useRef(!!saved?.started);
+  const restored = useRef(false);
+  useEffect(() => {
+    if (restored.current || !review || review.status !== 'ready' || !timeline.length) return;
+    restored.current = true;
+    if (!saved || (!saved.started && saved.beatId === null)) return;
+    const first = saved.beatId ? timeline.findIndex((t) => t.beatId === saved.beatId && t.firstOfBeat) : -1;
+    const at = first >= 0 ? Math.min(timeline.length - 1, first + Math.max(0, saved.offset)) : 0;
+    setIdx(at);
+    const newly = Math.max(0, review.done - saved.seenDone);
+    const parts: string[] = [];
+    if (newly > 0) parts.push(`While you were away, the engine finished checking ${newly} key moment${newly === 1 ? '' : 's'}${review.done >= review.total ? ' (all of them)' : ''}.`);
+    else if (review.total && review.done >= review.total) parts.push('The whole review is ready.');
+    const beat = timeline[at];
+    const where = beat && beat.beatId.startsWith('m') ? ` (move ${Math.floor(beat.moveIndex / 2) + 1})` : '';
+    if (at > 0) parts.push(`You stopped at step ${at + 1} of ${timeline.length}${where}.`);
+    if (parts.length) setWelcome({ text: parts.join(' '), at });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [review?.status, timeline.length]);
+
+  // Remember where you are (and what was already done), so leaving and coming back loses nothing.
+  const placeRef = useRef<CoachPlace | null>(null);
+  useEffect(() => {
+    if (!review || review.status !== 'ready' || !restored.current) return;
+    const it = timeline[Math.min(idx, timeline.length - 1)];
+    const first = it ? timeline.findIndex((t) => t.beatId === it.beatId && t.firstOfBeat) : -1;
+    placeRef.current = {
+      detail, side, beatId: it?.beatId ?? null, offset: first >= 0 ? idx - first : 0,
+      seenDone: review.done, started: everStarted.current, at: Date.now(),
+    };
+    savePlace(gid, placeRef.current);
+  }, [gid, idx, detail, side, review, timeline]);
+
+  // Leaving: clear the preview. The review itself keeps working in the background.
   useEffect(() => () => { if (startedRef.current) onScene(null); }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   // When the timeline changes under us (a deep dive arrived), stay on the same step.
@@ -273,39 +317,29 @@ export function GameCoach({
 
   useEffect(() => { if (muted && typeof window !== 'undefined' && 'speechSynthesis' in window) window.speechSynthesis.cancel(); }, [muted]);
 
-  // Look-ahead on mistakes: deepen the beat we are on and the next bad beat, in the background, one at a time.
-  useEffect(() => {
-    if (!started || !item) return;
-    const here = beats.findIndex((b) => b.id === item.beatId);
-    const wanted = beats.filter((b, i) => i >= here && b.deepInput && !deep[b.id]).slice(0, 2);
-    if (!wanted.length || deepBusy) return;
-    const b = wanted[0];
-    if (inflight.current.has(b.id)) return;
-    inflight.current.add(b.id);
-    const gen = deepGen.current;
-    setDeepBusy(b.id);
-    deepenBeat(b, () => deepGen.current !== gen)
-      .then((body) => { if (deepGen.current === gen && body) setDeep((p) => ({ ...p, [b.id]: body })); })
-      .catch(() => {})
-      .finally(() => { if (deepGen.current === gen) { inflight.current.delete(b.id); setDeepBusy(null); } });
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [started, item?.beatId, deep, deepBusy, beats]);
+  // The engine checks the moment you are looking at first (the rest keep going in the background, even if you leave).
+  useEffect(() => { if (key) focusReview(key, item?.beatId ?? null); }, [key, item?.beatId]);
 
   /* ----------------------------- controls ----------------------------- */
 
   function start(at = 0) {
     unlockSpeech();
+    everStarted.current = true;
+    setWelcome(null);
     setStarted(true); setIdx(at); setProg(0); setPlaying(true);
   }
   function togglePlay() {
     unlockSpeech();
     if (!timeline.length) return;
-    if (!started) { start(0); return; }
+    // Not playing yet: carry on from where you are (the step you stopped at last time, or the start).
+    if (!started) { start(Math.min(idx, timeline.length - 1)); return; }
     if (!playing && idx === timeline.length - 1 && prog >= 1) { setIdx(0); setProg(0); }
     setPlaying((p) => !p);
   }
   function go(i: number, play = false) {
     unlockSpeech();
+    everStarted.current = true;
+    setWelcome(null);
     if (!started) setStarted(true);
     setIdx(Math.max(0, Math.min(timeline.length - 1, i)));
     setProg(0); setPlaying(play);
@@ -344,7 +378,8 @@ export function GameCoach({
   const overall = Math.min(1, (idx + (started ? prog : 0)) / total);
   const btn = 'flex items-center justify-center rounded-lg bg-ink-700/60 hover:bg-ink-600/70 text-ink-200 transition-colors disabled:opacity-40 w-9 h-9';
   const badCount = beats.filter((b) => b.kind === 'bad').length;
-  const deepCount = beats.filter((b) => b.deepInput).length;
+  const deepCount = review?.total ?? beats.filter((b) => b.deepInput).length;
+  const deepDone = review?.done ?? 0;
 
   return (
     <div className="mt-2 w-full min-w-0 max-w-full overflow-hidden rounded-xl bg-ink-800/70 border border-ink-700/60 p-3">
@@ -357,6 +392,24 @@ export function GameCoach({
           <button onClick={() => onPickYou('b')} className="max-w-[9rem] truncate rounded-md bg-ink-700/70 px-2 py-1 text-ink-100 hover:bg-ink-600/70">
             {names.black}
           </button>
+        </div>
+      )}
+      {welcome && !started && (
+        <div className="mb-2 flex items-start gap-2 rounded-lg border border-brand-500/30 bg-brand-500/10 px-2.5 py-2 text-xs text-ink-100" role="status">
+          <History size={14} className="mt-0.5 shrink-0 text-brand-300" />
+          <div className="min-w-0 flex-1">
+            <p className="font-semibold text-brand-200">Welcome back</p>
+            <p className="mt-0.5 text-ink-200">{welcome.text}</p>
+            <div className="mt-1.5 flex flex-wrap gap-1.5">
+              <button onClick={() => start(welcome.at)} className="rounded-md bg-brand-500 px-2.5 py-1 font-semibold text-ink-900 hover:bg-brand-400">
+                {welcome.at > 0 ? 'Continue where I stopped' : 'Play the review'}
+              </button>
+              {welcome.at > 0 && (
+                <button onClick={() => start(0)} className="rounded-md bg-ink-700/70 px-2.5 py-1 text-ink-100 hover:bg-ink-600/70">Start over</button>
+              )}
+            </div>
+          </div>
+          <button onClick={() => setWelcome(null)} className="rounded p-0.5 text-ink-400 hover:text-ink-200" aria-label="Dismiss"><X size={13} /></button>
         </div>
       )}
       {/* Whose moves to review: both players, or only White's / only Black's */}
@@ -469,7 +522,7 @@ export function GameCoach({
 
       {deepBusy && (
         <div className="mt-2 flex items-center gap-1.5 text-[11px] text-ink-400">
-          <Loader2 size={11} className="animate-spin" /> Checking the lines with the engine ({Math.min(deepCount, Object.keys(deep).length + 1)}/{deepCount})…
+          <Loader2 size={11} className="animate-spin" /> Checking the lines with the engine ({Math.min(deepCount, deepDone + 1)}/{deepCount}). It keeps going if you leave.
         </div>
       )}
       {voiceBusy && (

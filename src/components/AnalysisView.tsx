@@ -1708,6 +1708,7 @@ export function AnalysisView({ analysis, currentIndex, onIndexChange, depth = 12
                   names={gameNames}
                   onPickYou={pickYou}
                   winner={gameWinner}
+                  gameId={analysis.game.id}
                   voice={coachVoice}
                   voiceName={coachVoiceName}
                   compact
@@ -1919,6 +1920,7 @@ export function AnalysisView({ analysis, currentIndex, onIndexChange, depth = 12
             names={gameNames}
             onPickYou={pickYou}
             winner={gameWinner}
+            gameId={analysis.game.id}
             voice={coachVoice}
             voiceName={coachVoiceName}
             compact
@@ -2008,6 +2010,7 @@ export function AnalysisView({ analysis, currentIndex, onIndexChange, depth = 12
             names={gameNames}
             onPickYou={pickYou}
             winner={gameWinner}
+            gameId={analysis.game.id}
             voice={coachVoice}
             voiceName={coachVoiceName}
           />
