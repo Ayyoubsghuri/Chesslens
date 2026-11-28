@@ -630,9 +630,11 @@ export function ChessBoard({
           width: '100%',
           aspectRatio: '1 / 1',
           maxWidth: size,
-          borderRadius: '8px',
+          // the app (neon skin) uses a square board, like a chess app; the website keeps the rounded card look
+          // square on phones and in the app (set in index.css); rounded card look on the desktop website
+          borderRadius: 'var(--board-radius, 8px)',
           overflow: 'hidden',
-          boxShadow: '0 12px 30px rgba(0,0,0,0.35)',
+          boxShadow: 'var(--board-shadow, 0 12px 30px rgba(0,0,0,0.35))',
         }}
       />
       {gameState.checkedKingSquare && !gameState.isCheckmate && (

@@ -180,7 +180,7 @@ function BotGameScreen({ game, setGame, onLeave }: { game: BotGame; setGame: (g:
   return (
     <div className="mx-auto grid max-w-6xl gap-4 lg:grid-cols-[minmax(0,560px)_1fr]">
       <div className="min-w-0">
-        <div className="relative overflow-hidden rounded-lg">
+        <div className="neon-board relative overflow-hidden rounded-lg">
           <VariantBoard fen={fen} orientation={orientation} turn={turn} movable={myTurn ? turn : null} dests={dests} lastMove={lastMove} onMove={onMove} />
           {promo && (
             <div className="absolute inset-0 z-20 flex items-center justify-center bg-black/50">
