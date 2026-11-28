@@ -572,7 +572,22 @@ export function AnalysisView({ analysis, currentIndex, onIndexChange, depth = 12
   // Newest index, updated immediately so fast repeated steps never use a stale value.
   const idxRef = useRef(currentIndex);
   idxRef.current = currentIndex;
+  // Explore mode: how many of your own moves are on the board, and how many can be redone (kept current between renders,
+  // so a held Back / Forward button never acts on a stale count).
+  const exploreArr = useRef<ExploreStep[]>([]);
+  const redoArr = useRef<ExploreStep[]>([]);
+  /**
+   * Back / Forward (buttons, holding them, arrow keys). While you explore your own moves they step through those moves:
+   * Back undoes your last one, Forward redoes one you undid. Once you are back on the game position, they move
+   * through the game again.
+   */
   const stepBy = (d: number) => () => {
+    if (d < 0 && exploreArr.current.length > 0) { undoExploreMove(); return true; }
+    if (d > 0 && exploreArr.current.length > 0) {
+      if (redoArr.current.length === 0) return false; // at the end of your own line
+      redoExploreMove();
+      return true;
+    }
     const next = Math.max(0, Math.min(moves.length - 1, idxRef.current + d));
     if (next === idxRef.current) return false;
     idxRef.current = next;
@@ -718,6 +733,8 @@ export function AnalysisView({ analysis, currentIndex, onIndexChange, depth = 12
   const exploreReview = currentExploreStep?.review ?? null;
   const canExploreUndo = exploreSteps.length > 0;
   const canExploreRedo = redoSteps.length > 0;
+  exploreArr.current = exploreSteps;
+  redoArr.current = redoSteps;
 
   function updateStepReview(id: number, review: ExploreReview) {
     setExploreSteps((prev) => prev.map((s) => (s.id === id ? { ...s, review } : s)));
@@ -786,24 +803,28 @@ export function AnalysisView({ analysis, currentIndex, onIndexChange, depth = 12
     reviewStep(step);
   }
 
+  // Undo / redo work on an up-to-date copy of both lists (refs), so quick repeated presses never act on a stale list,
+  // and each list is set once (no state update nested inside another one's updater).
   function undoExploreMove() {
     setBestPreview(null);
-    setExploreSteps((prev) => {
-      if (prev.length === 0) return prev;
-      const popped = prev[prev.length - 1];
-      setRedoSteps((r) => [...r, popped]);
-      return prev.slice(0, -1);
-    });
+    const e = exploreArr.current;
+    if (!e.length) return;
+    const popped = e[e.length - 1];
+    exploreArr.current = e.slice(0, -1);
+    redoArr.current = [...redoArr.current, popped];
+    setExploreSteps(exploreArr.current);
+    setRedoSteps(redoArr.current);
   }
 
   function redoExploreMove() {
     setBestPreview(null);
-    setRedoSteps((prev) => {
-      if (prev.length === 0) return prev;
-      const popped = prev[prev.length - 1];
-      setExploreSteps((e) => [...e, popped]);
-      return prev.slice(0, -1);
-    });
+    const r = redoArr.current;
+    if (!r.length) return;
+    const popped = r[r.length - 1];
+    redoArr.current = r.slice(0, -1);
+    exploreArr.current = [...exploreArr.current, popped];
+    setExploreSteps(exploreArr.current);
+    setRedoSteps(redoArr.current);
   }
 
   function exitExplore() {
@@ -812,16 +833,19 @@ export function AnalysisView({ analysis, currentIndex, onIndexChange, depth = 12
     setBestPreview(null);
   }
 
+  // the latest step function, for the keyboard handler (explore-aware, like the buttons)
+  const stepRef = useRef((d: number) => stepBy(d)());
+  stepRef.current = (d: number) => stepBy(d)();
   useEffect(() => {
     const handleKeyDown = (event: KeyboardEvent) => {
       const target = event.target as HTMLElement;
       if (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable) return;
       if (event.key === 'ArrowRight' || event.key === 'ArrowDown') {
         event.preventDefault();
-        if (currentIndex < moves.length - 1) onIndexChange(currentIndex + 1);
+        stepRef.current(1);
       } else if (event.key === 'ArrowLeft' || event.key === 'ArrowUp') {
         event.preventDefault();
-        if (currentIndex > 0) onIndexChange(currentIndex - 1);
+        stepRef.current(-1);
       } else if (event.key === 'Home') { event.preventDefault(); onIndexChange(0); }
       else if (event.key === 'End') { event.preventDefault(); onIndexChange(moves.length - 1); }
     };
@@ -1806,8 +1830,8 @@ export function AnalysisView({ analysis, currentIndex, onIndexChange, depth = 12
           disabled={!engineBestUci}
           onClick={() => showBestMove()}
         ><Star size={26} /><span>Best move</span></button>
-        <button className="gtool" {...holdBack} disabled={currentIndex === 0} aria-label="Previous move (hold to rewind)"><ChevronLeft size={26} /><span>Back</span></button>
-        <button className="gtool" {...holdForward} disabled={currentIndex >= moves.length - 1} aria-label="Next move (hold to fast-forward)"><ChevronRight size={26} /><span>Forward</span></button>
+        <button className="gtool" {...holdBack} disabled={!isExploring && currentIndex === 0} aria-label={isExploring ? 'Undo your last explored move' : 'Previous move (hold to rewind)'}><ChevronLeft size={26} /><span>Back</span></button>
+        <button className="gtool" {...holdForward} disabled={isExploring ? !canExploreRedo : currentIndex >= moves.length - 1} aria-label={isExploring ? 'Redo your next explored move' : 'Next move (hold to fast-forward)'}><ChevronRight size={26} /><span>Forward</span></button>
       </div>
 
     </>
