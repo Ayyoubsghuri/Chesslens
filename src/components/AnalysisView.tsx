@@ -20,7 +20,6 @@ import { useElementSize } from '@/lib/useElementSize';
 import { getUsername, setUsername, youSide as sideOfUser } from '@/lib/player';
 import { offerCoachMove } from '@/lib/coach-bus';
 import { GameCoach, CoachModeTabs, type CoachMode } from '@/components/GameCoach';
-import { isNeon } from '@/skin';
 import { getGameOutcome } from '@/lib/outcome';
 import { sceneSquares, sceneLines, type SceneLine, type ExplainInput, type Scene, type SceneArrow, type SceneEval } from '@/lib/coach-explain';
 import type { AnalysisResult, AnalyzedMove, MoveQuality, PieceColor } from '@/lib/types';
@@ -1783,7 +1782,8 @@ export function AnalysisView({ analysis, currentIndex, onIndexChange, depth = 12
     );
   }
 
-  const neonPhone = isNeon && viewport.w < 640;
+  // Phones (the app and the website): one screen with the details in a slide-up sheet.
+  const neonPhone = viewport.w < 640;
   const phoneToolbar = (
     <>
       {/* Phone: bottom toolbar (Options · Coach · Back · Forward) */}
@@ -1847,12 +1847,14 @@ export function AnalysisView({ analysis, currentIndex, onIndexChange, depth = 12
       if (t === neonTab && neonOpen) setNeonOpen(false);
       else { setNeonTab(t); setNeonOpen(true); }
     };
-    const onSheetTouchStart = (e: React.TouchEvent) => { neonTouch.current = e.touches[0].clientY; };
+    const onSheetTouchStart = (e: React.TouchEvent) => { neonTouch.current = e.touches[0]?.clientY ?? null; };
     const onSheetTouchEnd = (e: React.TouchEvent, scroller?: HTMLElement | null) => {
       const y0 = neonTouch.current;
       neonTouch.current = null;
       if (y0 == null) return;
-      const dy = e.changedTouches[0].clientY - y0;
+      const y1 = e.changedTouches[0]?.clientY;
+      if (y1 == null) return;
+      const dy = y1 - y0;
       if (dy < -40) setNeonOpen(true);
       else if (dy > 50 && (!scroller || scroller.scrollTop <= 0)) setNeonOpen(false);
     };
@@ -1917,11 +1919,12 @@ export function AnalysisView({ analysis, currentIndex, onIndexChange, depth = 12
             className={`neon-tab-panel min-h-0 flex-1 px-3 pb-3 ${neonOpen ? 'overflow-y-auto overscroll-contain' : 'overflow-hidden'}`}
             onTouchStart={onSheetTouchStart}
             onTouchEnd={(e) => onSheetTouchEnd(e, e.currentTarget)}
-            onClick={() => { if (!neonOpen) setNeonOpen(true); }}
           >
+            {/* Banners (best move, exploring) stay visible and never open the sheet: their buttons just do their job */}
             {exploreBanner}
             {bestPreviewBanner}
-            {neonTab === 'coach' && (
+            {/* The details only show once you swipe up or pick a tab */}
+            {neonOpen && neonTab === 'coach' && (
               <div ref={coachCardRef} className="space-y-2">
                 {isExploring ? (
                   <FreeMoveReviewCard review={exploreReview} />
@@ -1971,8 +1974,8 @@ export function AnalysisView({ analysis, currentIndex, onIndexChange, depth = 12
                 )}
               </div>
             )}
-            {neonTab === 'moves' && <MoveList moves={moves} currentIndex={currentIndex} onSelect={onIndexChange} />}
-            {neonTab === 'graph' && (
+            {neonOpen && neonTab === 'moves' && <MoveList moves={moves} currentIndex={currentIndex} onSelect={onIndexChange} />}
+            {neonOpen && neonTab === 'graph' && (
               <div className="card p-3">
                 <div className="mb-2 flex items-center justify-between">
                   <span className="text-xs font-semibold uppercase tracking-wide text-ink-400">Evaluation</span>
@@ -1981,7 +1984,7 @@ export function AnalysisView({ analysis, currentIndex, onIndexChange, depth = 12
                 <EvalGraph moves={moves} currentIndex={currentIndex} onSelect={onIndexChange} />
               </div>
             )}
-            {neonTab === 'report' && (
+            {neonOpen && neonTab === 'report' && (
               <div className="space-y-3">
                 {accuracyCard}
                 {keyMomentsCard}

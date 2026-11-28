@@ -391,11 +391,11 @@ export function PuzzleTrainer({ initialCategory }: { initialCategory?: string } 
     .sort((a, b) => b.failed / b.total - a.failed / a.total)
     .slice(0, 3);
 
-  if (isNeon && vw < 640) {
+  if (vw < 640) {
     const TOP = 46, PANEL = 196;
     const boardPx = Math.max(220, Math.min(fit.w, (fit.h || 600) - TOP - PANEL));
     return (
-      <div ref={setFitBox} className="fixed inset-x-0 top-[var(--appbar-h)] bottom-[calc(env(safe-area-inset-bottom)+84px)] z-20 flex flex-col bg-ink-950">
+      <div ref={setFitBox} className={`fixed inset-x-0 top-[var(--appbar-h)] z-20 flex flex-col bg-ink-950 ${isNeon ? 'bottom-[calc(env(safe-area-inset-bottom)+84px)]' : 'bottom-[calc(env(safe-area-inset-bottom)+60px)]'}`}>
         {/* source + category in one slim row */}
         <div className="flex shrink-0 items-center gap-2 px-3" style={{ height: TOP }}>
           <div className="flex shrink-0 gap-0.5 rounded-full bg-ink-800 p-0.5 text-[11px] font-bold">

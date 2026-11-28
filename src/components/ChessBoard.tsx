@@ -1,4 +1,3 @@
-import { isNeon } from '@/skin';
 import { useEffect, useMemo, useRef, useState, type CSSProperties, type RefObject } from 'react';
 import { Chessground } from '@lichess-org/chessground';
 import type { Api } from '@lichess-org/chessground/api';
@@ -632,9 +631,10 @@ export function ChessBoard({
           aspectRatio: '1 / 1',
           maxWidth: size,
           // the app (neon skin) uses a square board, like a chess app; the website keeps the rounded card look
-          borderRadius: isNeon ? 0 : '8px',
+          // square on phones and in the app (set in index.css); rounded card look on the desktop website
+          borderRadius: 'var(--board-radius, 8px)',
           overflow: 'hidden',
-          boxShadow: isNeon ? 'none' : '0 12px 30px rgba(0,0,0,0.35)',
+          boxShadow: 'var(--board-shadow, 0 12px 30px rgba(0,0,0,0.35))',
         }}
       />
       {gameState.checkedKingSquare && !gameState.isCheckmate && (
