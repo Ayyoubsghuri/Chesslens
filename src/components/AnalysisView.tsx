@@ -20,6 +20,7 @@ import { useElementSize } from '@/lib/useElementSize';
 import { getUsername, setUsername, youSide as sideOfUser } from '@/lib/player';
 import { offerCoachMove } from '@/lib/coach-bus';
 import { GameCoach, CoachModeTabs, type CoachMode } from '@/components/GameCoach';
+import { isNeon } from '@/skin';
 import { getGameOutcome } from '@/lib/outcome';
 import { sceneSquares, sceneLines, type SceneLine, type ExplainInput, type Scene, type SceneArrow, type SceneEval } from '@/lib/coach-explain';
 import type { AnalysisResult, AnalyzedMove, MoveQuality, PieceColor } from '@/lib/types';
@@ -555,6 +556,20 @@ interface AnalysisViewProps {
 
 export function AnalysisView({ analysis, currentIndex, onIndexChange, depth = 12, advancedCoach = false, coachVoice = false, coachVoiceName, endAnimations = true, onViewChange, onReanalyze }: AnalysisViewProps) {
   const [optionsOpen, setOptionsOpen] = useState(false);
+  /** App (neon skin) on a phone: the game screen fits the screen, and the details live in tabs under the board. */
+  const [neonTab, setNeonTab] = useState<'coach' | 'moves' | 'graph' | 'report'>('coach');
+  /** The details sheet: a peek under the board, or pulled up over it to read. */
+  const [neonOpen, setNeonOpen] = useState(false);
+  const neonTouch = useRef<number | null>(null);
+  const [neonBox, setNeonBox] = useState<HTMLDivElement | null>(null);
+  const [neonH, setNeonH] = useState(0);
+  useEffect(() => {
+    if (!neonBox) return;
+    const ro = new ResizeObserver(() => setNeonH(neonBox.clientHeight));
+    ro.observe(neonBox);
+    setNeonH(neonBox.clientHeight);
+    return () => ro.disconnect();
+  }, [neonBox]);
   // Newest index, updated immediately so fast repeated steps never use a stale value.
   const idxRef = useRef(currentIndex);
   idxRef.current = currentIndex;
@@ -1768,6 +1783,218 @@ export function AnalysisView({ analysis, currentIndex, onIndexChange, depth = 12
     );
   }
 
+  const neonPhone = isNeon && viewport.w < 640;
+  const phoneToolbar = (
+    <>
+      {/* Phone: bottom toolbar (Options · Coach · Back · Forward) */}
+      <div className="gtoolbar sm:hidden">
+        <button className="gtool" onClick={() => setOptionsOpen(true)} aria-label="Options"><SlidersHorizontal size={22} /><span>Options</span></button>
+        <button
+          className="gtool"
+          aria-label="Coach explanation"
+          onClick={() => {
+            if (neonPhone) { setNeonTab('coach'); return; }
+            const el = coachCardRef.current;
+            if (!el) return;
+            const near = el.getBoundingClientRect().top < window.innerHeight * 0.75;
+            if (near) window.scrollTo({ top: 0, behavior: 'smooth' }); else el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+          }}
+        ><Sparkles size={22} /><span>Coach</span></button>
+        <button
+          className="gtool-main"
+          aria-label="Show the best move"
+          disabled={!engineBestUci}
+          onClick={() => showBestMove()}
+        ><Star size={26} /><span>Best move</span></button>
+        <button className="gtool" {...holdBack} disabled={currentIndex === 0} aria-label="Previous move (hold to rewind)"><ChevronLeft size={26} /><span>Back</span></button>
+        <button className="gtool" {...holdForward} disabled={currentIndex >= moves.length - 1} aria-label="Next move (hold to fast-forward)"><ChevronRight size={26} /><span>Forward</span></button>
+      </div>
+
+    </>
+  );
+  const optionsSheet = (
+    <>
+      {optionsOpen && (
+        <div className="fixed inset-0 z-[60] flex items-end bg-black/60 backdrop-blur-sm animate-fade-in sm:hidden" onClick={() => setOptionsOpen(false)}>
+          <div className="card w-full rounded-b-none rounded-t-3xl sheet-up pb-[calc(env(safe-area-inset-bottom)+1rem)]" onClick={(e) => e.stopPropagation()}>
+            <div className="sheet-handle" />
+            <div className="grid grid-cols-3 gap-2 p-4">
+              <SheetTile icon={RotateCcw} label="Flip board" onClick={() => { handleFlip(); setOptionsOpen(false); }} />
+              <SheetTile icon={Sparkles} label="Best move" disabled={!engineBestUci} onClick={() => { showBestMove(); setOptionsOpen(false); }} />
+              <SheetTile icon={Layers} label={coachMode === 'move' ? 'Whole game' : 'This move'} onClick={() => { setCoachMode(coachMode === 'move' ? 'game' : 'move'); setOptionsOpen(false); if (neonPhone) { setNeonTab('coach'); return; } window.setTimeout(() => coachCardRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' }), 60); }} />
+              <SheetTile icon={GraduationCap} label="Coach tab" disabled={!onViewChange} onClick={() => { setOptionsOpen(false); onViewChange?.('coach'); }} />
+              <SheetTile icon={Target} label="Drills" disabled={!onViewChange} onClick={() => { setOptionsOpen(false); onViewChange?.('drills'); }} />
+              <SheetTile icon={RefreshCw} label="Re-analyze" disabled={!onReanalyze} onClick={() => { setOptionsOpen(false); onReanalyze?.(); }} />
+            </div>
+          </div>
+        </div>
+      )}
+    </>
+  );
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // App (neon skin) on a phone: one screen, no page scrolling, like a chess app's analysis board.
+  // Moves strip · coach comment · thin eval bar · full-width board · tabs (Coach / Moves / Graph / Report).
+  // Only the tab panel scrolls, inside itself.
+  // ─────────────────────────────────────────────────────────────────────────
+  if (neonPhone) {
+    // The board takes the full width; under it there is just a peek of the details (tabs + a line or two).
+    const STRIP = 40, BUBBLE = 70, EVAL = 16, PEEK = 92;
+    const boardPx = Math.max(240, Math.min(viewport.w, (neonH || viewport.h) - STRIP - BUBBLE - EVAL - PEEK));
+    const pickTab = (t: typeof neonTab) => {
+      if (t === neonTab && neonOpen) setNeonOpen(false);
+      else { setNeonTab(t); setNeonOpen(true); }
+    };
+    const onSheetTouchStart = (e: React.TouchEvent) => { neonTouch.current = e.touches[0].clientY; };
+    const onSheetTouchEnd = (e: React.TouchEvent, scroller?: HTMLElement | null) => {
+      const y0 = neonTouch.current;
+      neonTouch.current = null;
+      if (y0 == null) return;
+      const dy = e.changedTouches[0].clientY - y0;
+      if (dy < -40) setNeonOpen(true);
+      else if (dy > 50 && (!scroller || scroller.scrollTop <= 0)) setNeonOpen(false);
+    };
+    const tabs: { id: typeof neonTab; label: string }[] = [
+      { id: 'coach', label: 'Coach' }, { id: 'moves', label: 'Moves' }, { id: 'graph', label: 'Graph' }, { id: 'report', label: 'Report' },
+    ];
+    return (
+      <>
+        <div
+          ref={setNeonBox}
+          className="fixed inset-x-0 top-[var(--appbar-h)] bottom-[calc(env(safe-area-inset-bottom)+64px)] z-20 flex flex-col bg-ink-950"
+        >
+          <MobileMoveStrip moves={moves} currentIndex={currentIndex} onSelect={onIndexChange} flat />
+          <div className="shrink-0 px-3 py-1.5" style={{ minHeight: BUBBLE }}>
+            {!isExploring && move && moveMeta ? (
+              <CoachBubble
+                compact
+                bubbleOnly
+                san={move.san}
+                quality={displayQuality!}
+                color={moveMeta.color}
+                evalText={move.evalAfter ? formatEval(move.evalAfter) : null}
+                moveKey={move.index}
+                fork={!!forkTargets}
+              />
+            ) : (
+              <p className="flex h-full items-center px-2 text-sm text-ink-400">{isExploring ? 'Exploring your own moves.' : 'Start of the game.'}</p>
+            )}
+          </div>
+          <div className="shrink-0">
+            <EvalBar evaluation={move?.evalAfter ?? null} override={bestPreview?.evalInfo ?? null} orientation={orientation} horizontal />
+          </div>
+          <div className="mx-auto shrink-0" style={{ width: boardPx }}>{renderBoard(boardPx)}</div>
+
+          {/* Details sheet: peeks under the board; tap a tab or swipe up to pull it over the board, swipe down to close */}
+          {neonOpen && <button aria-label="Close details" onClick={() => setNeonOpen(false)} className="fixed inset-0 z-30 bg-black/40 animate-fade-in" />}
+          <div
+            className={neonOpen
+              ? 'neon-sheet fixed inset-x-0 z-40 top-[calc(var(--appbar-h)+40px)] bottom-[calc(env(safe-area-inset-bottom)+64px)] flex flex-col rounded-t-[1.75rem] border-t border-white/10 bg-ink-900 shadow-[0_-20px_40px_rgba(0,0,0,.5)]'
+              : 'relative z-10 flex min-h-0 flex-1 flex-col rounded-t-[1.75rem] bg-ink-900'}
+          >
+            <div className="shrink-0 touch-none" onTouchStart={onSheetTouchStart} onTouchEnd={(e) => onSheetTouchEnd(e)}>
+              <button onClick={() => setNeonOpen((o) => !o)} className="mx-auto block w-full py-2" aria-label={neonOpen ? 'Close details' : 'Open details'}>
+                <span className="mx-auto block h-1.5 w-10 rounded-full bg-ink-600" />
+              </button>
+              <div className="flex gap-1 px-3 pb-2" role="tablist">
+                {tabs.map((t) => (
+                  <button
+                    key={t.id}
+                    role="tab"
+                    aria-selected={neonTab === t.id}
+                    onClick={() => pickTab(t.id)}
+                    className={`h-9 flex-1 rounded-full text-[13px] font-bold transition-colors ${neonTab === t.id ? 'bg-brand-500 text-ink-950' : 'bg-ink-800 text-ink-300'}`}
+                  >
+                    {t.label}
+                  </button>
+                ))}
+              </div>
+            </div>
+          <div
+            key={neonTab}
+            className={`neon-tab-panel min-h-0 flex-1 px-3 pb-3 ${neonOpen ? 'overflow-y-auto overscroll-contain' : 'overflow-hidden'}`}
+            onTouchStart={onSheetTouchStart}
+            onTouchEnd={(e) => onSheetTouchEnd(e, e.currentTarget)}
+            onClick={() => { if (!neonOpen) setNeonOpen(true); }}
+          >
+            {exploreBanner}
+            {bestPreviewBanner}
+            {neonTab === 'coach' && (
+              <div ref={coachCardRef} className="space-y-2">
+                {isExploring ? (
+                  <FreeMoveReviewCard review={exploreReview} />
+                ) : move && moveMeta && (
+                  <div className="card overflow-hidden p-0">
+                    <div className="p-3 pb-0">
+                      <CoachBubble
+                        hideBubble
+                        san={move.san}
+                        quality={displayQuality!}
+                        color={moveMeta.color}
+                        evalText={move.evalAfter ? formatEval(move.evalAfter) : null}
+                        moveKey={move.index}
+                        fork={!!forkTargets}
+                        fen={move.fenAfter}
+                        onPlayTablebase={playFrames}
+                        advanced={advancedCoach && coachMode === 'move'}
+                        voice={coachVoice}
+                        voiceName={coachVoiceName}
+                        explainInput={explainInput}
+                        previewActive={!!bestPreview}
+                        onScene={showCoachScene}
+                      />
+                    </div>
+                    <p className="px-4 py-3 text-sm text-ink-400">{blurbText}</p>
+                    {(displayQuality === 'brilliant' || displayQuality === 'great') && <BrilliantLineButton onClick={playBrilliantLine} />}
+                  </div>
+                )}
+                <CoachModeTabs mode={coachMode} onChange={setCoachMode} />
+                {coachMode === 'game' && (
+                  <GameCoach
+                    moves={moves}
+                    currentIndex={currentIndex}
+                    onIndexChange={onIndexChange}
+                    previewActive={!!bestPreview}
+                    onScene={showCoachScene}
+                    depth={depth}
+                    you={youSide}
+                    names={gameNames}
+                    onPickYou={pickYou}
+                    winner={gameWinner}
+                    gameId={analysis.game.id}
+                    voice={coachVoice}
+                    voiceName={coachVoiceName}
+                    compact
+                  />
+                )}
+              </div>
+            )}
+            {neonTab === 'moves' && <MoveList moves={moves} currentIndex={currentIndex} onSelect={onIndexChange} />}
+            {neonTab === 'graph' && (
+              <div className="card p-3">
+                <div className="mb-2 flex items-center justify-between">
+                  <span className="text-xs font-semibold uppercase tracking-wide text-ink-400">Evaluation</span>
+                  {move?.evalAfter && <span className="font-mono text-sm font-semibold">{formatEval(move.evalAfter)}</span>}
+                </div>
+                <EvalGraph moves={moves} currentIndex={currentIndex} onSelect={onIndexChange} />
+              </div>
+            )}
+            {neonTab === 'report' && (
+              <div className="space-y-3">
+                {accuracyCard}
+                {keyMomentsCard}
+                {moveDetailsCard}
+              </div>
+            )}
+          </div>
+          </div>
+        </div>
+        {phoneToolbar}
+        {optionsSheet}
+      </>
+    );
+  }
+
   return (
     <div
       className="grid grid-cols-1 lg:grid-cols-[minmax(0,580px)_1fr_380px] gap-4 sm:gap-6"
@@ -2029,44 +2256,8 @@ export function AnalysisView({ analysis, currentIndex, onIndexChange, depth = 12
         {keyMomentsCard}
       </div>
 
-      {/* Phone: bottom toolbar (Options · Coach · Back · Forward) */}
-      <div className="gtoolbar sm:hidden">
-        <button className="gtool" onClick={() => setOptionsOpen(true)} aria-label="Options"><SlidersHorizontal size={22} /><span>Options</span></button>
-        <button
-          className="gtool"
-          aria-label="Coach explanation"
-          onClick={() => {
-            const el = coachCardRef.current;
-            if (!el) return;
-            const near = el.getBoundingClientRect().top < window.innerHeight * 0.75;
-            if (near) window.scrollTo({ top: 0, behavior: 'smooth' }); else el.scrollIntoView({ behavior: 'smooth', block: 'start' });
-          }}
-        ><Sparkles size={22} /><span>Coach</span></button>
-        <button
-          className="gtool-main"
-          aria-label="Show the best move"
-          disabled={!engineBestUci}
-          onClick={() => showBestMove()}
-        ><Star size={26} /><span>Best move</span></button>
-        <button className="gtool" {...holdBack} disabled={currentIndex === 0} aria-label="Previous move (hold to rewind)"><ChevronLeft size={26} /><span>Back</span></button>
-        <button className="gtool" {...holdForward} disabled={currentIndex >= moves.length - 1} aria-label="Next move (hold to fast-forward)"><ChevronRight size={26} /><span>Forward</span></button>
-      </div>
-
-      {optionsOpen && (
-        <div className="fixed inset-0 z-[60] flex items-end bg-black/60 backdrop-blur-sm animate-fade-in sm:hidden" onClick={() => setOptionsOpen(false)}>
-          <div className="card w-full rounded-b-none rounded-t-3xl sheet-up pb-[calc(env(safe-area-inset-bottom)+1rem)]" onClick={(e) => e.stopPropagation()}>
-            <div className="sheet-handle" />
-            <div className="grid grid-cols-3 gap-2 p-4">
-              <SheetTile icon={RotateCcw} label="Flip board" onClick={() => { handleFlip(); setOptionsOpen(false); }} />
-              <SheetTile icon={Sparkles} label="Best move" disabled={!engineBestUci} onClick={() => { showBestMove(); setOptionsOpen(false); }} />
-              <SheetTile icon={Layers} label={coachMode === 'move' ? 'Whole game' : 'This move'} onClick={() => { setCoachMode(coachMode === 'move' ? 'game' : 'move'); setOptionsOpen(false); window.setTimeout(() => coachCardRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' }), 60); }} />
-              <SheetTile icon={GraduationCap} label="Coach tab" disabled={!onViewChange} onClick={() => { setOptionsOpen(false); onViewChange?.('coach'); }} />
-              <SheetTile icon={Target} label="Drills" disabled={!onViewChange} onClick={() => { setOptionsOpen(false); onViewChange?.('drills'); }} />
-              <SheetTile icon={RefreshCw} label="Re-analyze" disabled={!onReanalyze} onClick={() => { setOptionsOpen(false); onReanalyze?.(); }} />
-            </div>
-          </div>
-        </div>
-      )}
+      {phoneToolbar}
+      {optionsSheet}
     </div>
   );
 }
@@ -2081,7 +2272,7 @@ function SheetTile({ icon: Icon, label, onClick, disabled }: { icon: any; label:
 }
 
 /** Horizontal, scrolling move list for phones: "1. e4 e6 2. Nf3 Nc6 ...". The current move is highlighted and kept in view. */
-function MobileMoveStrip({ moves, currentIndex, onSelect }: { moves: AnalyzedMove[]; currentIndex: number; onSelect: (i: number) => void }) {
+function MobileMoveStrip({ moves, currentIndex, onSelect, flat }: { moves: AnalyzedMove[]; currentIndex: number; onSelect: (i: number) => void; flat?: boolean }) {
   const box = useRef<HTMLDivElement>(null);
   useEffect(() => {
     const c = box.current;
@@ -2091,7 +2282,7 @@ function MobileMoveStrip({ moves, currentIndex, onSelect }: { moves: AnalyzedMov
   return (
     <div
       ref={box}
-      className="sm:hidden sticky top-[var(--appbar-h)] z-30 -mx-4 -mt-4 px-3 h-10 flex items-center gap-0.5 overflow-x-auto whitespace-nowrap bg-ink-950 border-b border-ink-800 no-scrollbar"
+      className={`sm:hidden ${flat ? 'shrink-0' : 'sticky top-[var(--appbar-h)] z-30 -mx-4 -mt-4'} px-3 h-10 flex items-center gap-0.5 overflow-x-auto whitespace-nowrap bg-ink-950 border-b border-ink-800 no-scrollbar`}
       aria-label="Moves"
     >
       {moves.map((m, i) => (

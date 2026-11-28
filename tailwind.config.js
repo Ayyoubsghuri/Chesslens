@@ -1,3 +1,9 @@
+/**
+ * Colours are CSS variables (set in src/index.css), so the Android app can wear its own skin ("neon") while the
+ * website keeps the classic one. The `<alpha-value>` part keeps opacity classes like bg-ink-900/80 working.
+ */
+const v = (name) => `rgb(var(--${name}) / <alpha-value>)`;
+
 /** @type {import('tailwindcss').Config} */
 export default {
   content: ['./index.html', './src/**/*.{js,ts,jsx,tsx}'],
@@ -11,17 +17,17 @@ export default {
       colors: {
         // "Concierge" palette: deep emerald-black ink, champagne gold brand, copper accent
         ink: {
-          50: '#fbf6ea',
-          100: '#f5ecd9', // cream: primary text
-          200: '#e4dcc8',
-          300: '#b9c4bb',
-          400: '#8fa398', // muted text
-          500: '#5f7a70',
-          600: '#2f453e',
-          700: '#223530', // borders / secondary buttons
-          800: '#172622', // cards
-          900: '#0f1b18', // surfaces
-          950: '#0a1411', // page background
+          50: v('ink-50'),
+          100: v('ink-100'), // cream: primary text
+          200: v('ink-200'),
+          300: v('ink-300'),
+          400: v('ink-400'), // muted text
+          500: v('ink-500'),
+          600: v('ink-600'),
+          700: v('ink-700'), // borders / secondary buttons
+          800: v('ink-800'), // cards
+          900: v('ink-900'), // surfaces
+          950: v('ink-950'), // page background
         },
         board: {
           light: '#e9dcc0',
@@ -31,21 +37,21 @@ export default {
           check: '#e54444',
         },
         brand: {
-          50: '#faf5ea',
-          100: '#f1e6cf',
-          200: '#e7d6b2',
-          300: '#dcc49b',
-          400: '#d0b185',
-          500: '#c4a574', // champagne gold
-          600: '#a98a5a',
-          700: '#8a6f45',
-          800: '#6a5435',
-          900: '#4a3b25',
+          50: v('brand-50'),
+          100: v('brand-100'),
+          200: v('brand-200'),
+          300: v('brand-300'),
+          400: v('brand-400'),
+          500: v('brand-500'), // champagne gold
+          600: v('brand-600'),
+          700: v('brand-700'),
+          800: v('brand-800'),
+          900: v('brand-900'),
         },
         accent: {
-          400: '#d9915f', // copper: warnings / deltas
-          500: '#c27a46',
-          600: '#a8643a',
+          400: v('accent-400'), // copper: warnings / deltas
+          500: v('accent-500'),
+          600: v('accent-600'),
         },
       },
       animation: {

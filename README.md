@@ -33,6 +33,16 @@ ChessLens is a chess game review app that runs in your browser. Import a game an
 - **Explore mode**: play your own moves on the board and get instant engine feedback.
 - **Local storage**: games, analyses and settings are saved in your browser (`localStorage`).
 
+## Android app
+
+The Android app has its own design (dark, mint green, lime, bold sans-serif headings, a floating bottom bar) and every
+feature of the website. The website keeps its classic design. Both are the same code: the app switches to the "neon"
+skin (`src/skin.ts`); on the web you can preview it with `?skin=neon` (and go back with `?skin=classic`).
+
+Download it from the repository's **Releases** page. Each run of the "Build Android APK" workflow publishes a new
+release (`android-v1.<build>`). Builds are signed with the same key (`android-kit/signing`, a debug key, not a Play
+Store key), so a new version installs over the old one and keeps your games.
+
 ## Tech stack
 
 - React + TypeScript + Vite

@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { X, Settings as SettingsIcon, Cpu, Sparkles, Volume2, Film, ClipboardPaste } from 'lucide-react';
+import { MessageCircle, X, Settings as SettingsIcon, Cpu, Sparkles, Volume2, Film, ClipboardPaste } from 'lucide-react';
 import type { Settings } from '@/lib/types';
 import { COACH_VOICES, DEFAULT_COACH_VOICE } from '@/lib/tts';
 
@@ -168,6 +168,24 @@ export function SettingsModal({ settings, onSave, onClose }: SettingsModalProps)
             </span>
             <span className={`relative h-6 w-11 shrink-0 rounded-full transition-colors ${local.clipboardImport !== false ? 'bg-brand-500' : 'bg-ink-600'}`}>
               <span className={`absolute top-0.5 h-5 w-5 rounded-full bg-white transition-all ${local.clipboardImport !== false ? 'left-[22px]' : 'left-0.5'}`} />
+            </span>
+          </button>
+          <button
+            type="button"
+            role="switch"
+            aria-checked={local.darijaComments !== false}
+            onClick={() => setLocal({ ...local, darijaComments: local.darijaComments === false })}
+            className="mt-3 w-full flex items-center gap-3 rounded-xl border border-ink-700 bg-ink-800/60 px-3.5 py-3 text-left hover:bg-ink-700/50 transition-colors"
+          >
+            <MessageCircle size={18} className="text-brand-400 shrink-0" />
+            <span className="flex-1">
+              <span className="block text-sm font-medium text-ink-100">Darija comments</span>
+              <span className="block text-xs text-ink-400 mt-0.5">
+                The coach's bubble sometimes switches to a short reaction in Darija (Moroccan Arabic). Turn it off to keep the comments in English only.
+              </span>
+            </span>
+            <span className={`relative h-6 w-11 shrink-0 rounded-full transition-colors ${local.darijaComments !== false ? 'bg-brand-500' : 'bg-ink-600'}`}>
+              <span className={`absolute top-0.5 h-5 w-5 rounded-full bg-white transition-all ${local.darijaComments !== false ? 'left-[22px]' : 'left-0.5'}`} />
             </span>
           </button>
         </div>

@@ -86,3 +86,58 @@ export function detectSacrifice(
     return false;
   }
 }
+/** What a brilliant sacrifice gets in return. */
+export type SacrificePayoff = 'mate' | 'material' | 'position';
+
+/**
+ * Brilliant = a real sacrifice of a VALUABLE piece (a knight, bishop, rook or queen: at least 3 points given up,
+ * not a trade) that pays off in the engine's line:
+ *   - 'mate':     it leads to checkmate (the line ends in mate, or the engine sees a forced mate for the mover);
+ *   - 'material': it wins back MORE than it gave (e.g. a rook given to win the queen);
+ *   - 'position': the material stays given (the mover ends at least a pawn down), but the position is clearly better for it
+ *                 (`winAfter`, the mover's winning chances after the move, is 60% or more).
+ * Returns the payoff, or null when the move is not a brilliant sacrifice.
+ */
+export function brilliantSacrifice(
+  fenBefore: string,
+  playedUci: string,
+  continuation: string | undefined,
+  color: PieceColor,
+  moverMates: boolean,
+  winAfter: number,
+  maxPlies = 10,
+): SacrificePayoff | null {
+  try {
+    const chess = new Chess(fenBefore);
+    const before = material(chess, color);
+    if (!playUci(chess, playedUci)) return null;
+    const pv = (continuation ?? '').split(/\s+/).filter(Boolean).slice(0, maxPlies);
+    let lowPoint = 0;
+    let gaveValuable = false;
+    let net = 0;
+    let played = 0;
+    let mated = false;
+    for (const uci of pv) {
+      const m = playUci(chess, uci);
+      if (!m) break;
+      played++;
+      const diff = material(chess, color) - before;
+      if (played % 2 === 1) {
+        // the opponent's move: did it take one of the mover's valuable pieces while the mover is behind?
+        // the opponent takes it right away: a piece lost later in the line belongs to another plan, not to this move
+        if (played === 1 && m.captured && VALUES[m.captured as keyof typeof VALUES] >= 3 && diff <= -2) gaveValuable = true;
+        lowPoint = Math.min(lowPoint, diff);
+      } else {
+        net = diff;
+      }
+      if (chess.isCheckmate()) { mated = chess.turn() !== color; break; }
+    }
+    if (played < 2 || !gaveValuable || lowPoint > -2) return null;
+    if (mated || moverMates) return 'mate';
+    if (net >= 1) return 'material';
+    if (net <= -1 && winAfter >= 60) return 'position';
+    return null;
+  } catch {
+    return null;
+  }
+}

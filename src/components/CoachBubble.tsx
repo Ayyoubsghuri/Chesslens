@@ -1,3 +1,5 @@
+import { isNeon } from '@/skin';
+import { loadSettings } from '@/lib/storage';
 import { useEffect, useId, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from 'react';
 import { haptic } from '../native';
 import { Star, ThumbsUp, Check, BookOpen, X } from 'lucide-react';
@@ -247,13 +249,26 @@ interface CoachBubbleProps {
   hideBubble?: boolean;
 }
 
+/** Settings → "Darija comments" (on unless turned off), kept in sync when the settings are saved. */
+function useDarija(): boolean {
+  const read = () => { try { return loadSettings().darijaComments !== false; } catch { return true; } };
+  const [on, setOn] = useState(read);
+  useEffect(() => {
+    const upd = () => setOn(read());
+    window.addEventListener('chesslens:settings-changed', upd);
+    return () => window.removeEventListener('chesslens:settings-changed', upd);
+  }, []);
+  return on;
+}
+
 export function CoachBubble({ san, quality, color, evalText, moveKey, compact, fork, fen, onPlayTablebase, advanced, explainInput, previewActive, onScene, voice, voiceName, bubbleOnly, hideBubble }: CoachBubbleProps) {
   const [lang, setLang] = useState<'en' | 'ar'>('en');
+  const darija = useDarija();
 
   // English -> (2s of Darija) -> English -> ..., restarting on every new move.
   useEffect(() => {
     setLang('en');
-    if (fork) return; // the fork phrase stays on screen
+    if (fork || !darija) return; // the fork phrase stays on screen; Darija turned off in Settings
     let timer: number;
     const toDarija = () => {
       setLang('ar');
@@ -265,7 +280,7 @@ export function CoachBubble({ san, quality, color, evalText, moveKey, compact, f
     };
     timer = window.setTimeout(toDarija, ENGLISH_MS);
     return () => window.clearTimeout(timer);
-  }, [moveKey, quality, fork]);
+  }, [moveKey, quality, fork, darija]);
 
   const angry = ANGRY.includes(quality);
   const avatar = compact ? 56 : 88;
@@ -281,7 +296,7 @@ export function CoachBubble({ san, quality, color, evalText, moveKey, compact, f
       />
 
       <div
-        className="relative flex-1 min-w-0 mb-3 ml-2 flex items-center gap-3 rounded-2xl bg-[#f5ecd9] px-3.5 py-3 h-[3.25rem] sm:h-[3.75rem] lg:h-[5.5rem] lg:py-2"
+        className={`relative flex-1 min-w-0 mb-3 ml-2 flex items-center gap-3 rounded-2xl bg-[#f5ecd9] px-3.5 ${isNeon ? 'py-2 min-h-[3.25rem]' : 'py-3 h-[3.25rem] sm:h-[3.75rem] lg:h-[5.5rem] lg:py-2'}`}
         style={{ color: '#1a2a24' }}
         role="status"
         aria-live="polite"
@@ -297,10 +312,13 @@ export function CoachBubble({ san, quality, color, evalText, moveKey, compact, f
 
         <span
           key={lang}
-          className={`flex-1 min-w-0 font-extrabold leading-none text-left coach-swap whitespace-nowrap overflow-hidden text-ellipsis lg:whitespace-normal lg:text-clip lg:break-words ${lang === 'ar' && !fork ? 'lg:leading-snug text-base lg:text-sm' : `lg:leading-tight lg:text-lg ${compact ? 'text-xl' : 'text-2xl'}`}`}
+          className={isNeon
+            // the app: plain bold sans-serif, up to two lines instead of cutting the sentence off
+            ? `flex-1 min-w-0 text-left coach-swap line-clamp-2 leading-tight ${lang === 'ar' && !fork ? 'text-[15px]' : 'text-[15px] font-extrabold tracking-tight'}`
+            : `flex-1 min-w-0 font-extrabold leading-none text-left coach-swap whitespace-nowrap overflow-hidden text-ellipsis lg:whitespace-normal lg:text-clip lg:break-words ${lang === 'ar' && !fork ? 'lg:leading-snug text-base lg:text-sm' : `lg:leading-tight lg:text-lg ${compact ? 'text-xl' : 'text-2xl'}`}`}
           dir={lang === 'ar' && !fork ? 'rtl' : 'ltr'}
           lang={lang === 'ar' && !fork ? 'ar' : 'en'}
-          style={lang === 'ar' && !fork ? { fontFamily: '"Segoe UI", Tahoma, system-ui, sans-serif', textAlign: 'left' } : { fontFamily: 'var(--cl-font-display)', fontStyle: 'italic', fontWeight: 700 }}
+          style={lang === 'ar' && !fork ? { fontFamily: '"Segoe UI", Tahoma, system-ui, sans-serif', textAlign: 'left' } : isNeon ? { fontFamily: 'Inter, system-ui, sans-serif' } : { fontFamily: 'var(--cl-font-display)', fontStyle: 'italic', fontWeight: 700 }}
         >
           {fork ? FORK_PHRASE : lang === 'ar' ? DARIJA[quality] : `${figurine(san)} ${ENGLISH_TAIL[quality]}`}
         </span>

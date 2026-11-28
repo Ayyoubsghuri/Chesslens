@@ -11,6 +11,8 @@ import { PlayVsComputer, type PlayedGame } from '@/components/PlayVsComputer';
 import { OpeningsTrainer } from '@/components/OpeningsTrainer';
 import { registerAnalyzeHandler } from '@/components/MastersGames';
 import { MobileHome } from '@/components/MobileHome';
+import { NeonHome, NeonBar } from '@/components/NeonHome';
+import { isNeon } from './skin';
 import { ChessVariants } from '@/components/ChessVariants';
 import { MissionBanner } from '@/components/MissionBanner';
 import type { Mission } from '@/lib/mission';
@@ -46,7 +48,7 @@ function App() {
   const [selectedGameId, setSelectedGameId] = useState<string | null>(null);
   const [currentMoveIndex, setCurrentMoveIndex] = useState(0);
   const [view, setView] = useState<View>('analysis');
-  const [page, setPage] = useState<'home' | 'play' | 'puzzles' | 'openings' | 'learn' | 'variants'>('home');
+  const [page, setPage] = useState<'home' | 'play' | 'puzzles' | 'openings' | 'learn' | 'variants' | 'story' | 'library'>('home');
   const [puzzleTheme, setPuzzleTheme] = useState<string | undefined>(undefined);
   const [showImport, setShowImport] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
@@ -248,6 +250,7 @@ function App() {
   const handleSaveSettings = (s: SettingsType) => {
     setSettings(s);
     saveSettings(s);
+    window.dispatchEvent(new CustomEvent('chesslens:settings-changed'));
   };
 
   const currentMove = selectedAnalysis?.moves[currentMoveIndex] || null;
@@ -373,7 +376,7 @@ function App() {
   // Ads (Android app only): a medium banner while analyzing, then a small banner at the bottom of the review page.
   const inReviewScreen = page === 'home' && !!selectedGame && !!selectedAnalysis;
 
-  const PAGE_TITLES: Record<string, string> = { learn: 'Learn Path', openings: 'Openings', puzzles: 'Puzzles', play: 'Play vs Computer' };
+  const PAGE_TITLES: Record<string, string> = { learn: 'Learn Path', openings: 'Openings', puzzles: 'Puzzles', play: 'Play vs Computer', variants: 'Variants', story: 'Your chess story', library: 'Your games' };
   const canGoBack = page !== 'home' || !!selectedGame;
   const goBack = () => {
     if (page === 'home' && selectedGameId) setSelectedGameId(null);
@@ -453,15 +456,27 @@ function App() {
           <OpeningsTrainer />
         ) : page === 'variants' ? (
           <ChessVariants />
+        ) : page === 'story' ? (
+          <ChessStory games={games} />
+        ) : page === 'library' ? (
+          games.length ? <GameLibrary games={games} analyses={analyses} onSelect={handleSelectGame} onDelete={handleDeleteGame} onDeleteMany={handleDeleteMany} /> : <p className="text-sm text-ink-400">No games yet.</p>
         ) : page === 'play' ? (
           <PlayVsComputer settings={settings} onAnalyze={handlePlayedGame} />
         ) : page === 'puzzles' ? (
           <PuzzleTrainer initialCategory={puzzleTheme} />
         ) : !selectedGame ? (
           <div className="flex flex-col">
-          <MobileHome onImport={() => setShowImport(true)} onPaste={() => checkClipboard(true)} onGo={(t) => { setPuzzleTheme(undefined); setMissionCtx(null); setPage(t); }} />
-          <div className="order-2 sm:order-1"><ChessStory games={games} /></div>
-          <div className={`order-1 sm:order-2 ${games.length === 0 ? 'hidden sm:flex' : 'flex'} flex-col items-center justify-center text-center ${games.length === 0 ? 'sm:min-h-[50vh]' : 'sm:min-h-[30vh]'}`}>
+          {isNeon ? (
+            <NeonHome
+              games={games} analyses={analyses} onImport={() => setShowImport(true)} onPaste={() => checkClipboard(true)}
+              onGo={(t) => { setPuzzleTheme(undefined); setMissionCtx(null); setPage(t); }} onOpenGame={handleSelectGame}
+            />
+          ) : (
+            <MobileHome onImport={() => setShowImport(true)} onPaste={() => checkClipboard(true)} onGo={(t) => { setPuzzleTheme(undefined); setMissionCtx(null); setPage(t); }} />
+          )}
+          {/* The app's home is one screen: its story and full library are pages of their own (Your story / Manage). */}
+          <div className={`order-2 sm:order-1 ${isNeon ? 'hidden sm:block' : ''}`}><ChessStory games={games} /></div>
+          <div className={`order-1 sm:order-2 ${games.length === 0 || isNeon ? 'hidden sm:flex' : 'flex'} flex-col items-center justify-center text-center ${games.length === 0 ? 'sm:min-h-[50vh]' : 'sm:min-h-[30vh]'}`}>
             {games.length === 0 ? (
               <>
                 <div className="w-20 h-20 rounded-2xl bg-gradient-to-br from-brand-400 to-brand-600 flex items-center justify-center mb-6 shadow-xl">
@@ -582,11 +597,18 @@ function App() {
         )}
       </main>
 
-      {page === 'home' && !selectedGame && games.length > 0 && (
+      {!isNeon && page === 'home' && !selectedGame && games.length > 0 && (
         <button onClick={() => setShowImport(true)} className="fab sm:hidden" aria-label="Import games"><Plus size={28} /></button>
       )}
 
-      <nav className={`tabbar sm:hidden ${inGame && view === 'analysis' ? 'hidden' : ''}`} aria-label="Main">
+      {/* The Android app has its own floating bar (neon skin); the website keeps the classic tab bar. */}
+      {isNeon && (
+        <NeonBar
+          page={page} hidden={inGame && view === 'analysis'} onImport={() => setShowImport(true)}
+          onGo={(p) => { setPuzzleTheme(undefined); setMissionCtx(null); if (p === 'home') setSelectedGameId(null); setPage(p); }}
+        />
+      )}
+      <nav className={`tabbar sm:hidden ${isNeon || (inGame && view === 'analysis') ? 'hidden' : ''}`} aria-label="Main">
         <div className="flex">
           <BottomTab active={page === 'home'} onClick={() => setPage('home')} icon={Home} label="Home" />
           <BottomTab active={page === 'learn'} onClick={() => setPage('learn')} icon={GraduationCap} label="Learn" />
