@@ -393,7 +393,7 @@ export function PuzzleTrainer({ initialCategory }: { initialCategory?: string } 
 
   if (isNeon && vw < 640) {
     const TOP = 46, PANEL = 196;
-    const boardPx = Math.max(220, Math.min(fit.w - 16, (fit.h || 600) - TOP - PANEL));
+    const boardPx = Math.max(220, Math.min(fit.w, (fit.h || 600) - TOP - PANEL));
     return (
       <div ref={setFitBox} className="fixed inset-x-0 top-[var(--appbar-h)] bottom-[calc(env(safe-area-inset-bottom)+84px)] z-20 flex flex-col bg-ink-950">
         {/* source + category in one slim row */}

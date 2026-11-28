@@ -1840,7 +1840,9 @@ export function AnalysisView({ analysis, currentIndex, onIndexChange, depth = 12
   if (neonPhone) {
     // The board takes the full width; under it there is just a peek of the details (tabs + a line or two).
     const STRIP = 40, BUBBLE = 70, EVAL = 16, PEEK = 92;
-    const boardPx = Math.max(240, Math.min(viewport.w, (neonH || viewport.h) - STRIP - BUBBLE - EVAL - PEEK));
+    const fitPx = Math.max(240, Math.min(viewport.w, (neonH || viewport.h) - STRIP - BUBBLE - EVAL - PEEK));
+    // within a few pixels of the screen width: take the full width (the peek gives up those pixels)
+    const boardPx = viewport.w - fitPx <= 16 ? viewport.w : fitPx;
     const pickTab = (t: typeof neonTab) => {
       if (t === neonTab && neonOpen) setNeonOpen(false);
       else { setNeonTab(t); setNeonOpen(true); }

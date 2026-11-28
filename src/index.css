@@ -302,3 +302,12 @@ html.skin-neon .neon-bar-item[aria-current="page"] svg { transform: translateY(-
 @keyframes neon-sheet-up { from { transform: translateY(40%); opacity: .4; } to { transform: none; opacity: 1; } }
 .neon-sheet { animation: neon-sheet-up .28s cubic-bezier(.2, .8, .2, 1); }
 @media (prefers-reduced-motion: reduce) { .neon-sheet { animation: none; } }
+
+/* App boards: square corners, and on phones the full screen width (the page's side padding is cancelled) */
+html.skin-neon .neon-board { border-radius: 0; }
+html.skin-neon .vb-board, html.skin-neon .vb-board cg-container, html.skin-neon .vb-board cg-board { border-radius: 0; }
+@media (max-width: 639px) {
+  html.skin-neon .neon-board { margin-left: -1rem; margin-right: -1rem; }
+}
+/* The board library rounds the board to a multiple of 8 px (crisp squares): centre it so the few spare pixels are split evenly */
+html.skin-neon .cg-wrap cg-container { left: 50%; transform: translateX(-50%); }

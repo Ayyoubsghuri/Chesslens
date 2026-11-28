@@ -284,7 +284,7 @@ export function FriendPlay({ onAnalyze }: { onAnalyze?: (g: PlayedGame) => void 
           <span className="font-semibold text-ink-100">{themName}</span>
           {myColor && <span className="text-xs text-ink-400">({sideName(other(myColor))})</span>}
         </div>
-        <div className="relative overflow-hidden rounded-lg">
+        <div className="neon-board relative overflow-hidden rounded-lg">
           <VariantBoard
             fen={chess.fen()} orientation={myColor === 'b' ? 'black' : 'white'} turn={chess.turn()}
             movable={myTurn ? chess.turn() : null} dests={dests} lastMove={lastMove} onMove={onMove}
@@ -314,7 +314,7 @@ export function FriendPlay({ onAnalyze }: { onAnalyze?: (g: PlayedGame) => void 
           {myColor && <span className="text-xs text-ink-400">({sideName(myColor)})</span>}
           <span className={`ml-auto flex items-center gap-1 text-xs ${connected ? 'text-brand-300' : 'text-amber-300'}`}>
             {connected ? <Wifi size={13} /> : <WifiOff size={13} />}
-            {connected ? 'Connected' : state === 'reconnecting' ? 'Reconnecting…' : state === 'error' ? 'Not connected' : 'Connecting…'}
+            {connected ? 'Connected' : state === 'waiting' ? 'Waiting for your friend' : state === 'reconnecting' ? 'Reconnecting…' : state === 'error' ? 'Not connected' : 'Connecting…'}
           </span>
         </div>
       </div>

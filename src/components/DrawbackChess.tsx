@@ -306,7 +306,7 @@ function GameScreen({ game, setGame, onNew }: { game: Game; setGame: (g: Game | 
   return (
     <div className="mx-auto grid max-w-6xl gap-4 lg:grid-cols-[minmax(0,560px)_1fr]">
       <div className="min-w-0">
-        <div className="relative overflow-hidden rounded-lg">
+        <div className="neon-board relative overflow-hidden rounded-lg">
           <VariantBoard
             fen={placement(state.board)} orientation={orientation} turn={state.turn}
             movable={humanToMove ? state.turn : null} dests={dests} lastMove={lastMove} shapes={shapes} onMove={onMove}

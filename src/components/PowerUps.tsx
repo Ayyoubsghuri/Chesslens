@@ -248,8 +248,10 @@ function PowerGameScreen({ game, setGame, onLeave }: { game: PowerGame; setGame:
   return (
     <div className="mx-auto grid max-w-6xl gap-4 lg:grid-cols-[minmax(0,560px)_1fr]">
       <div className="min-w-0">
-        <VariantBoard fen={game.fen.split(' ')[0]} orientation={orientation} turn={chess.turn()} movable={myTurn && !aim ? 'w' : null}
-          dests={dests} lastMove={lastMove} marks={marks} onMove={onMove} onSelect={onSelect} />
+        <div className="neon-board">
+          <VariantBoard fen={game.fen.split(' ')[0]} orientation={orientation} turn={chess.turn()} movable={myTurn && !aim ? 'w' : null}
+            dests={dests} lastMove={lastMove} marks={marks} onMove={onMove} onSelect={onSelect} />
+        </div>
         <div className="mt-2 flex flex-wrap items-center gap-2 text-sm">
           {!over && <span className="font-semibold text-ink-100">{thinking ? <span className="flex items-center gap-1.5"><Loader2 size={14} className="animate-spin" /> {stockfishCanPlay(game.fen) ? 'Stockfish' : 'The engine'} is thinking…</span> : game.dropNow ? 'Add your pawn' : myTurn ? (chess.inCheck() ? 'Your move: you are in check' : 'Your move') : ''}</span>}
           <button onClick={() => setOrientation((o) => (o === 'white' ? 'black' : 'white'))} className="ml-auto flex items-center gap-1 rounded-md px-2 py-1 text-xs text-ink-300 hover:bg-ink-700"><RotateCcw size={13} /> Flip</button>
