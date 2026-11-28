@@ -10,10 +10,25 @@ import type { DataConnection, Peer as PeerT } from 'peerjs';
 
 export type Side = 'w' | 'b';
 
+/** Which game the room plays. */
+export type FriendVariant = 'standard' | 'drawbacks' | 'sniper' | 'catapult' | 'drops';
+
+/** One ply of a variant game: what to show in the move list, the squares to highlight, and the position after it. */
+export interface VPly { label: string; last: [string, string] | null; pos: string }
+
 export type Msg =
   | { t: 'hello'; name: string }
-  | { t: 'sync'; ucis: string[]; hostColor: Side; hostName: string; result: string | null; gameId: string }
+  | {
+      t: 'sync'; ucis: string[]; hostColor: Side; hostName: string; result: string | null; gameId: string;
+      /** variant games (absent = standard, for older versions) */
+      variant?: FriendVariant; plies?: VPly[];
+      /** Secret Drawbacks: the guest's own drawback (the host's stays secret until the end) */
+      yourDrawback?: string;
+    }
   | { t: 'move'; uci: string; ply: number }
+  | { t: 'vply'; ply: VPly; n: number }
+  | { t: 'result'; result: string; reason: string }
+  | { t: 'reveal'; drawback: string }
   | { t: 'resign' }
   | { t: 'draw-offer' }
   | { t: 'draw-accept' }

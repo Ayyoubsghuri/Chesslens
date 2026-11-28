@@ -23,101 +23,119 @@ const FILES = 'abcdefgh';
 const sq = (f: number, r: number) => `${FILES[f]}${r + 1}` as Square;
 const fr = (s: string) => ({ f: FILES.indexOf(s[0]), r: Number(s[1]) - 1 });
 
-/** A FEN for the board after a power-up, with Black to move and castling rights that still make sense. */
-function afterPower(c: Chess, halfmoveReset = true): string {
+type Side = 'w' | 'b';
+const opp = (s: Side): Side => (s === 'w' ? 'b' : 'w');
+
+/** A FEN for the board after `side` used a power-up: the other side to move, castling rights that still make sense. */
+function afterPower(c: Chess, side: Side = 'w', halfmoveReset = true): string {
   const parts = c.fen().split(' ');
-  const has = (s: Square, t: string, col: 'w' | 'b') => { const p = c.get(s); return !!p && p.type === t && p.color === col; };
+  const has = (s: Square, t: string, col: Side) => { const p = c.get(s); return !!p && p.type === t && p.color === col; };
   let cast = '';
   if (parts[2].includes('K') && has('e1', 'k', 'w') && has('h1', 'r', 'w')) cast += 'K';
   if (parts[2].includes('Q') && has('e1', 'k', 'w') && has('a1', 'r', 'w')) cast += 'Q';
   if (parts[2].includes('k') && has('e8', 'k', 'b') && has('h8', 'r', 'b')) cast += 'k';
   if (parts[2].includes('q') && has('e8', 'k', 'b') && has('a8', 'r', 'b')) cast += 'q';
-  return [parts[0], 'b', cast || '-', '-', halfmoveReset ? '0' : parts[4], parts[5]].join(' ');
+  const full = side === 'b' ? String(Number(parts[5] || 1) + 1) : parts[5];
+  return [parts[0], opp(side), cast || '-', '-', halfmoveReset ? '0' : parts[4], full].join(' ');
 }
 
-const kingSq = (c: Chess, col: 'w' | 'b'): Square | null => {
+const kingSq = (c: Chess, col: Side): Square | null => {
   for (const row of c.board()) for (const p of row) if (p && p.type === 'k' && p.color === col) return p.square;
   return null;
 };
-/** Your king is not attacked after the power-up (Black would be able to take it). */
-const safe = (c: Chess) => { const k = kingSq(c, 'w'); return !!k && !c.isAttacked(k, 'b'); };
+/** `side`'s king is not attacked after the power-up (the opponent would be able to take it). */
+const safe = (c: Chess, side: Side = 'w') => { const k = kingSq(c, side); return !!k && !c.isAttacked(k, opp(side)); };
+/** A copy of `fen` with `side` to move, without validation (used to test a power-up). */
+function asSide(fen: string, side: Side): Chess {
+  const parts = fen.split(' ');
+  const c = new Chess();
+  c.load([parts[0], side, parts[2], '-', parts[4] ?? '0', parts[5] ?? '1'].join(' '), { skipValidation: true });
+  return c;
+}
 
 export interface PowerResult { fen: string; label: string; from?: Square; to: Square }
 
 // ---------------- Sniper bishops ----------------
-/** Enemy pieces a bishop on `from` can shoot (the first piece on each diagonal, never the king). */
-export function sniperTargets(fen: string, from: Square): Square[] {
+/** Enemy pieces a bishop of `side` on `from` can shoot (the first piece on each diagonal, never the king). */
+export function sniperTargets(fen: string, from: Square, side: Side = 'w'): Square[] {
   const c = new Chess(fen);
   const p = c.get(from);
-  if (!p || p.type !== 'b' || p.color !== 'w' || c.turn() !== 'w') return [];
+  if (!p || p.type !== 'b' || p.color !== side || c.turn() !== side) return [];
   const { f, r } = fr(from);
   const out: Square[] = [];
   for (const [df, dr] of [[1, 1], [1, -1], [-1, 1], [-1, -1]]) {
     let ff = f + df, rr = r + dr;
     while (ff >= 0 && ff < 8 && rr >= 0 && rr < 8) {
       const t = c.get(sq(ff, rr));
-      if (t) { if (t.color === 'b' && t.type !== 'k') out.push(sq(ff, rr)); break; }
+      if (t) { if (t.color === opp(side) && t.type !== 'k') out.push(sq(ff, rr)); break; }
       ff += df; rr += dr;
     }
   }
-  return out.filter((t) => { const x = new Chess(fen); x.remove(t); return safe(x); });
+  return out.filter((t) => { const x = asSide(fen, side); x.remove(t); return safe(x, side); });
 }
-export function shoot(fen: string, from: Square, target: Square): PowerResult | null {
-  if (!sniperTargets(fen, from).includes(target)) return null;
+export function shoot(fen: string, from: Square, target: Square, side: Side = 'w'): PowerResult | null {
+  if (!sniperTargets(fen, from, side).includes(target)) return null;
   const c = new Chess(fen);
   const victim = c.remove(target);
-  return { fen: afterPower(c), label: `B${from}→${target}${victim ? ` (${victim.type === 'p' ? 'pawn' : victim.type.toUpperCase()})` : ''}`, from, to: target };
+  return { fen: afterPower(c, side), label: `B${from}→${target}${victim ? ` (${victim.type === 'p' ? 'pawn' : victim.type.toUpperCase()})` : ''}`, from, to: target };
 }
 
 // ---------------- Pawn catapult ----------------
-export function launchTargets(fen: string, from: Square): Square[] {
+const lastRank = (side: Side) => (side === 'w' ? '8' : '1');
+/** Where a pawn of `side` on `from` can be launched: 2 to 4 squares straight ahead (towards the enemy), over anything. */
+export function launchTargets(fen: string, from: Square, side: Side = 'w'): Square[] {
   const c = new Chess(fen);
   const p = c.get(from);
-  if (!p || p.type !== 'p' || p.color !== 'w' || c.turn() !== 'w') return [];
+  if (!p || p.type !== 'p' || p.color !== side || c.turn() !== side) return [];
   const { f, r } = fr(from);
+  const dir = side === 'w' ? 1 : -1;
   const out: Square[] = [];
-  for (let d = 2; d <= 4 && r + d <= 7; d++) {
-    const to = sq(f, r + d);
+  for (let d = 2; d <= 4; d++) {
+    const rr = r + dir * d;
+    if (rr < 0 || rr > 7) break;
+    const to = sq(f, rr);
     const t = c.get(to);
-    if (t && (t.color === 'w' || t.type === 'k')) continue;
+    if (t && (t.color === side || t.type === 'k')) continue;
     out.push(to);
   }
-  return out.filter((to) => { const x = new Chess(fen); x.remove(from); x.remove(to); x.put({ type: to[1] === '8' ? 'q' : 'p', color: 'w' }, to); return safe(x); });
+  return out.filter((to) => {
+    const x = asSide(fen, side); x.remove(from); x.remove(to);
+    x.put({ type: to[1] === lastRank(side) ? 'q' : 'p', color: side }, to);
+    return safe(x, side);
+  });
 }
-export function launch(fen: string, from: Square, to: Square): PowerResult | null {
-  if (!launchTargets(fen, from).includes(to)) return null;
+export function launch(fen: string, from: Square, to: Square, side: Side = 'w'): PowerResult | null {
+  if (!launchTargets(fen, from, side).includes(to)) return null;
   const c = new Chess(fen);
   c.remove(from);
   const victim = c.remove(to);
-  c.put({ type: to[1] === '8' ? 'q' : 'p', color: 'w' }, to);
-  return { fen: afterPower(c), label: `${from}^${to}${victim ? 'x' : ''}${to[1] === '8' ? '=Q' : ''}`, from, to };
+  c.put({ type: to[1] === lastRank(side) ? 'q' : 'p', color: side }, to);
+  return { fen: afterPower(c, side), label: `${from}^${to}${victim ? 'x' : ''}${to[1] === lastRank(side) ? '=Q' : ''}`, from, to };
 }
 
 // ---------------- Pawn drops ----------------
-export function dropSquares(fen: string): Square[] {
+/** Empty squares on ranks 2 to 7 where `side` can add a pawn without leaving its king in check. */
+export function dropSquares(fen: string, side: Side = 'w'): Square[] {
   const c = new Chess(fen);
   const out: Square[] = [];
   for (let r = 1; r <= 6; r++) for (let f = 0; f < 8; f++) {
     const s = sq(f, r);
     if (c.get(s)) continue;
-    const x = new Chess(fen); x.put({ type: 'p', color: 'w' }, s);
-    if (safe(x)) out.push(s);
+    const x = asSide(fen, side); x.put({ type: 'p', color: side }, s);
+    if (safe(x, side)) out.push(s);
   }
   return out;
 }
-/** Drops a pawn. Works whether White is to move ("or" mode) or has just moved ("and" mode); Black is to move after it. */
-export function drop(fen: string, at: Square): PowerResult | null {
+/** Drops a pawn of `side`. Works whether `side` is to move ("or" mode) or has just moved ("and" mode); the other side is to move after it. */
+export function drop(fen: string, at: Square, side: Side = 'w'): PowerResult | null {
   const c = new Chess(fen);
   if (c.get(at)) return null;
   const r = Number(at[1]);
   if (r < 2 || r > 7) return null;
-  // put the pawn on a copy where White is to move, so the check test is the same in both modes
-  const parts = fen.split(' ');
-  const w = new Chess();
-  w.load([parts[0], 'w', parts[2], '-', parts[4], parts[5]].join(' '), { skipValidation: true });
-  w.put({ type: 'p', color: 'w' }, at);
-  if (!safe(w)) return null;
-  return { fen: afterPower(w, false), label: `+P${at}`, to: at };
+  const w = asSide(fen, side);
+  w.put({ type: 'p', color: side }, at);
+  if (!safe(w, side)) return null;
+  return { fen: afterPower(w, side, false), label: `+P${at}`, to: at };
 }
 
 // ---------------- Portals ----------------
@@ -146,7 +164,7 @@ export function moveWithPortals(fen: string, from: Square, to: Square, promotion
   x.remove(exit);
   x.put({ type: piece.type === 'p' && exit[1] === '8' ? 'q' : piece.type, color: 'w' }, exit);
   if (!safe(x)) return base;
-  return { fen: afterPower(x), label: `${m.san}→${exit}${there ? 'x' : ''}`, san: m.san, from, to: exit, teleported: true };
+  return { fen: afterPower(x, 'w'), label: `${m.san}→${exit}${there ? 'x' : ''}`, san: m.san, from, to: exit, teleported: true };
 }
 
 /** Black is to move in `fen`: has the game ended? */
