@@ -7,7 +7,8 @@ import { CoachPanel } from '@/components/CoachPanel';
 import { DrillsPanel } from '@/components/DrillsPanel';
 import { PuzzleTrainer } from '@/components/PuzzleTrainer';
 import { ChessStory } from '@/components/ChessStory';
-import { PlayVsComputer, type PlayedGame } from '@/components/PlayVsComputer';
+import { type PlayedGame } from '@/components/PlayVsComputer';
+import { PlayHub } from '@/components/PlayHub';
 import { OpeningsTrainer } from '@/components/OpeningsTrainer';
 import { registerAnalyzeHandler } from '@/components/MastersGames';
 import { MobileHome } from '@/components/MobileHome';
@@ -376,7 +377,7 @@ function App() {
   // Ads (Android app only): a medium banner while analyzing, then a small banner at the bottom of the review page.
   const inReviewScreen = page === 'home' && !!selectedGame && !!selectedAnalysis;
 
-  const PAGE_TITLES: Record<string, string> = { learn: 'Learn Path', openings: 'Openings', puzzles: 'Puzzles', play: 'Play vs Computer', variants: 'Variants', story: 'Your chess story', library: 'Your games' };
+  const PAGE_TITLES: Record<string, string> = { learn: 'Learn Path', openings: 'Openings', puzzles: 'Puzzles', play: 'Play', variants: 'Variants', story: 'Your chess story', library: 'Your games' };
   const canGoBack = page !== 'home' || !!selectedGame;
   const goBack = () => {
     if (page === 'home' && selectedGameId) setSelectedGameId(null);
@@ -427,7 +428,7 @@ function App() {
             <NavTab active={page === 'learn'} onClick={() => setPage('learn')} icon={GraduationCap} label="Learn Path" />
             <NavTab active={page === 'openings'} onClick={() => setPage('openings')} icon={BookOpen} label="Openings" />
             <NavTab active={page === 'puzzles'} onClick={() => setPage('puzzles')} icon={Target} label="Practice Puzzles" />
-            <NavTab active={page === 'play'} onClick={() => setPage('play')} icon={Swords} label="Play vs Computer" />
+            <NavTab active={page === 'play'} onClick={() => setPage('play')} icon={Swords} label="Play" />
             <NavTab active={page === 'variants'} onClick={() => setPage('variants')} icon={Dices} label="Variants" />
           </nav>
 
@@ -461,7 +462,7 @@ function App() {
         ) : page === 'library' ? (
           games.length ? <GameLibrary games={games} analyses={analyses} onSelect={handleSelectGame} onDelete={handleDeleteGame} onDeleteMany={handleDeleteMany} /> : <p className="text-sm text-ink-400">No games yet.</p>
         ) : page === 'play' ? (
-          <PlayVsComputer settings={settings} onAnalyze={handlePlayedGame} />
+          <PlayHub settings={settings} onAnalyze={handlePlayedGame} />
         ) : page === 'puzzles' ? (
           <PuzzleTrainer initialCategory={puzzleTheme} />
         ) : !selectedGame ? (
