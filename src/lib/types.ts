@@ -117,6 +117,8 @@ export interface Settings {
   coachVoice?: boolean;
   /** Voice used for the spoken explanation (e.g. 'Joanna'). */
   coachVoiceName?: string;
+  /** The coach's bubble mixes in short Darija (Moroccan Arabic) reactions. On unless set to false. */
+  darijaComments?: boolean;
   /** End-of-game announcement + animations (resign, timeout, draw, checkmate...). On unless set to false. */
   endAnimations?: boolean;
   /** When a PGN is on the clipboard (phone app at launch, web after you allowed clipboard access), offer to import and analyze it. On unless set to false. */

@@ -299,3 +299,6 @@ html.skin-neon .neon-bar-item[aria-current="page"] svg { transform: translateY(-
   html.skin-neon .page-enter, .neon-tab-panel, html.skin-neon .card { animation: none; }
   html.skin-neon button:active:not(:disabled) { transform: none; }
 }
+@keyframes neon-sheet-up { from { transform: translateY(40%); opacity: .4; } to { transform: none; opacity: 1; } }
+.neon-sheet { animation: neon-sheet-up .28s cubic-bezier(.2, .8, .2, 1); }
+@media (prefers-reduced-motion: reduce) { .neon-sheet { animation: none; } }

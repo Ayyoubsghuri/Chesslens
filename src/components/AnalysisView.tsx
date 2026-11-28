@@ -558,6 +558,9 @@ export function AnalysisView({ analysis, currentIndex, onIndexChange, depth = 12
   const [optionsOpen, setOptionsOpen] = useState(false);
   /** App (neon skin) on a phone: the game screen fits the screen, and the details live in tabs under the board. */
   const [neonTab, setNeonTab] = useState<'coach' | 'moves' | 'graph' | 'report'>('coach');
+  /** The details sheet: a peek under the board, or pulled up over it to read. */
+  const [neonOpen, setNeonOpen] = useState(false);
+  const neonTouch = useRef<number | null>(null);
   const [neonBox, setNeonBox] = useState<HTMLDivElement | null>(null);
   const [neonH, setNeonH] = useState(0);
   useEffect(() => {
@@ -1835,8 +1838,22 @@ export function AnalysisView({ analysis, currentIndex, onIndexChange, depth = 12
   // Only the tab panel scrolls, inside itself.
   // ─────────────────────────────────────────────────────────────────────────
   if (neonPhone) {
-    const STRIP = 40, BUBBLE = 70, EVAL = 16, TABS = 44, MIN_PANEL = 150;
-    const boardPx = Math.max(240, Math.min(viewport.w, (neonH || viewport.h) - STRIP - BUBBLE - EVAL - TABS - MIN_PANEL));
+    // The board takes the full width; under it there is just a peek of the details (tabs + a line or two).
+    const STRIP = 40, BUBBLE = 70, EVAL = 16, PEEK = 92;
+    const boardPx = Math.max(240, Math.min(viewport.w, (neonH || viewport.h) - STRIP - BUBBLE - EVAL - PEEK));
+    const pickTab = (t: typeof neonTab) => {
+      if (t === neonTab && neonOpen) setNeonOpen(false);
+      else { setNeonTab(t); setNeonOpen(true); }
+    };
+    const onSheetTouchStart = (e: React.TouchEvent) => { neonTouch.current = e.touches[0].clientY; };
+    const onSheetTouchEnd = (e: React.TouchEvent, scroller?: HTMLElement | null) => {
+      const y0 = neonTouch.current;
+      neonTouch.current = null;
+      if (y0 == null) return;
+      const dy = e.changedTouches[0].clientY - y0;
+      if (dy < -40) setNeonOpen(true);
+      else if (dy > 50 && (!scroller || scroller.scrollTop <= 0)) setNeonOpen(false);
+    };
     const tabs: { id: typeof neonTab; label: string }[] = [
       { id: 'coach', label: 'Coach' }, { id: 'moves', label: 'Moves' }, { id: 'graph', label: 'Graph' }, { id: 'report', label: 'Report' },
     ];
@@ -1868,20 +1885,38 @@ export function AnalysisView({ analysis, currentIndex, onIndexChange, depth = 12
           </div>
           <div className="mx-auto shrink-0" style={{ width: boardPx }}>{renderBoard(boardPx)}</div>
 
-          <div className="flex shrink-0 gap-1 px-3 pt-2" role="tablist" style={{ height: TABS }}>
-            {tabs.map((t) => (
-              <button
-                key={t.id}
-                role="tab"
-                aria-selected={neonTab === t.id}
-                onClick={() => setNeonTab(t.id)}
-                className={`flex-1 rounded-full text-xs font-bold transition-colors ${neonTab === t.id ? 'bg-brand-500 text-ink-950' : 'bg-ink-800 text-ink-300'}`}
-              >
-                {t.label}
+          {/* Details sheet: peeks under the board; tap a tab or swipe up to pull it over the board, swipe down to close */}
+          {neonOpen && <button aria-label="Close details" onClick={() => setNeonOpen(false)} className="fixed inset-0 z-30 bg-black/40 animate-fade-in" />}
+          <div
+            className={neonOpen
+              ? 'neon-sheet fixed inset-x-0 z-40 top-[calc(var(--appbar-h)+40px)] bottom-[calc(env(safe-area-inset-bottom)+64px)] flex flex-col rounded-t-[1.75rem] border-t border-white/10 bg-ink-900 shadow-[0_-20px_40px_rgba(0,0,0,.5)]'
+              : 'relative z-10 flex min-h-0 flex-1 flex-col rounded-t-[1.75rem] bg-ink-900'}
+          >
+            <div className="shrink-0 touch-none" onTouchStart={onSheetTouchStart} onTouchEnd={(e) => onSheetTouchEnd(e)}>
+              <button onClick={() => setNeonOpen((o) => !o)} className="mx-auto block w-full py-2" aria-label={neonOpen ? 'Close details' : 'Open details'}>
+                <span className="mx-auto block h-1.5 w-10 rounded-full bg-ink-600" />
               </button>
-            ))}
-          </div>
-          <div key={neonTab} className="neon-tab-panel min-h-0 flex-1 overflow-y-auto overscroll-contain px-3 pb-3 pt-2">
+              <div className="flex gap-1 px-3 pb-2" role="tablist">
+                {tabs.map((t) => (
+                  <button
+                    key={t.id}
+                    role="tab"
+                    aria-selected={neonTab === t.id}
+                    onClick={() => pickTab(t.id)}
+                    className={`h-9 flex-1 rounded-full text-[13px] font-bold transition-colors ${neonTab === t.id ? 'bg-brand-500 text-ink-950' : 'bg-ink-800 text-ink-300'}`}
+                  >
+                    {t.label}
+                  </button>
+                ))}
+              </div>
+            </div>
+          <div
+            key={neonTab}
+            className={`neon-tab-panel min-h-0 flex-1 px-3 pb-3 ${neonOpen ? 'overflow-y-auto overscroll-contain' : 'overflow-hidden'}`}
+            onTouchStart={onSheetTouchStart}
+            onTouchEnd={(e) => onSheetTouchEnd(e, e.currentTarget)}
+            onClick={() => { if (!neonOpen) setNeonOpen(true); }}
+          >
             {exploreBanner}
             {bestPreviewBanner}
             {neonTab === 'coach' && (
@@ -1951,6 +1986,7 @@ export function AnalysisView({ analysis, currentIndex, onIndexChange, depth = 12
                 {moveDetailsCard}
               </div>
             )}
+          </div>
           </div>
         </div>
         {phoneToolbar}

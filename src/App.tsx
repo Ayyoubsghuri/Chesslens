@@ -250,6 +250,7 @@ function App() {
   const handleSaveSettings = (s: SettingsType) => {
     setSettings(s);
     saveSettings(s);
+    window.dispatchEvent(new CustomEvent('chesslens:settings-changed'));
   };
 
   const currentMove = selectedAnalysis?.moves[currentMoveIndex] || null;

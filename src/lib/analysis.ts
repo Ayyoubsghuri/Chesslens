@@ -3,7 +3,7 @@ import type { AnalyzedMove, EngineEval, ImportedGame, MoveQuality, OpeningInfo, 
 import { analyzePositions, evalToPawns, evalToWinChance, resetEngine } from './engine';
 import { getMoveHistory } from './pgn';
 import { BookWalker } from './openings';
-import { detectSacrifice } from './sacrifice';
+import { detectSacrifice, brilliantSacrifice } from './sacrifice';
 import { markOnlyMoves } from './only-move';
 import { accuracyFromLosses, moveLosses } from './accuracy-model';
 
@@ -102,19 +102,18 @@ export function classifyMove(
     return { quality: 'miss', delta, isBest, evalLoss, winPercentLoss };
   }
 
-  // Brilliant: a real material sacrifice that keeps (or gains) the advantage.
-  //  - the move gives up material once the engine's line plays out (>= 2 pts)
-  //  - it is the best move, or within 1.5 win% of it (depth-12 can disagree
-  //    with itself on top-1 in sharp positions)
-  //  - the mover wasn't already winning big or had a forced mate (no credit
-  //    for sacrificing when everything wins)
-  //  - the mover is still OK afterwards (>= 50% win chance)
-  //  - not a promotion, and the played move must not be a plain recapture/trade
-  //    (detectSacrifice requires material to stay down or swing by >= 2)
+  // Brilliant: a sacrifice of a valuable piece (knight, bishop, rook or queen; not a trade) that pays off:
+  // it leads to checkmate, wins back a more valuable piece, or leaves a clearly better position.
+  //  - it is the best move, or within 1.5 win% of it (depth-12 can disagree with itself on top-1 in sharp positions)
+  //  - not a promotion
+  //  - when the mover was already winning big, only a sacrifice that forces mate counts
+  // (Only the label changes: accuracy is computed from the win% loss, not from the label.)
   const nearBest = isBest || rawWinLoss < 1.5;
   const isPromotion = playedMove.length > 4;
-  if (nearBest && !isPromotion && !hadForcedWin && winBefore < 85 && winAfter >= 50) {
-    if (detectSacrifice(fenBefore, playedMove, evalAfter.continuation, color)) {
+  if (nearBest && !isPromotion) {
+    const moverMate = evalAfter.mate !== null ? (color === 'w' ? evalAfter.mate : -evalAfter.mate) : null;
+    const payoff = brilliantSacrifice(fenBefore, playedMove, evalAfter.continuation, color, moverMate !== null && moverMate > 0, winAfter);
+    if (payoff && (payoff === 'mate' || (!hadForcedWin && winBefore < 85))) {
       return { quality: 'brilliant', delta, isBest, evalLoss, winPercentLoss };
     }
   }
