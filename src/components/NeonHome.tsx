@@ -79,8 +79,8 @@ export function NeonHome({ games, analyses, onImport, onPaste, onGo, onOpenGame 
           </button>
           <button onClick={() => onGo('play')} className="rounded-[1.4rem] bg-ink-900 p-3.5 text-left text-ink-100 active:scale-[0.98] transition-transform">
             <Swords size={18} className="text-brand-400" />
-            <span className="mt-2 block text-sm font-bold leading-tight">Against the machine</span>
-            <span className="block text-[11px] text-ink-400">Play vs computer</span>
+            <span className="mt-2 block text-sm font-bold leading-tight">Play</span>
+            <span className="block text-[11px] text-ink-400">Computer or a friend</span>
           </button>
           <button onClick={() => onGo('variants')} className="rounded-[1.4rem] bg-ink-800 p-3.5 text-left text-ink-100 active:scale-[0.98] transition-transform">
             <Dices size={18} className="text-[rgb(var(--neon-lime))]" />
